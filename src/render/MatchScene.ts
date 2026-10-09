@@ -10,16 +10,77 @@ import {
   PITCH_HEIGHT,
   PITCH_MARGIN,
   PITCH_WIDTH,
+  DEBUG_CLICK_KICK,
+  POST_RADIUS,
+  SIM_DT,
 } from '../config';
+import { BOUNDARY } from '../sim/physics';
+import { createInitialState, step } from '../sim/simulation';
+import type { GameState, InputFrame, Vec2 } from '../sim/types';
 
 /** Draws the match. Reads state only; never changes it. */
 export class MatchScene extends Phaser.Scene {
+  private state: GameState = createInitialState();
+  private accumulator = 0;
+  private seq = 0;
+  private pendingKick: Vec2 | null = null;
+  private dynamic!: Phaser.GameObjects.Graphics;
+
   constructor() {
     super('MatchScene');
   }
 
   create(): void {
+    this.state = createInitialState();
+    this.accumulator = 0;
     this.drawPitch();
+    this.dynamic = this.add.graphics();
+
+    if (DEBUG_CLICK_KICK) {
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        this.pendingKick = { x: pointer.worldX, y: pointer.worldY };
+      });
+    }
+  }
+
+  update(_time: number, delta: number): void {
+    // Fixed 60 Hz timestep; clamp so a stalled tab doesn't cause a spiral of catch-up steps.
+    this.accumulator += Math.min(delta / 1000, 0.25);
+    while (this.accumulator >= SIM_DT) {
+      this.state = step(this.state, this.collectInputs(), SIM_DT);
+      this.accumulator -= SIM_DT;
+    }
+    this.drawState(this.state);
+  }
+
+  private collectInputs(): InputFrame[] {
+    const input: InputFrame = {
+      seq: this.seq++,
+      moveX: 0,
+      moveY: 0,
+      pass: false,
+      shoot: false,
+      tackle: false,
+      switchPlayer: false,
+      kickTarget: this.pendingKick,
+    };
+    this.pendingKick = null;
+    return [input];
+  }
+
+  /** Read-only: draws the given state. */
+  private drawState(state: GameState): void {
+    const g = this.dynamic;
+    g.clear();
+    g.fillStyle(0xffffff, 1);
+    for (const post of BOUNDARY.posts) g.fillCircle(post.pos.x, post.pos.y, POST_RADIUS);
+    // Ball: soft shadow, white body, dark outline.
+    g.fillStyle(0x000000, 0.25);
+    g.fillCircle(state.ball.pos.x + 2, state.ball.pos.y + 3, state.ball.radius);
+    g.fillStyle(0xffffff, 1);
+    g.fillCircle(state.ball.pos.x, state.ball.pos.y, state.ball.radius);
+    g.lineStyle(2, 0x222222, 1);
+    g.strokeCircle(state.ball.pos.x, state.ball.pos.y, state.ball.radius);
   }
 
   private drawPitch(): void {
