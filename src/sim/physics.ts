@@ -204,14 +204,20 @@ export function collideCircles(
 }
 
 /** Collide a circle with the pitch walls, goal nets and posts. Returns true if anything was hit. */
-export function collideWithBoundary(c: CircleBody, boundary: Boundary = BOUNDARY, tangentKeep = 1): boolean {
+export function collideWithBoundary(
+  c: CircleBody,
+  boundary: Boundary = BOUNDARY,
+  tangentKeep = 1,
+  /** Overrides the wall/post restitution (e.g. 0 for players, who should not bounce). */
+  restitution?: number,
+): boolean {
   let hit = false;
   for (const wall of boundary.walls) {
-    if (collideCircleSegment(c, wall.a, wall.b, wall.restitution, tangentKeep)) hit = true;
+    if (collideCircleSegment(c, wall.a, wall.b, restitution ?? wall.restitution, tangentKeep)) hit = true;
   }
   for (const post of boundary.posts) {
     const postBody: CircleBody = { pos: { ...post.pos }, vel: { x: 0, y: 0 }, radius: post.radius };
-    if (collideCircles(c, postBody, POST_RESTITUTION, 1, 0)) hit = true;
+    if (collideCircles(c, postBody, restitution ?? POST_RESTITUTION, 1, 0)) hit = true;
   }
   return hit;
 }

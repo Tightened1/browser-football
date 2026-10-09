@@ -18,6 +18,7 @@ const midY = (PITCH_TOP + PITCH_BOTTOM) / 2;
 
 function stateWith(x: number, y: number, vx: number, vy: number): GameState {
   const s = createInitialState();
+  s.players = []; // ball-only physics tests
   s.ball.pos = { x, y };
   s.ball.vel = { x: vx, y: vy };
   return s;
@@ -119,13 +120,12 @@ describe('ball physics', () => {
         ? [
             {
               seq: n,
-              moveX: 0,
-              moveY: 0,
+              moveX: Math.cos(n),
+              moveY: Math.sin(n),
               pass: false,
-              shoot: false,
+              shoot: n % 80 === 0,
               tackle: false,
               switchPlayer: false,
-              kickTarget: { x: 100 + (n * 37) % 900, y: 150 + (n * 91) % 500 },
             },
           ]
         : [];

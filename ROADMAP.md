@@ -88,7 +88,7 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 |---|---|---|---|---|
 | T00 | Project setup, GitHub repo & Pages deploy | — | Sonnet 5.5 | [x] |
 | T01 | Pitch, ball & core physics | T00 | Sonnet 5.5 | [x] |
-| T02 | Player control: move, dribble, pass, shoot, tackle | T01 | Sonnet 5.5 | [ ] |
+| T02 | Player control: move, dribble, pass, shoot, tackle | T01 | Sonnet 5.5 | [x] |
 | T03 | Teams, keepers & player switching | T02 | Sonnet 5.5 | [ ] |
 | T04 | AI teammates & opponents | T03 | **Opus 5.5** | [ ] |
 | T05 | Match rules: kickoff, goals, out of play, timer, HUD | T03 | Sonnet 5.5 | [ ] |

@@ -11,19 +11,21 @@ import {
   PITCH_MARGIN,
   PITCH_WIDTH,
   DEBUG_CLICK_KICK,
+  DEBUG_KICK_SPEED,
   POST_RADIUS,
+  SHOT_MAX_CHARGE_TIME,
   SIM_DT,
 } from '../config';
+import { KeyboardInput } from '../input/keyboard';
 import { BOUNDARY } from '../sim/physics';
 import { createInitialState, step } from '../sim/simulation';
-import type { GameState, InputFrame, Vec2 } from '../sim/types';
+import type { GameState, InputFrame, PlayerState } from '../sim/types';
 
 /** Draws the match. Reads state only; never changes it. */
 export class MatchScene extends Phaser.Scene {
   private state: GameState = createInitialState();
   private accumulator = 0;
-  private seq = 0;
-  private pendingKick: Vec2 | null = null;
+  private keyboard!: KeyboardInput;
   private dynamic!: Phaser.GameObjects.Graphics;
 
   constructor() {
@@ -36,9 +38,18 @@ export class MatchScene extends Phaser.Scene {
     this.drawPitch();
     this.dynamic = this.add.graphics();
 
+    this.keyboard = new KeyboardInput();
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.keyboard.dispose());
+
     if (DEBUG_CLICK_KICK) {
+      // Debug only, render-side: pokes the ball towards the pointer. Off by default (see config.ts).
       this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-        this.pendingKick = { x: pointer.worldX, y: pointer.worldY };
+        const { ball } = this.state;
+        const dx = pointer.worldX - ball.pos.x;
+        const dy = pointer.worldY - ball.pos.y;
+        const d = Math.hypot(dx, dy) || 1;
+        ball.vel.x = (dx / d) * DEBUG_KICK_SPEED;
+        ball.vel.y = (dy / d) * DEBUG_KICK_SPEED;
       });
     }
   }
@@ -54,18 +65,7 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private collectInputs(): InputFrame[] {
-    const input: InputFrame = {
-      seq: this.seq++,
-      moveX: 0,
-      moveY: 0,
-      pass: false,
-      shoot: false,
-      tackle: false,
-      switchPlayer: false,
-      kickTarget: this.pendingKick,
-    };
-    this.pendingKick = null;
-    return [input];
+    return [this.keyboard.sample()];
   }
 
   /** Read-only: draws the given state. */
@@ -74,6 +74,7 @@ export class MatchScene extends Phaser.Scene {
     g.clear();
     g.fillStyle(0xffffff, 1);
     for (const post of BOUNDARY.posts) g.fillCircle(post.pos.x, post.pos.y, POST_RADIUS);
+    for (const p of state.players) this.drawPlayer(g, p);
     // Ball: soft shadow, white body, dark outline.
     g.fillStyle(0x000000, 0.25);
     g.fillCircle(state.ball.pos.x + 2, state.ball.pos.y + 3, state.ball.radius);
@@ -81,6 +82,35 @@ export class MatchScene extends Phaser.Scene {
     g.fillCircle(state.ball.pos.x, state.ball.pos.y, state.ball.radius);
     g.lineStyle(2, 0x222222, 1);
     g.strokeCircle(state.ball.pos.x, state.ball.pos.y, state.ball.radius);
+  }
+
+  private drawPlayer(g: Phaser.GameObjects.Graphics, p: PlayerState): void {
+    const { x, y } = p.pos;
+    g.fillStyle(0x000000, 0.25);
+    g.fillCircle(x + 2, y + 3, p.radius);
+    g.fillStyle(p.tackleTimer > 0 ? 0x6fa3f5 : COLORS.player, 1);
+    g.fillCircle(x, y, p.radius);
+    g.lineStyle(2, COLORS.playerOutline, 1);
+    g.strokeCircle(x, y, p.radius);
+    // Facing indicator: a line and a dot at the front edge.
+    const fx = Math.cos(p.facing);
+    const fy = Math.sin(p.facing);
+    g.lineStyle(3, COLORS.playerFacing, 1);
+    g.lineBetween(x, y, x + fx * p.radius, y + fy * p.radius);
+    g.fillStyle(COLORS.playerFacing, 1);
+    g.fillCircle(x + fx * p.radius * 0.75, y + fy * p.radius * 0.75, 3);
+    // Shot power bar under the player while charging.
+    if (p.charge > 0) {
+      const w = 36;
+      const h = 6;
+      const frac = Math.min(1, p.charge / SHOT_MAX_CHARGE_TIME);
+      const bx = x - w / 2;
+      const by = y + p.radius + 6;
+      g.fillStyle(0x000000, 0.6);
+      g.fillRect(bx - 1, by - 1, w + 2, h + 2);
+      g.fillStyle(frac >= 1 ? 0xff4040 : 0xffd23f, 1);
+      g.fillRect(bx, by, w * frac, h);
+    }
   }
 
   private drawPitch(): void {

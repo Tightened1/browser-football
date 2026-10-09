@@ -21,9 +21,21 @@ export interface PlayerState extends CircleBody {
   team: TeamId;
   /** Facing angle in radians. */
   facing: number;
+  /** Seconds the shoot button has been held (0 when not charging). Capped at SHOT_MAX_CHARGE_TIME. */
+  charge: number;
+  /** Seconds left in the current tackle slide (0 = not sliding). */
+  tackleTimer: number;
+  /** Seconds until another tackle may start. */
+  tackleCooldown: number;
+  /** Seconds until the dribble touch may nudge the ball again. */
+  touchTimer: number;
+  /** Previous-tick button states, for press/release edge detection. */
+  prevPass: boolean;
+  prevShoot: boolean;
+  prevTackle: boolean;
 }
 
-/** One tick of input for one controller. */
+/** One tick of input for one controller. Until T03, inputs[i] drives players[i]. */
 export interface InputFrame {
   /** Increasing sequence number (used by netcode later). */
   seq: number;
@@ -34,8 +46,6 @@ export interface InputFrame {
   shoot: boolean;
   tackle: boolean;
   switchPlayer: boolean;
-  /** TEMPORARY (T01 debug): world point to kick the ball towards, or null. */
-  kickTarget: Vec2 | null;
 }
 
 export interface GameState {
