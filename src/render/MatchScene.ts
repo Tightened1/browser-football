@@ -4,13 +4,14 @@ import {
   COLORS,
   CONTROL_RING_COLOR,
   GAME_HEIGHT,
-  GOAL_DEPTH,
-  GOAL_WIDTH,
   LINE_THICKNESS,
   PENALTY_BOX_HEIGHT,
   PENALTY_BOX_WIDTH,
   PITCH_HEIGHT,
   PITCH_MARGIN,
+  PITCH_STRIPES,
+  PITCH_TOP,
+  PITCH_BOTTOM,
   PITCH_WIDTH,
   AI_VS_AI,
   DEBUG_CLICK_KICK,
@@ -18,7 +19,21 @@ import {
   POST_RADIUS,
   SHOT_MAX_CHARGE_TIME,
   GAME_WIDTH,
+  CAMERA_AUTO_MIN_SCALE,
+  CAMERA_FOLLOW_ZOOM,
+  CAMERA_SMOOTH,
+  CAMERA_ZOOM_SMOOTH,
+  FX_CONFETTI_COUNT,
+  FX_LIFT_SCALE,
+  FX_SHAKE_INTENSITY,
+  FX_SHAKE_MS,
+  FX_ZOOM_PUNCH,
+  PITCH_LEFT,
+  PITCH_RIGHT,
 } from '../config';
+import { crowdExcitement, eventSound, scanEvents, BallCueDetector, type BallCue } from '../audio/cues';
+import { sound } from '../audio/sound';
+import { approach, ballLift, cameraTarget, netBox, netGrid, Effects } from './effects';
 import { KeyboardInput } from '../input/keyboard';
 import { controlsSummary, settings } from '../settings';
 import { NEUTRAL_INPUT } from '../sim/simulation';
@@ -26,7 +41,7 @@ import { randomOpponent, type Look } from '../teams';
 import { setTeamLooks, teamStyle } from './teamStyle';
 import { BOUNDARY } from '../sim/physics';
 import { roleOf } from '../sim/ai';
-import type { Difficulty, GameState, InputFrame, MatchStats, PlayerState, TeamId } from '../sim/types';
+import type { Difficulty, GameState, InputFrame, MatchEvent, MatchStats, PlayerState, TeamId } from '../sim/types';
 import { GuestLobby, GuestMatch } from '../net/client';
 import { HostLobby, HostMatch } from '../net/host';
 import type { MatchDriver, NetOverlay } from '../net/match';
@@ -44,6 +59,9 @@ export interface MatchSceneData {
   /** Both teams' names and kits, indexed by team (default: the saved look against a random opponent). */
   looks?: [Look, Look];
 }
+
+/** The goal posts' centres, for spotting a ball ringing off the woodwork. */
+const POST_POSITIONS = BOUNDARY.posts.map((p) => p.pos);
 
 /** How long the final whistle is left alone before the results screen appears. */
 const RESULTS_DELAY = 1.2;
@@ -66,7 +84,23 @@ export class MatchScene extends Phaser.Scene {
   private driver!: MatchDriver;
   private keyboard!: KeyboardInput;
   private dynamic!: Phaser.GameObjects.Graphics;
+  private netGfx!: Phaser.GameObjects.Graphics;
+  private fxGfx!: Phaser.GameObjects.Graphics;
   private readonly numberLabels: Phaser.GameObjects.Text[] = [];
+  /** Shirt numbers drawn on every player. */
+  private readonly shirtLabels: Phaser.GameObjects.Text[] = [];
+  /** Juice (render/audio only): particles, net ripples, ball cues, camera. All driven by the drawn state and its events. */
+  private effects = new Effects();
+  private detector = new BallCueDetector();
+  private lastEventId = 0;
+  private lastTick = 0;
+  private netsDirty = true;
+  private lastVolume = -1;
+  private excitementTimer = 0;
+  private camX = GAME_WIDTH / 2;
+  private camY = GAME_HEIGHT / 2;
+  private camZoom = 1;
+  private zoomPunch = 0;
   private aiVsAi = false;
   /** AI debug overlay (toggle with F2 or `): each AI player's role and intent, plus team modes. */
   private debugAi = false;
@@ -110,10 +144,35 @@ export class MatchScene extends Phaser.Scene {
     const opts = urlOptions();
     this.aiVsAi = !this.online && opts.aiVsAi;
     this.driver = this.createDriver(opts.difficulty);
-    this.drawPitch();
-    this.dynamic = this.add.graphics();
+    this.effects = new Effects();
+    this.detector = new BallCueDetector();
+    this.lastEventId = 0;
+    this.lastTick = 0;
+    this.netsDirty = true;
+    this.lastVolume = -1;
+    this.excitementTimer = 0;
+    this.camX = GAME_WIDTH / 2;
+    this.camY = GAME_HEIGHT / 2;
+    this.camZoom = 1;
+    this.zoomPunch = 0;
+    const world: Phaser.GameObjects.GameObject[] = [];
+    const ui: Phaser.GameObjects.GameObject[] = [];
+    world.push(this.drawPitch());
+    this.netGfx = this.add.graphics().setDepth(1);
+    this.dynamic = this.add.graphics().setDepth(5);
+    this.fxGfx = this.add.graphics().setDepth(8);
+    world.push(this.netGfx, this.dynamic, this.fxGfx);
     this.createDebugOverlay();
     this.numberLabels.length = 0;
+    this.shirtLabels.length = 0;
+    for (const p of this.driver.state.players) {
+      const t = this.add
+        .text(0, 0, String(p.number), { fontFamily: 'sans-serif', fontSize: '15px', fontStyle: 'bold', color: '#ffffff', stroke: '#000000', strokeThickness: 3 })
+        .setOrigin(0.5)
+        .setDepth(9);
+      this.shirtLabels[p.id] = t;
+      world.push(t);
+    }
     for (const team of [0, 1]) {
       const label = this.add
         .text(0, 0, '', { fontFamily: 'sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#ffffff', stroke: '#000000', strokeThickness: 4 })
@@ -121,7 +180,10 @@ export class MatchScene extends Phaser.Scene {
         .setDepth(10)
         .setVisible(false);
       this.numberLabels[team] = label;
+      world.push(label);
     }
+    world.push(this.debugGfx, ...this.debugLabels);
+    ui.push(this.debugTeams);
 
     this.keyboard = new KeyboardInput(settings.bindings);
     this.scene.launch('HudScene');
@@ -138,22 +200,33 @@ export class MatchScene extends Phaser.Scene {
       else this.openPause();
     });
     if (settings.showControls) {
-      this.add
+      const controls = this.add
         .text(GAME_WIDTH / 2, GAME_HEIGHT - 14, controlsSummary(settings.bindings), { fontFamily: 'sans-serif', fontSize: '14px', color: '#d8e4dc', stroke: '#000000', strokeThickness: 3 })
         .setOrigin(0.5)
         .setDepth(30);
+      ui.push(controls);
     }
     this.onlineLabel = this.online
       ? this.add
           .text(PITCH_MARGIN, GAME_HEIGHT - PITCH_MARGIN / 2 - 8, '', { fontFamily: 'sans-serif', fontSize: '15px', color: '#ffffff', backgroundColor: '#000000a0', padding: { x: 6, y: 3 } })
           .setOrigin(0, 0.5)
           .setDepth(30)
-      : undefined;
+ : undefined;
+    if (this.onlineLabel) ui.push(this.onlineLabel);
     this.netText = this.add
       .text(GAME_WIDTH - 8, GAME_HEIGHT - 8, '', { fontFamily: 'monospace', fontSize: '13px', color: '#ffffff', backgroundColor: '#000000b0', padding: { x: 6, y: 4 } })
       .setOrigin(1, 1)
       .setDepth(40)
       .setVisible(false);
+    ui.push(this.netText);
+    // The camera can zoom and follow the ball, so the on-screen text lives on a second, fixed camera.
+    const cam = this.cameras.main;
+    cam.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    const uiCam = this.cameras.add(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    uiCam.ignore(world);
+    cam.ignore(ui);
+    sound.startCrowd();
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => sound.stopCrowd());
     // F3 (captured, so the browser's find bar doesn't open) or N.
     this.input.keyboard?.addCapture('F3');
     const toggleNet = (): void => {
@@ -268,12 +341,132 @@ export class MatchScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const now = performance.now();
+    const dt = Math.min(0.1, delta / 1000);
     if (!this.frozen) this.driver.advance(delta / 1000, () => this.sampleInput(), now);
     this.watchFullTime(delta / 1000);
-    this.drawState(this.driver.state);
+    const state = this.driver.state;
+    this.react(state, dt);
+    this.effects.update(dt);
+    this.updateCamera(state, dt);
+    this.drawState(state);
+    this.drawNets();
+    this.drawEffects();
     this.drawOnlineStatus();
     this.netText.setVisible(this.debugNet);
     if (this.debugNet) this.netText.setText(this.driver.debugLines(now).join('\n'));
+  }
+
+  /**
+   * Sounds and effects for what just happened. Everything is worked out from the drawn state alone (its new events and
+   * the ball's motion), so the host, the offline game and the online guest all behave the same.
+   */
+  private react(state: GameState, dt: number): void {
+    if (settings.volume !== this.lastVolume) {
+      this.lastVolume = settings.volume;
+      sound.applyVolume();
+    }
+    // A new match (ticks and event ids start again) forgets what it had handled.
+    const restarted = state.tick < this.lastTick - 5;
+    this.lastTick = state.tick;
+    if (restarted) {
+      this.detector.reset();
+      this.effects.clear();
+    }
+    const scan = scanEvents(state.events, this.lastEventId, restarted);
+    this.lastEventId = scan.lastId;
+    for (const e of scan.fresh) this.onEvent(e, state);
+    const cue = this.detector.update(state.ball, dt, POST_POSITIONS);
+    if (cue) this.onBallCue(cue);
+    this.excitementTimer -= dt;
+    if (this.excitementTimer <= 0) {
+      this.excitementTimer = 0.15;
+      sound.setExcitement(crowdExcitement(state.ball.pos.x, Math.hypot(state.ball.vel.x, state.ball.vel.y), PITCH_LEFT, PITCH_RIGHT));
+    }
+    // Sliding players kick up dust.
+    for (const p of state.players) {
+      const speed = Math.hypot(p.vel.x, p.vel.y);
+      if (p.tackleTimer > 0 && speed > 80 && Math.random() < 0.6) this.effects.dust(p.pos.x, p.pos.y, { x: p.vel.x / speed, y: p.vel.y / speed }, 0.2, 1);
+    }
+  }
+
+  private onEvent(e: MatchEvent, state: GameState): void {
+    const id = eventSound(e);
+    if (id) sound.playId(id);
+    if (e.type !== 'goal') return;
+    // GOAL!: the net bulges, confetti flies, and a light shake and zoom punch.
+    const { x, y } = state.ball.pos;
+    this.effects.ripple(x, y, 1);
+    const kit = e.team === undefined ? 0xffd23f : teamStyle(e.team).kit;
+    this.effects.confetti(x, y, [kit, 0xffffff, 0xffd23f], FX_CONFETTI_COUNT);
+    this.cameras.main.shake(FX_SHAKE_MS, FX_SHAKE_INTENSITY);
+    this.zoomPunch = FX_ZOOM_PUNCH;
+  }
+
+  private onBallCue(cue: BallCue): void {
+    if (cue.type === 'kick') {
+      sound.kick(cue.power);
+      if (cue.power > 0.2) this.effects.dust(cue.pos.x, cue.pos.y, cue.dir, cue.power);
+    } else if (cue.type === 'post') {
+      sound.post(cue.power);
+    } else {
+      sound.net(cue.power);
+      this.effects.ripple(cue.pos.x, cue.pos.y, 0.3 + 0.7 * cue.power);
+    }
+  }
+
+  /** Follows the ball (with look-ahead) when the pitch is drawn small or the setting says so, otherwise holds the whole pitch. */
+  private updateCamera(state: GameState, dt: number): void {
+    const mode = settings.camera;
+    const scale = this.scale.displaySize.width / GAME_WIDTH;
+    const follow = mode === 'follow' || (mode === 'auto' && scale < CAMERA_AUTO_MIN_SCALE);
+    this.camZoom = approach(this.camZoom, follow ? CAMERA_FOLLOW_ZOOM : 1, CAMERA_ZOOM_SMOOTH, dt);
+    const target = follow ? cameraTarget(state.ball) : { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
+    this.camX = approach(this.camX, target.x, CAMERA_SMOOTH, dt);
+    this.camY = approach(this.camY, target.y, CAMERA_SMOOTH, dt);
+    this.zoomPunch = approach(this.zoomPunch, 0, 6, dt);
+    const cam = this.cameras.main;
+    cam.setZoom(this.camZoom * (1 + this.zoomPunch));
+    cam.centerOn(this.camX, this.camY);
+  }
+
+  /** The goal nets: a mesh that ripples. Redrawn only while a ripple runs (and once more when it ends). */
+  private drawNets(): void {
+    if (!this.netsDirty && !this.effects.netsMoving) return;
+    const g = this.netGfx;
+    g.clear();
+    for (const side of [-1, 1] as const) {
+      const box = netBox(side);
+      g.fillStyle(0x000000, 0.2);
+      g.fillRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+      const { cols, rows, pts } = netGrid(side, this.effects.ripples);
+      g.lineStyle(1, COLORS.goalNet, 0.5);
+      for (let r = 0; r < rows; r++) {
+        g.beginPath();
+        g.moveTo(pts[r * cols].x, pts[r * cols].y);
+        for (let c = 1; c < cols; c++) g.lineTo(pts[r * cols + c].x, pts[r * cols + c].y);
+        g.strokePath();
+      }
+      for (let c = 0; c < cols; c++) {
+        g.beginPath();
+        g.moveTo(pts[c].x, pts[c].y);
+        for (let r = 1; r < rows; r++) g.lineTo(pts[r * cols + c].x, pts[r * cols + c].y);
+        g.strokePath();
+      }
+      g.lineStyle(LINE_THICKNESS, COLORS.line, 1);
+      g.strokeRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+    }
+    this.netsDirty = this.effects.netsMoving;
+  }
+
+  private drawEffects(): void {
+    const g = this.fxGfx;
+    g.clear();
+    for (const p of this.effects.particles) {
+      const fade = 1 - p.age / p.life;
+      g.fillStyle(p.color, p.alpha * (p.kind === 'dust' ? fade : Math.min(1, fade * 2)));
+      if (p.kind === 'dust') g.fillCircle(p.x, p.y, p.size);
+      else g.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size * 0.6);
+    }
   }
 
   private drawOnlineStatus(): void {
@@ -341,7 +534,10 @@ export class MatchScene extends Phaser.Scene {
     g.clear();
     g.fillStyle(0xffffff, 1);
     for (const post of BOUNDARY.posts) g.fillCircle(post.pos.x, post.pos.y, POST_RADIUS);
-    for (const p of state.players) this.drawPlayer(g, p, state.controlled[p.team] === p.id);
+    for (const p of state.players) {
+      this.drawPlayer(g, p, state.controlled[p.team] === p.id);
+      this.shirtLabels[p.id]?.setPosition(p.pos.x, p.pos.y + 1);
+    }
     for (const team of [0, 1] as const) {
       const cur = state.controlled[team] >= 0 ? state.players[state.controlled[team]] : undefined;
       const label = this.numberLabels[team];
@@ -349,13 +545,17 @@ export class MatchScene extends Phaser.Scene {
       if (cur) label.setText(String(cur.number)).setPosition(cur.pos.x, cur.pos.y - cur.radius - 10);
     }
     this.drawDebugOverlay(state);
-    // Ball: soft shadow, white body, dark outline.
-    g.fillStyle(0x000000, 0.25);
-    g.fillCircle(state.ball.pos.x + 2, state.ball.pos.y + 3, state.ball.radius);
+    // Ball: a hard shot looks lifted: it grows a little and its shadow slides away and shrinks. (Drawing only: the sim is 2D.)
+    const { ball } = state;
+    const lift = ballLift(Math.hypot(ball.vel.x, ball.vel.y));
+    const r = ball.radius * (1 + FX_LIFT_SCALE * lift);
+    g.fillStyle(0x000000, 0.28 - 0.12 * lift);
+    g.fillCircle(ball.pos.x + 2 + 6 * lift, ball.pos.y + 3 + 14 * lift, ball.radius * (1 - 0.2 * lift));
+    const by = ball.pos.y - 9 * lift;
     g.fillStyle(0xffffff, 1);
-    g.fillCircle(state.ball.pos.x, state.ball.pos.y, state.ball.radius);
+    g.fillCircle(ball.pos.x, by, r);
     g.lineStyle(2, 0x222222, 1);
-    g.strokeCircle(state.ball.pos.x, state.ball.pos.y, state.ball.radius);
+    g.strokeCircle(ball.pos.x, by, r);
   }
 
   private drawPlayer(g: Phaser.GameObjects.Graphics, p: PlayerState, controlled: boolean): void {
@@ -392,18 +592,25 @@ export class MatchScene extends Phaser.Scene {
     }
   }
 
-  private drawPitch(): void {
+  /** Striped grass, markings and goal frames, drawn once. The nets are drawn separately (they ripple). */
+  private drawPitch(): Phaser.GameObjects.Graphics {
     const g = this.add.graphics();
-    const left = PITCH_MARGIN;
-    const top = PITCH_MARGIN;
-    const right = left + PITCH_WIDTH;
-    const bottom = top + PITCH_HEIGHT;
+    const left = PITCH_LEFT;
+    const top = PITCH_TOP;
+    const right = PITCH_RIGHT;
+    const bottom = PITCH_BOTTOM;
     const midX = left + PITCH_WIDTH / 2;
     const midY = top + PITCH_HEIGHT / 2;
 
-    // Grass
-    g.fillStyle(COLORS.grass, 1);
+    // Grass: a darker surround, then mown stripes across the pitch.
+    g.fillStyle(COLORS.grassSurround, 1);
     g.fillRect(0, 0, PITCH_WIDTH + PITCH_MARGIN * 2, PITCH_HEIGHT + PITCH_MARGIN * 2);
+    const stripes = PITCH_STRIPES;
+    const stripeW = PITCH_WIDTH / stripes;
+    for (let i = 0; i < stripes; i++) {
+      g.fillStyle(i % 2 === 0 ? COLORS.grass : COLORS.grassStripe, 1);
+      g.fillRect(left + i * stripeW, top, stripeW + 0.5, PITCH_HEIGHT);
+    }
 
     // Lines
     g.lineStyle(LINE_THICKNESS, COLORS.line, 1);
@@ -413,18 +620,35 @@ export class MatchScene extends Phaser.Scene {
     g.fillStyle(COLORS.line, 1);
     g.fillCircle(midX, midY, 5);
 
-    // Penalty boxes
+    // Penalty boxes, penalty spots and the "D" arcs outside the boxes.
     const boxTop = midY - PENALTY_BOX_HEIGHT / 2;
     g.strokeRect(left, boxTop, PENALTY_BOX_WIDTH, PENALTY_BOX_HEIGHT);
     g.strokeRect(right - PENALTY_BOX_WIDTH, boxTop, PENALTY_BOX_WIDTH, PENALTY_BOX_HEIGHT);
-
-    // Goals (open towards the pitch, drawn outside the goal lines)
-    const goalTop = midY - GOAL_WIDTH / 2;
-    g.fillStyle(COLORS.goalNet, 0.25);
-    g.fillRect(left - GOAL_DEPTH, goalTop, GOAL_DEPTH, GOAL_WIDTH);
-    g.fillRect(right, goalTop, GOAL_DEPTH, GOAL_WIDTH);
-    g.lineStyle(LINE_THICKNESS, COLORS.line, 1);
-    g.strokeRect(left - GOAL_DEPTH, goalTop, GOAL_DEPTH, GOAL_WIDTH);
-    g.strokeRect(right, goalTop, GOAL_DEPTH, GOAL_WIDTH);
+    const spot = PENALTY_BOX_WIDTH * 0.7;
+    g.fillCircle(left + spot, midY, 4);
+    g.fillCircle(right - spot, midY, 4);
+    const arc = 55;
+    const span = Math.acos((PENALTY_BOX_WIDTH - spot) / arc);
+    g.beginPath();
+    g.arc(left + spot, midY, arc, -span, span);
+    g.strokePath();
+    g.beginPath();
+    g.arc(right - spot, midY, arc, Math.PI - span, Math.PI + span);
+    g.strokePath();
+    // Corner arcs.
+    const corner = 16;
+    g.beginPath();
+    g.arc(left, top, corner, 0, Math.PI / 2);
+    g.strokePath();
+    g.beginPath();
+    g.arc(right, top, corner, Math.PI / 2, Math.PI);
+    g.strokePath();
+    g.beginPath();
+    g.arc(left, bottom, corner, -Math.PI / 2, 0);
+    g.strokePath();
+    g.beginPath();
+    g.arc(right, bottom, corner, Math.PI, Math.PI * 1.5);
+    g.strokePath();
+    return g;
   }
 }

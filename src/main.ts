@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { sound } from './audio/sound';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config';
 import { DiagnosticsScene } from './render/DiagnosticsScene';
 import { HowToPlayScene } from './render/HowToPlayScene';
@@ -11,6 +12,9 @@ import { PauseScene } from './render/PauseScene';
 import { ResultsScene } from './render/ResultsScene';
 import { SettingsScene } from './render/SettingsScene';
 import { TeamPickScene } from './render/TeamPickScene';
+
+// Sound can only start after the first click or key press (browser autoplay rules).
+sound.attachUnlock();
 
 const game = new Phaser.Game({
   type: Phaser.AUTO,

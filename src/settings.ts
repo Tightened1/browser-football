@@ -1,6 +1,6 @@
 // Player settings, saved in localStorage. Everything that touches storage is wrapped in try/catch (private windows,
 // blocked storage and quota errors must never break the game); the validation is pure and unit-tested.
-import { AI_DIFFICULTY } from './config';
+import { AI_DIFFICULTY, CAMERA_DEFAULT_MODE, type CameraMode } from './config';
 import type { Difficulty } from './sim/types';
 import { DEFAULT_LOOK, sanitizeLook, type Look } from './teams';
 
@@ -35,13 +35,16 @@ export const RESERVED_KEYS: readonly string[] = ['Escape', 'Enter', 'NumpadEnter
 
 export const MATCH_LENGTH_OPTIONS = [1, 2, 3, 5] as const;
 export const DIFFICULTY_OPTIONS: readonly Difficulty[] = ['easy', 'normal', 'hard'];
+export const CAMERA_OPTIONS: readonly CameraMode[] = ['auto', 'wide', 'follow'];
 
 export interface Settings {
   /** Minutes per half. */
   halfMinutes: number;
   difficulty: Difficulty;
-  /** Sound volume, 0..100 (used by the audio in T10). */
+  /** Sound volume, 0..100. */
   volume: number;
+  /** Camera: follow the ball when the pitch is drawn small (auto), never (wide) or always (follow). */
+  camera: CameraMode;
   showControls: boolean;
   bindings: Bindings;
   /** The player's last team name and kit. */
@@ -51,7 +54,7 @@ export interface Settings {
 export function defaultSettings(): Settings {
   const bindings = {} as Bindings;
   for (const a of ACTIONS) bindings[a.id] = [...DEFAULT_BINDINGS[a.id]] as [string, string];
-  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, volume: 70, showControls: true, bindings, look: { ...DEFAULT_LOOK } };
+  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK } };
 }
 
 /** Left and right Shift (Ctrl, Alt) count as one key. */
@@ -88,6 +91,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     halfMinutes: (MATCH_LENGTH_OPTIONS as readonly unknown[]).includes(r.halfMinutes) ? (r.halfMinutes as number) : d.halfMinutes,
     difficulty: DIFFICULTY_OPTIONS.includes(r.difficulty as Difficulty) ? (r.difficulty as Difficulty) : d.difficulty,
     volume: typeof r.volume === 'number' && Number.isFinite(r.volume) ? Math.round(Math.min(100, Math.max(0, r.volume)) / 10) * 10 : d.volume,
+    camera: CAMERA_OPTIONS.includes(r.camera as CameraMode) ? (r.camera as CameraMode) : d.camera,
     showControls: typeof r.showControls === 'boolean' ? r.showControls : d.showControls,
     bindings: sanitizeBindings(r.bindings),
     look: sanitizeLook(r.look),

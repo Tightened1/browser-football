@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH } from '../config';
+import { GAME_HEIGHT, GOAL_PAUSE, GAME_WIDTH } from '../config';
 import { teamStyle } from './teamStyle';
 import { matchClock } from '../sim/rules';
 import type { GameState, RestartType } from '../sim/types';
@@ -132,8 +132,11 @@ export class HudScene extends Phaser.Scene {
     this.goalBanner.setVisible(!!goal);
     if (goal && goal.team !== undefined) {
       this.goalTeam.setText(`${teamStyle(goal.team).name}${goal.ownGoal ? ' (own goal)' : ''}`).setColor(hex(teamStyle(goal.team).kit)).setStroke('#ffffff', 5);
+      // Pops in big and settles, then keeps a gentle pulse.
+      const since = Math.max(0, GOAL_PAUSE - s.phaseTimer);
+      const pop = Math.max(0, 1 - since / 0.3) ** 2;
       const pulse = 1 + 0.06 * Math.sin(this.time.now / 90);
-      this.goalBanner.setScale(pulse);
+      this.goalBanner.setScale(pulse * (1 + 0.9 * pop)).setAngle(-4 * pop);
     }
 
     // Half-time overlay (full time has its own results screen).

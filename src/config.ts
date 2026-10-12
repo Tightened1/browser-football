@@ -24,6 +24,8 @@ export const CENTRE_CIRCLE_RADIUS = 80;
 export const PENALTY_BOX_WIDTH = 150;
 export const PENALTY_BOX_HEIGHT = 300;
 export const LINE_THICKNESS = 4;
+/** Mown stripes across the pitch. */
+export const PITCH_STRIPES = 14;
 
 /** Match timing: 2 halves of 3 minutes. */
 export const HALVES = 2;
@@ -153,7 +155,8 @@ export const COLORS = {
   playerOutline: 0x0b2a5e,
   playerFacing: 0xffffff,
   grass: 0x2e8b3d,
-  grassStripe: 0x329a43,
+  grassStripe: 0x35a346,
+  grassSurround: 0x23702f,
   line: 0xffffff,
   background: 0x111111,
   goalNet: 0xdddddd,
@@ -423,3 +426,55 @@ export const NET_FAST_CHANNEL_ID = 100;
  * loss (0..1) drops packets on the unreliable channel only. Override from the URL: ?lag=50&jitter=20&loss=0.05.
  */
 export const NET_SIMULATION = { latencyMs: 0, jitterMs: 0, loss: 0 };
+
+/* ---------------------------------------------------------------------------------------------
+ * Juice & audio (T10). Everything here is render/audio side: it reacts to the drawn state and its
+ * events and never touches the simulation, so the online guest gets exactly the same effects.
+ * ------------------------------------------------------------------------------------------- */
+
+/** Ball cues are found by watching the drawn ball: a velocity change this big (px/s) within CUE_WINDOW seconds is a kick or bounce. */
+export const CUE_MIN_DELTA_V = 240;
+export const CUE_WINDOW = 0.05;
+/** Minimum gap between two ball sounds (s). */
+export const CUE_COOLDOWN = 0.12;
+/** Ball speeds (px/s) mapped to kick "power" 0 (soft) .. 1 (hard). */
+export const CUE_POWER_MIN_SPEED = 250;
+export const CUE_POWER_MAX_SPEED = 1150;
+/** The ball is "at a post" within this gap beyond touching (px). */
+export const CUE_POST_REACH = 10;
+
+/** Audio levels (0..1, before the volume setting). */
+export const AUDIO_MASTER_GAIN = 0.9;
+export const AUDIO_CROWD_BASE = 0.05;
+export const AUDIO_CROWD_EXCITED = 0.14;
+
+/** Camera: 'auto' follows the ball only when the pitch is drawn small, 'wide' never, 'follow' always. */
+export type CameraMode = 'auto' | 'wide' | 'follow';
+export const CAMERA_DEFAULT_MODE: CameraMode = 'auto';
+/** 'auto' follows when the canvas is drawn at less than this fraction of the pitch's own size. */
+export const CAMERA_AUTO_MIN_SCALE = 0.8;
+export const CAMERA_FOLLOW_ZOOM = 1.5;
+/** Look-ahead: the camera aims at the ball plus its velocity times this (s), at most CAMERA_MAX_LOOKAHEAD px away. */
+export const CAMERA_LOOKAHEAD = 0.3;
+export const CAMERA_MAX_LOOKAHEAD = 150;
+/** How quickly the camera catches up (1/s, higher = snappier) and changes zoom. */
+export const CAMERA_SMOOTH = 4;
+export const CAMERA_ZOOM_SMOOTH = 3;
+
+/** Visuals. */
+export const FX_MAX_PARTICLES = 300;
+export const FX_DUST_COLOR = 0xd9d2a8;
+/** Ball "height" fake: speeds (px/s) over which a fast ball grows and its shadow detaches. */
+export const FX_LIFT_MIN_SPEED = 450;
+export const FX_LIFT_MAX_SPEED = 1100;
+export const FX_LIFT_SCALE = 0.35;
+/** Goal celebration: a light screen shake (ms, camera shake intensity), a zoom punch and confetti. */
+export const FX_SHAKE_MS = 260;
+export const FX_SHAKE_INTENSITY = 0.006;
+export const FX_ZOOM_PUNCH = 0.05;
+export const FX_CONFETTI_COUNT = 90;
+/** Net ripple: seconds it lasts, and how far (px) the net bulges at most. */
+export const FX_RIPPLE_SECONDS = 1.1;
+export const FX_RIPPLE_AMPLITUDE = 14;
+/** Net mesh spacing (px). */
+export const NET_CELL = 7;

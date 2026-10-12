@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH } from '../config';
 import {
   ACTIONS,
+  CAMERA_OPTIONS,
   DEFAULT_BINDINGS,
   DIFFICULTY_OPTIONS,
   MATCH_LENGTH_OPTIONS,
@@ -14,13 +15,15 @@ import {
   type ActionId,
   type Bindings,
 } from '../settings';
+import { sound } from '../audio/sound';
 import { button, drawBackdrop, Focus, heading, label, UI_COLORS, type Button, type FocusItem } from './ui';
 
 const CX = GAME_WIDTH / 2;
 const VALUE_Y = 180;
 const VALUE_STEP = 46;
-const KEYS_Y = 415;
-const KEYS_STEP = 38;
+const KEYS_Y = 450;
+const KEYS_STEP = 35;
+const CAMERA_LABEL = { auto: 'Auto (follow ball on small screens)', wide: 'Whole pitch', follow: 'Follow the ball' } as const;
 
 const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 /** The next value in a list (wrapping), `dir` steps away from the current one. */
@@ -37,6 +40,7 @@ export class SettingsScene extends Phaser.Scene {
   private difficulty!: Button;
   private volume!: Button;
   private overlay!: Button;
+  private camera!: Button;
   private readonly slots = new Map<string, Button>();
   private capturing: { action: ActionId; slot: 0 | 1 } | null = null;
 
@@ -57,10 +61,15 @@ export class SettingsScene extends Phaser.Scene {
     label(this, CX, 135, 24, UI_COLORS.warn, true).setText('MATCH');
     this.length = value(VALUE_Y, (d) => this.set({ halfMinutes: step(MATCH_LENGTH_OPTIONS, settings.halfMinutes, d) }));
     this.difficulty = value(VALUE_Y + VALUE_STEP, (d) => this.set({ difficulty: step(DIFFICULTY_OPTIONS, settings.difficulty, d) }));
-    this.volume = value(VALUE_Y + VALUE_STEP * 2, (d) => this.set({ volume: Math.min(100, Math.max(0, settings.volume + d * 10)) }));
-    this.overlay = value(VALUE_Y + VALUE_STEP * 3, () => this.set({ showControls: !settings.showControls }));
+    this.volume = value(VALUE_Y + VALUE_STEP * 2, (d) => {
+      this.set({ volume: Math.min(100, Math.max(0, settings.volume + d * 10)) });
+      sound.applyVolume();
+      sound.blip();
+    });
+    this.camera = value(VALUE_Y + VALUE_STEP * 3, (d) => this.set({ camera: step(CAMERA_OPTIONS, settings.camera, d) }));
+    this.overlay = value(VALUE_Y + VALUE_STEP * 4, () => this.set({ showControls: !settings.showControls }));
 
-    label(this, CX, 372, 24, UI_COLORS.warn, true).setText('KEY BINDINGS');
+    label(this, CX, 412, 24, UI_COLORS.warn, true).setText('KEY BINDINGS');
     ACTIONS.forEach((a, i) => {
       const y = KEYS_Y + i * KEYS_STEP;
       const text = label(this, CX - 240, y, 21, UI_COLORS.text).setText(a.label);
@@ -72,10 +81,10 @@ export class SettingsScene extends Phaser.Scene {
       }
     });
 
-    const reset = button(this, CX - 130, 765, 'Reset keys', () => this.resetKeys(), { size: 22, width: 210, secondary: true });
-    const back = button(this, CX + 130, 765, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 210 });
+    const reset = button(this, CX - 130, 768, 'Reset keys', () => this.resetKeys(), { size: 22, width: 210, secondary: true });
+    const back = button(this, CX + 130, 768, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 210 });
     items.push({ button: reset }, { button: back });
-    this.message = label(this, CX, 722, 20, UI_COLORS.warn).setWordWrapWidth(1000);
+    this.message = label(this, CX, 733, 18, UI_COLORS.warn).setWordWrapWidth(1000);
     label(this, CX, GAME_HEIGHT - 14, 14, UI_COLORS.muted).setText('Esc: back · reserved keys (Esc, Enter, Tab, F-keys, `, N) cannot be bound');
 
     this.focus = new Focus(this, items);
@@ -94,6 +103,7 @@ export class SettingsScene extends Phaser.Scene {
     this.length.setLabel(`Match length:   ◀  ${settings.halfMinutes} min halves  ▶`);
     this.difficulty.setLabel(`AI difficulty:   ◀  ${cap(settings.difficulty)}  ▶`);
     this.volume.setLabel(`Sound volume:   ◀  ${settings.volume}%  ▶`);
+    this.camera.setLabel(`Camera:   ◀  ${CAMERA_LABEL[settings.camera]}  ▶`);
     this.overlay.setLabel(`Controls overlay:   ◀  ${settings.showControls ? 'On' : 'Off'}  ▶`);
     for (const a of ACTIONS) {
       for (const slot of [0, 1] as const) {
