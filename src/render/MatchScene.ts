@@ -11,6 +11,7 @@ import {
   PITCH_HEIGHT,
   PITCH_MARGIN,
   PITCH_WIDTH,
+  AI_VS_AI,
   DEBUG_CLICK_KICK,
   DEBUG_KICK_SPEED,
   POST_RADIUS,
@@ -21,7 +22,18 @@ import {
 import { KeyboardInput } from '../input/keyboard';
 import { BOUNDARY } from '../sim/physics';
 import { createInitialState, step } from '../sim/simulation';
-import type { GameState, InputFrame, PlayerState } from '../sim/types';
+import { roleOf } from '../sim/ai';
+import type { Difficulty, GameState, InputFrame, PlayerState } from '../sim/types';
+
+const ROLE_LABEL = { keeper: 'GK', defender: 'DEF', attacker: 'ATT' } as const;
+
+/** Match options from the URL: ?aivsai to spectate, ?difficulty=easy|normal|hard for the AI. */
+function urlOptions(): { aiVsAi: boolean; difficulty?: Difficulty } {
+  const q = new URLSearchParams(window.location.search);
+  const d = q.get('difficulty');
+  const difficulty = d === 'easy' || d === 'normal' || d === 'hard' ? d : undefined;
+  return { aiVsAi: AI_VS_AI || q.has('aivsai'), difficulty };
+}
 
 /** Draws the match. Reads state only; never changes it. */
 export class MatchScene extends Phaser.Scene {
@@ -30,16 +42,25 @@ export class MatchScene extends Phaser.Scene {
   private keyboard!: KeyboardInput;
   private dynamic!: Phaser.GameObjects.Graphics;
   private readonly numberLabels: Phaser.GameObjects.Text[] = [];
+  private aiVsAi = false;
+  /** AI debug overlay (toggle with F2 or `): each AI player's role and intent, plus team modes. */
+  private debugAi = false;
+  private debugGfx!: Phaser.GameObjects.Graphics;
+  private readonly debugLabels: Phaser.GameObjects.Text[] = [];
+  private debugTeams!: Phaser.GameObjects.Text;
 
   constructor() {
     super('MatchScene');
   }
 
   create(): void {
-    this.state = createInitialState();
+    const opts = urlOptions();
+    this.aiVsAi = opts.aiVsAi;
+    this.state = createInitialState({ aiVsAi: opts.aiVsAi, difficulty: opts.difficulty && [opts.difficulty, opts.difficulty] });
     this.accumulator = 0;
     this.drawPitch();
     this.dynamic = this.add.graphics();
+    this.createDebugOverlay();
     this.numberLabels.length = 0;
     for (const team of [0, 1]) {
       const label = this.add
@@ -77,7 +98,52 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private collectInputs(): InputFrame[] {
-    return [this.keyboard.sample()];
+    const local = this.keyboard.sample();
+    return this.aiVsAi ? [] : [local];
+  }
+
+  private createDebugOverlay(): void {
+    this.debugGfx = this.add.graphics().setDepth(20);
+    this.debugLabels.length = 0;
+    const style = { fontFamily: 'monospace', fontSize: '11px', color: '#ffffff', backgroundColor: '#000000a0', padding: { x: 2, y: 1 } };
+    for (let i = 0; i < this.state.players.length; i++) {
+      this.debugLabels.push(this.add.text(0, 0, '', style).setOrigin(0.5, 0).setDepth(21).setVisible(false));
+    }
+    this.debugTeams = this.add.text(8, 6, '', { ...style, fontSize: '13px' }).setDepth(21).setVisible(false);
+    const toggle = (): void => {
+      this.debugAi = !this.debugAi;
+    };
+    this.input.keyboard?.on('keydown-F2', toggle);
+    this.input.keyboard?.on('keydown-BACKTICK', toggle);
+  }
+
+  /** Read-only: role, intent and target of every AI player, and each team's mode and counters. */
+  private drawDebugOverlay(state: GameState): void {
+    const g = this.debugGfx;
+    g.clear();
+    const on = this.debugAi;
+    this.debugTeams.setVisible(on);
+    state.players.forEach((p, i) => {
+      const label = this.debugLabels[i];
+      label.setVisible(on);
+      if (!on) return;
+      const m = state.ai.players[i];
+      label.setText(`${ROLE_LABEL[roleOf(p)]} ${m.intent}`).setPosition(p.pos.x, p.pos.y + p.radius + 4);
+      if (m.intent === 'human') return;
+      g.lineStyle(1, TEAMS[p.team].kit, 0.9);
+      g.lineBetween(p.pos.x, p.pos.y, m.target.x, m.target.y);
+      g.strokeCircle(m.target.x, m.target.y, 4);
+      if (m.intent === 'pass' || m.intent === 'shoot' || m.intent === 'clear' || m.intent === 'distribute') {
+        g.lineStyle(2, 0xffff00, 0.8);
+        g.lineBetween(state.ball.pos.x, state.ball.pos.y, m.kickTarget.x, m.kickTarget.y);
+      }
+    });
+    if (on) {
+      const t = state.ai.teams;
+      const line = (i: 0 | 1): string =>
+        `${TEAMS[i].name} [${state.ai.difficulty[i]}] ${t[i].mode.padEnd(13)} passes ${t[i].passes}  shots ${t[i].shots}  tackles ${t[i].tackles}  saves ${t[i].saves}`;
+      this.debugTeams.setText(`${line(0)}\n${line(1)}\nAI debug (F2)`);
+    }
   }
 
   /** Read-only: draws the given state. */
@@ -93,6 +159,7 @@ export class MatchScene extends Phaser.Scene {
       label.setVisible(!!cur);
       if (cur) label.setText(String(cur.number)).setPosition(cur.pos.x, cur.pos.y - cur.radius - 10);
     }
+    this.drawDebugOverlay(state);
     // Ball: soft shadow, white body, dark outline.
     g.fillStyle(0x000000, 0.25);
     g.fillCircle(state.ball.pos.x + 2, state.ball.pos.y + 3, state.ball.radius);

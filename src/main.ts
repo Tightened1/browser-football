@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config';
 import { MatchScene } from './render/MatchScene';
 
-new Phaser.Game({
+const game = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
   width: GAME_WIDTH,
@@ -14,3 +14,6 @@ new Phaser.Game({
   },
   scene: [MatchScene],
 });
+
+// Dev only: lets the browser console inspect the running game.
+if (import.meta.env.DEV) (window as unknown as { __game: Phaser.Game }).__game = game;

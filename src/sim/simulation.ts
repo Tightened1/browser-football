@@ -45,9 +45,10 @@ import {
   moveCircle,
   speedOf,
 } from './physics';
-import { aiInput, formationPosition } from './ai';
+import { cloneAiState, computeAiInputs, createAiState, formationPosition } from './ai';
 import { applySwitching, updateTouches } from './control';
-import type { BallState, GameState, InputFrame, PlayerRole, PlayerState, TeamId } from './types';
+import { updateGoalReset } from './rules';
+import type { BallState, Difficulty, GameState, InputFrame, PlayerRole, PlayerState, TeamId } from './types';
 
 export const NEUTRAL_INPUT: InputFrame = {
   seq: 0,
@@ -87,8 +88,17 @@ export function createPlayer(
   };
 }
 
-/** Two full teams in formation, ball on the centre spot. Team 0 (home) is human-controlled. */
-export function createInitialState(): GameState {
+export interface MatchOptions {
+  /** No human on either team (spectate). Default: home is human-controlled. */
+  aiVsAi?: boolean;
+  /** AI difficulty per team (default from config.ts). */
+  difficulty?: [Difficulty, Difficulty];
+  /** Seed for the AI's random number generator. */
+  seed?: number;
+}
+
+/** Two full teams in formation, ball on the centre spot. Team 0 (home) is human-controlled unless aiVsAi. */
+export function createInitialState(options: MatchOptions = {}): GameState {
   const midX = PITCH_LEFT + PITCH_WIDTH / 2;
   const midY = PITCH_TOP + PITCH_HEIGHT / 2;
   const attackDir: [number, number] = [1, -1];
@@ -99,14 +109,18 @@ export function createInitialState(): GameState {
       players.push(createPlayer(players.length, team, pos.x, pos.y, slot === 0 ? 'keeper' : 'outfield', slot));
     }
   }
+  // Home's human starts on its front-most outfield player; away has no human.
+  const controlled: [number, number] = options.aiVsAi ? [-1, -1] : [PLAYERS_PER_TEAM - 1, -1];
   return {
     tick: 0,
     ball: { pos: { x: midX, y: midY }, vel: { x: 0, y: 0 }, radius: BALL_RADIUS },
     players,
-    controlled: [PLAYERS_PER_TEAM - 1, -1], // home's front-most outfield player; away has no human
+    controlled,
     attackDir,
     lastTouch: null,
     prevSwitch: [false, false],
+    ai: createAiState(players, controlled, options.difficulty, options.seed),
+    goalTimer: 0,
   };
 }
 
@@ -115,6 +129,7 @@ export function createSoloState(x: number, y: number): GameState {
   const s = createInitialState();
   s.players = [createPlayer(0, 0, x, y)];
   s.controlled = [0, -1];
+  s.ai = createAiState(s.players, s.controlled);
   return s;
 }
 
@@ -127,6 +142,8 @@ export function cloneState(s: GameState): GameState {
     attackDir: [s.attackDir[0], s.attackDir[1]],
     lastTouch: s.lastTouch ? { ...s.lastTouch } : null,
     prevSwitch: [s.prevSwitch[0], s.prevSwitch[1]],
+    ai: cloneAiState(s.ai),
+    goalTimer: s.goalTimer,
   };
 }
 
@@ -159,6 +176,7 @@ function maybeStartTackle(p: PlayerState, input: InputFrame, ball: BallState): v
   const pressed = input.tackle && !p.prevTackle;
   if (!pressed || p.tackleTimer > 0 || p.tackleCooldown > 0) return;
   if (distance(p, ball) <= p.radius + ball.radius + KICK_REACH) return; // has the ball: shoot/pass instead
+  if (Math.hypot(input.moveX, input.moveY) > 1e-6) p.facing = Math.atan2(input.moveY, input.moveX); // slide where steered
   p.tackleTimer = TACKLE_DURATION;
   p.tackleCooldown = TACKLE_COOLDOWN;
 }
@@ -213,7 +231,8 @@ function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt
 
   if (sliding) {
     p.charge = 0;
-    if (d <= contact + DRIBBLE_REACH && p.touchTimer === 0) {
+    // A keeper's slide is a dive: it blocks the ball with its body (see step) rather than knocking it on.
+    if (p.role !== 'keeper' && d <= contact + DRIBBLE_REACH && p.touchTimer === 0) {
       // Slide hits the ball: knock it away, mostly along the slide, partly towards where it sits.
       const tx = d > 1e-9 ? (ball.pos.x - p.pos.x) / d : Math.cos(p.facing);
       const ty = d > 1e-9 ? (ball.pos.y - p.pos.y) / d : Math.sin(p.facing);
@@ -282,12 +301,17 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   const ball = next.ball;
 
   applySwitching(next, inputs);
-  const used = next.players.map((p) => {
-    const human = next.controlled[p.team] === p.id ? inputs[p.team] : undefined;
-    return human ?? aiInput(next, p);
-  });
+  // The AI produces InputFrames like a human would; a controlled player with no human input this tick is AI-driven.
+  const human: [boolean, boolean] = [next.controlled[0] >= 0 && !!inputs[0], next.controlled[1] >= 0 && !!inputs[1]];
+  const ai = computeAiInputs(next, human, dt);
+  const used = next.players.map((p, i) => (human[p.team] && next.controlled[p.team] === p.id ? inputs[p.team]! : ai[i]));
 
-  next.players.forEach((p, i) => {
+  // When two players touch the ball in the same tick the later one wins, so alternate the order each tick
+  // to keep contests fair between the teams (still deterministic).
+  const order = next.players.map((_, i) => i);
+  if (state.tick % 2 === 1) order.reverse();
+  for (const i of order) {
+    const p = next.players[i];
     const input = used[i];
     maybeStartTackle(p, input, ball);
     updatePlayer(p, input, dt);
@@ -295,7 +319,7 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
     p.prevPass = input.pass;
     p.prevShoot = input.shoot;
     p.prevTackle = input.tackle;
-  });
+  }
   resolvePlayerCollisions(next.players);
 
   applyRollingFriction(ball, dt);
@@ -323,6 +347,7 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   }
 
   updateTouches(next);
+  updateGoalReset(next, dt);
   next.tick = state.tick + 1;
   return next;
 }

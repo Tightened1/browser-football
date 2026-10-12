@@ -1,4 +1,5 @@
 // All tunable constants live here.
+import type { Difficulty } from './sim/types';
 
 /** Pitch playing area in world units (pixels at 1x). */
 export const PITCH_WIDTH = 1050;
@@ -153,3 +154,108 @@ export const COLORS = {
   background: 0x111111,
   goalNet: 0xdddddd,
 } as const;
+/* ---------------------------------------------------------------------------------------------
+ * AI (T04). The AI only ever produces InputFrames, so it can never move faster than a human.
+ * ------------------------------------------------------------------------------------------- */
+
+export type { Difficulty } from './sim/types';
+
+export interface AiProfile {
+  /** Seconds between decisions (also how long a player takes to react to a new situation). */
+  reactionTime: number;
+  /** Max random error added to pass and shot directions (radians). */
+  aimError: number;
+  /** Max movement input magnitude (0..1); 1 = a human's top speed. */
+  speed: number;
+  /** Seconds the keeper takes to react to a shot before moving/diving. */
+  keeperReaction: number;
+  /** Max distance (px) the keeper misjudges a shot's line by. */
+  keeperError: number;
+  /** Keeper's max movement input (0..1) when reacting to a shot (keepers dive rather than sprint across). */
+  keeperSpeed: number;
+  /** Chance (0..1) that a presser in range commits to a tackle on each decision. */
+  tackleChance: number;
+  /** Random noise added to on-ball decision scores (bigger = more erratic choices). */
+  decisionNoise: number;
+  /** How many players press the ball carrier (1 or 2). */
+  pressers: number;
+}
+
+export const AI_PROFILES: Record<Difficulty, AiProfile> = {
+  easy: { reactionTime: 0.38, aimError: 0.14, speed: 0.82, keeperReaction: 0.22, keeperError: 30, keeperSpeed: 0.55, tackleChance: 0.25, decisionNoise: 0.35, pressers: 1 },
+  normal: { reactionTime: 0.24, aimError: 0.08, speed: 0.92, keeperReaction: 0.15, keeperError: 20, keeperSpeed: 0.65, tackleChance: 0.4, decisionNoise: 0.2, pressers: 1 },
+  hard: { reactionTime: 0.14, aimError: 0.04, speed: 1, keeperReaction: 0.1, keeperError: 12, keeperSpeed: 0.75, tackleChance: 0.55, decisionNoise: 0.1, pressers: 2 },
+};
+/** Difficulty of a team with no human (the opponents, or both teams in AI vs AI). */
+export const AI_DIFFICULTY: Difficulty = 'normal';
+/** Difficulty of the AI teammates of a human player. */
+export const AI_TEAMMATE_DIFFICULTY: Difficulty = 'normal';
+/** Both teams AI-controlled (spectate). Can also be turned on with ?aivsai in the URL. */
+export const AI_VS_AI = false;
+/** Seed for the AI's random number generator (stored in the game state, so the AI is deterministic). */
+export const AI_SEED = 20261012;
+
+/** Team modes: seconds a team stays "transitioning" after possession changes hands. */
+export const AI_TRANSITION_TIME = 0.8;
+/** The last toucher still "has" the ball within this gap beyond touching (covers dribble touches, px). */
+export const AI_POSSESSION_SLACK = 26;
+/** Ball prediction for interceptions: horizon (s) and sample step (s). */
+export const AI_PREDICT_HORIZON = 1.6;
+export const AI_PREDICT_STEP = 0.1;
+
+/** Off-ball shape. Defenders stay at least this far behind the ball when attacking (px). */
+export const AI_DEF_BEHIND_BALL = 230;
+/** ...and never further upfield than this fraction of the pitch from their own goal. */
+export const AI_DEF_MAX_ADVANCE = 0.55;
+/** Attackers try to stay this far ahead of the ball when attacking (px). */
+export const AI_ATT_AHEAD_OF_BALL = 130;
+/** Space-finding: radius of candidate spots around an attacker's base position (px). */
+export const AI_SPACE_SEARCH_RADIUS = 90;
+/** Chance per decision that an attacker with space ahead starts a forward run, and its length (s). */
+export const AI_RUN_CHANCE = 0.25;
+export const AI_RUN_TIME = 1.6;
+/** Teammates' targets closer than this push apart, so players don't bunch (px). */
+export const AI_SEPARATION = 90;
+/** Marking: gap kept goal-side of the marked opponent, for defenders and for attackers helping (px). */
+export const AI_MARK_DISTANCE_DEF = 32;
+export const AI_MARK_DISTANCE_ATT = 70;
+/** Fraction of the profile speed used for calm positional moves (pressing/chasing use full speed). */
+export const AI_SHAPE_SPEED = 0.85;
+
+/** Pressing: the presser aims for a spot this far goal-side of the carrier (px). */
+export const AI_PRESS_OFFSET = 34;
+/** A second presser joins when the carrier is within this distance of our goal (px), even if pressers = 1. */
+export const AI_DANGER_ZONE = 330;
+/** Start a slide tackle when the ball is within this distance (px) and roughly in front. */
+export const AI_TACKLE_RANGE = 62;
+
+/** On the ball. Max shooting distance from the goal centre (px). */
+export const AI_SHOOT_RANGE = 400;
+/** Minimum angle (radians) the goal mouth must cover from the shooter's spot. */
+export const AI_MIN_SHOT_ANGLE = 0.12;
+/** An opponent within this distance counts as pressure on the carrier (px). */
+export const AI_PRESSURE_RADIUS = 75;
+/** A pass/shot lane is blocked by an opponent within this distance of it, plus a growth per px of lane. */
+export const AI_LANE_WIDTH = 26;
+export const AI_LANE_GROWTH = 0.17;
+/** Pass lengths outside this range are penalised (px). */
+export const AI_PASS_MIN = 70;
+export const AI_PASS_MAX = 620;
+/** Speed (px/s) a pass should still have when it reaches the receiver. */
+export const AI_PASS_ARRIVE_SPEED = 240;
+/** Give up on a pass/shot that hasn't been struck after this long (s). */
+export const AI_KICK_TIMEOUT = 1.2;
+/** Extra score for passing to the human on the AI teammates' side. */
+export const AI_PASS_TO_HUMAN_BONUS = 0.15;
+
+/** Keeper. Max distance it comes off its line when positioning on the angle (px). */
+export const AI_KEEPER_MAX_OUT = 62;
+/** It rushes out for a loose ball (or a carrier) within this distance of its goal line (px). */
+export const AI_KEEPER_RUSH_RANGE = 170;
+/** A ball moving at least this fast towards goal counts as a shot (px/s). */
+export const AI_SHOT_DETECT_SPEED = 260;
+/** Only react to shots arriving within this time (s). */
+export const AI_SHOT_DETECT_TIME = 0.9;
+
+/** Temporary (until T05 adds proper rules): seconds a ball stays in the net before a kickoff reset. */
+export const GOAL_RESET_DELAY = 1.2;

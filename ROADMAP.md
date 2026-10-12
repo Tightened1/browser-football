@@ -64,6 +64,9 @@ tests/                 Vitest tests for sim/
 | Pass (tap) / Shoot (hold to charge, release) | `X` / `Space` |
 | Tackle / slide (no ball) | `C` |
 | Switch player (no ball) | `Z` / `Shift` |
+| AI debug overlay (roles, intents, team modes) | `F2` / `` ` `` |
+
+Dev URL options: `?aivsai` (both teams AI, spectate) and `?difficulty=easy|normal|hard`.
 
 ---
 
@@ -90,7 +93,7 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T01 | Pitch, ball & core physics | T00 | Sonnet 5.5 | [x] |
 | T02 | Player control: move, dribble, pass, shoot, tackle | T01 | Sonnet 5.5 | [x] |
 | T03 | Teams, keepers & player switching | T02 | Sonnet 5.5 | [x] |
-| T04 | AI teammates & opponents | T03 | **Opus 5.5** | [ ] |
+| T04 | AI teammates & opponents | T03 | **Opus 5.5** | [x] |
 | T05 | Match rules: kickoff, goals, out of play, timer, HUD | T03 | Sonnet 5.5 | [ ] |
 | T06 | Networking: PeerJS host/join lobby with room codes | T05 | **Opus 5.5** | [ ] |
 | T07 | Netcode: input sending, snapshots, interpolation, disconnects | T06 | **Opus 5.5** | [ ] |
@@ -432,3 +435,4 @@ Finally, mark T12 as [x] in the ROADMAP.md task queue, commit, push and give me 
 
 ## 7. Change log
 - 2026-10-09 — Roadmap created. Decisions: online 1v1 with AI teammates, top-down, keyboard, GitHub Pages.
+- 2026-10-12 — T04: role/state AI in `sim/ai.ts` (memory + seeded RNG live in `GameState.ai`); difficulty profiles and `AI_VS_AI` in `config.ts`. Sim tweaks: a tackle slides in the steered direction, a keeper's slide is a dive (blocks, doesn't knock the ball on), and players are processed in alternating order each tick so ball contests are fair between teams. `sim/rules.ts` has a **temporary** goal reset (ball in the net → kickoff positions after 1.2 s, no score) that T05 should replace.

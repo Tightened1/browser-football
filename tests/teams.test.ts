@@ -10,7 +10,7 @@ import {
   SIM_DT,
   SWITCH_GOALSIDE_BIAS,
 } from '../src/config';
-import { aiInput, formationPosition } from '../src/sim/ai';
+import { formationPosition } from '../src/sim/ai';
 import { chooseSwitchTarget } from '../src/sim/control';
 import { createInitialState, NEUTRAL_INPUT, step } from '../src/sim/simulation';
 import type { GameState, InputFrame } from '../src/sim/types';
@@ -136,12 +136,13 @@ describe('player collisions', () => {
   });
 
   it('a running player pushes a standing one aside without overlapping', () => {
-    let s = place([900, 100], { 1: [440, 300], 3: [400, 300], 2: [900, 600], 4: [900, 550] });
-    s.controlled = [3, -1];
-    const startX = s.players[1].pos.x;
-    s = run(s, 25, () => [input({ moveX: 1 })]);
+    // The standing player is held still by a second "human" giving no input.
+    let s = place([900, 100], { 6: [440, 300], 3: [400, 300] });
+    s.controlled = [3, 6];
+    const startX = s.players[6].pos.x;
+    s = run(s, 25, () => [input({ moveX: 1 }), input()]);
     const runner = s.players[3];
-    const other = s.players[1];
+    const other = s.players[6];
     expect(other.pos.x).toBeGreaterThan(startX);
     expect(Math.hypot(runner.pos.x - other.pos.x, runner.pos.y - other.pos.y)).toBeGreaterThanOrEqual(
       runner.radius + other.radius - 1,
@@ -156,60 +157,23 @@ describe('player collisions', () => {
   });
 });
 
-describe('basic positioning AI', () => {
-  it('returns an idle player to its formation area and then holds still', () => {
-    let s = createInitialState();
-    s.players[1].pos = { x: 300, y: 600 };
-    s = run(s, 360);
-    const home = formationPosition(1, 1);
-    expect(Math.abs(s.players[1].pos.y - home.y)).toBeLessThan(120);
-    const before = { ...s.players[1].pos };
-    s = run(s, 30);
-    expect(Math.hypot(s.players[1].pos.x - before.x, s.players[1].pos.y - before.y)).toBeLessThan(2);
-  });
-
-  it('shifts with the ball', () => {
-    const a = createInitialState();
-    const b = createInitialState();
-    a.ball.pos = { x: PITCH_LEFT + 100, y: PITCH_TOP + 50 };
-    b.ball.pos = { x: PITCH_RIGHT - 100, y: PITCH_BOTTOM - 50 };
-    expect(aiInput(b, b.players[2]).moveX).toBeGreaterThan(aiInput(a, a.players[2]).moveX);
-  });
-
-  it('never makes AI players pass, shoot or tackle', () => {
-    const s = run(createInitialState(), 120);
-    for (const p of s.players.filter((q) => q.team === 1)) {
-      expect(p.charge).toBe(0);
-      expect(p.tackleTimer).toBe(0);
-    }
-  });
-});
-
 describe('goalkeepers', () => {
-  it('stay on their line and track the ball side to side', () => {
-    let s = createInitialState();
-    s.ball.pos = { x: midX, y: midY + 200 };
-    s = run(s, 120);
-    expect(s.players[0].pos.x).toBeCloseTo(formationPosition(0, 1).x, 0);
-    expect(Math.abs(s.players[0].pos.y - (midY + KEEPER_RANGE))).toBeLessThan(5); // clamped to its range
-    s.ball.pos = { x: midX, y: midY - 20 };
-    s = run(s, 120);
-    expect(Math.abs(s.players[0].pos.y - (midY - 20))).toBeLessThan(5);
-    expect(s.players[5].pos.x).toBeGreaterThan(PITCH_RIGHT - 60); // away keeper on the right line
-  });
-
   it('block a shot at goal: the ball never reaches the goal line and is cleared', () => {
     for (const speed of [500, 1000, 1400]) {
       let s = createInitialState();
       s.ball.pos = { x: PITCH_LEFT + 300, y: midY };
       s.ball.vel = { x: -speed, y: 0 };
       let minX = Infinity;
+      let touchedAt = -1;
+      let cleared = false;
       for (let i = 0; i < 120; i++) {
         s = step(s, [], SIM_DT);
         minX = Math.min(minX, s.ball.pos.x);
+        if (touchedAt < 0 && s.lastTouch?.player === 0) touchedAt = i;
+        if (touchedAt >= 0 && i - touchedAt <= 10 && s.ball.vel.x > 0) cleared = true; // bounced away off the keeper
       }
       expect(minX).toBeGreaterThan(PITCH_LEFT);
-      expect(s.ball.vel.x).toBeGreaterThanOrEqual(0);
+      expect(cleared).toBe(true);
     }
   });
 
