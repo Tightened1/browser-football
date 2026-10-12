@@ -93,6 +93,8 @@ export function createPlayer(
 export interface MatchOptions {
   /** No human on either team (spectate). Default: home is human-controlled. */
   aiVsAi?: boolean;
+  /** Which teams have a human (default: home only). Ignored if aiVsAi. */
+  humans?: [boolean, boolean];
   /** AI difficulty per team (default from config.ts). */
   difficulty?: [Difficulty, Difficulty];
   /** Seed for the AI's random number generator. */
@@ -103,7 +105,7 @@ export interface MatchOptions {
 
 /**
  * A real match: two full teams in formation, in the pre-kickoff phase. Play starts after KICKOFF_DELAY with
- * the kickoff team on the centre spot. Team 0 (home) is human-controlled unless aiVsAi.
+ * the kickoff team on the centre spot. Team 0 (home) is human-controlled unless `humans` or aiVsAi say otherwise.
  */
 export function createMatchState(options: MatchOptions = {}): GameState {
   const s = createInitialState(options);
@@ -127,8 +129,9 @@ export function createInitialState(options: MatchOptions = {}): GameState {
       players.push(createPlayer(players.length, team, pos.x, pos.y, slot === 0 ? 'keeper' : 'outfield', slot));
     }
   }
-  // Home's human starts on its front-most outfield player; away has no human.
-  const controlled: [number, number] = options.aiVsAi ? [-1, -1] : [PLAYERS_PER_TEAM - 1, -1];
+  // Each human starts on their team's front-most outfield player (home only, by default).
+  const humans = options.aiVsAi ? [false, false] : (options.humans ?? [true, false]);
+  const controlled: [number, number] = [0, 1].map((t) => (humans[t] ? t * PLAYERS_PER_TEAM + PLAYERS_PER_TEAM - 1 : -1)) as [number, number];
   return {
     tick: 0,
     ball: { pos: { x: midX, y: midY }, vel: { x: 0, y: 0 }, radius: BALL_RADIUS },

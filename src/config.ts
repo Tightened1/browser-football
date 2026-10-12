@@ -283,3 +283,57 @@ export const RESTART_TAKER_GAP = 2;
 export const RESTART_PLAYED_DISTANCE = 3;
 /** How many recent events the state keeps. */
 export const MAX_EVENTS = 40;
+
+/* ---------------------------------------------------------------------------------------------
+ * Networking (T06). PeerJS: the broker only introduces the two browsers (signalling); game data
+ * then flows directly between them over a WebRTC data channel.
+ * ------------------------------------------------------------------------------------------- */
+
+/** Signalling broker: the free public PeerJS cloud server. */
+export const PEER_SERVER = { host: '0.peerjs.com', port: 443, path: '/', secure: true } as const;
+/** PeerJS log level in the browser console: 0 none, 1 errors, 2 warnings, 3 everything. */
+export const PEER_DEBUG_LEVEL = 1;
+/** The broker is shared with every other PeerJS app, so our peer IDs get a unique prefix. */
+export const PEER_ID_PREFIX = 'browser-football-';
+
+/** STUN: lets each browser discover its public address, so a direct connection can be made. */
+export const STUN_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+
+/* ===== TURN SERVERS (T08) ======================================================================
+ * TURN relays the game data when a direct connection is impossible (e.g. strict corporate or
+ * mobile networks). None are configured yet, so those networks will fail to connect.
+ * T08 adds entries here, for example:
+ *   { urls: 'turn:<host>:443?transport=tcp', username: '<user>', credential: '<password>' }
+ * ============================================================================================= */
+export const TURN_SERVERS: RTCIceServer[] = [];
+
+/** Everything handed to WebRTC (RTCConfiguration.iceServers). */
+export const ICE_SERVERS: RTCIceServer[] = [...STUN_SERVERS, ...TURN_SERVERS];
+
+/** Room codes look like PASS-4827: a word from this list plus digits (no 0/1, and no I/L/O in the words). */
+export const ROOM_CODE_WORDS = [
+  'PASS', 'SAVE', 'TEAM', 'NETS', 'KEEP', 'HEAD', 'MARK', 'RUSH',
+  'TURF', 'FANS', 'DASH', 'JUMP', 'BEND', 'PUNT', 'CAPS', 'STAR',
+] as const;
+export const ROOM_CODE_DIGITS = '23456789';
+export const ROOM_CODE_DIGIT_COUNT = 4;
+/** If a generated room code is already in use, try this many new ones before giving up. */
+export const ROOM_CODE_ATTEMPTS = 4;
+
+/** Give up if the broker hasn't registered us within this time (ms). */
+export const NET_BROKER_TIMEOUT_MS = 10_000;
+/** Give up if the peer-to-peer connection hasn't opened within this time (ms). */
+export const NET_CONNECT_TIMEOUT_MS = 15_000;
+/** After the connection opens, the hello/welcome exchange must finish within this time (ms). */
+export const NET_HANDSHAKE_TIMEOUT_MS = 6_000;
+/** How often each side pings the other (ms). */
+export const NET_PING_INTERVAL_MS = 1_000;
+/** The connection counts as lost if nothing at all arrives for this long (ms). */
+export const NET_LINK_TIMEOUT_MS = 8_000;
+/** Weight of the newest sample in the smoothed ping (0..1). */
+export const NET_PING_SMOOTHING = 0.3;
+/** Delay before closing a connection after a final message (reject/bye), so it gets delivered (ms). */
+export const NET_CLOSE_FLUSH_MS = 400;

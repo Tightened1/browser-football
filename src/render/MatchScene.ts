@@ -3,6 +3,7 @@ import {
   CENTRE_CIRCLE_RADIUS,
   COLORS,
   CONTROL_RING_COLOR,
+  GAME_HEIGHT,
   GOAL_DEPTH,
   GOAL_WIDTH,
   LINE_THICKNESS,
@@ -23,7 +24,17 @@ import { KeyboardInput } from '../input/keyboard';
 import { BOUNDARY } from '../sim/physics';
 import { createMatchState, step } from '../sim/simulation';
 import { roleOf } from '../sim/ai';
-import type { Difficulty, GameState, InputFrame, PlayerState } from '../sim/types';
+import type { Difficulty, GameState, InputFrame, PlayerState, TeamId } from '../sim/types';
+import type { Lobby } from '../net/peer';
+
+/** How MatchScene is started: offline vs the AI by default; online (from the lobby) with the player's team. */
+export interface MatchSceneData {
+  /** The team the local player controls (default home). */
+  humanTeam?: TeamId;
+  seed?: number;
+  /** The online lobby connection (T06: kept open, shown in a status line; T07 syncs the match over it). */
+  online?: Lobby;
+}
 
 const ROLE_LABEL = { keeper: 'GK', defender: 'DEF', attacker: 'ATT' } as const;
 
@@ -49,9 +60,19 @@ export class MatchScene extends Phaser.Scene {
   private debugGfx!: Phaser.GameObjects.Graphics;
   private readonly debugLabels: Phaser.GameObjects.Text[] = [];
   private debugTeams!: Phaser.GameObjects.Text;
+  private humanTeam: TeamId = 0;
+  private seed?: number;
+  private online?: Lobby;
+  private onlineLabel?: Phaser.GameObjects.Text;
 
   constructor() {
     super('MatchScene');
+  }
+
+  init(data: MatchSceneData = {}): void {
+    this.humanTeam = data.humanTeam ?? 0;
+    this.seed = data.seed;
+    this.online = data.online;
   }
 
   create(): void {
@@ -78,7 +99,15 @@ export class MatchScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.keyboard.dispose();
       this.scene.stop('HudScene');
+      this.online?.leave();
     });
+    this.input.keyboard?.on('keydown-ESC', () => this.scene.start('MenuScene'));
+    this.onlineLabel = this.online
+      ? this.add
+          .text(PITCH_MARGIN, GAME_HEIGHT - PITCH_MARGIN / 2, '', { fontFamily: 'sans-serif', fontSize: '15px', color: '#ffffff', backgroundColor: '#000000a0', padding: { x: 6, y: 3 } })
+          .setOrigin(0, 0.5)
+          .setDepth(30)
+      : undefined;
 
     if (DEBUG_CLICK_KICK) {
       // Debug only, render-side: pokes the ball towards the pointer. Off by default (see config.ts).
@@ -95,7 +124,8 @@ export class MatchScene extends Phaser.Scene {
 
   private newState(): GameState {
     const d = this.options.difficulty;
-    return createMatchState({ aiVsAi: this.options.aiVsAi, difficulty: d && [d, d] });
+    const humans: [boolean, boolean] = [this.humanTeam === 0, this.humanTeam === 1];
+    return createMatchState({ aiVsAi: this.options.aiVsAi, humans, seed: this.seed, difficulty: d && [d, d] });
   }
 
   /** Read-only access for the HUD. */
@@ -117,11 +147,27 @@ export class MatchScene extends Phaser.Scene {
       this.accumulator -= SIM_DT;
     }
     this.drawState(this.state);
+    this.drawOnlineStatus();
   }
 
-  private collectInputs(): InputFrame[] {
+  private collectInputs(): (InputFrame | undefined)[] {
     const local = this.keyboard.sample();
-    return this.aiVsAi ? [] : [local];
+    const inputs: (InputFrame | undefined)[] = [undefined, undefined];
+    if (!this.aiVsAi) inputs[this.humanTeam] = local;
+    return inputs;
+  }
+
+  /** T06 placeholder: the connection stays open during the match, but each screen still runs its own match. */
+  private drawOnlineStatus(): void {
+    if (!this.online || !this.onlineLabel) return;
+    const v = this.online.view;
+    const link =
+      v.status === 'connected'
+        ? `connected, ping ${v.pingMs === null ? '…' : Math.round(v.pingMs)} ms`
+        : `disconnected${v.error ? ` (${v.error.title.toLowerCase()})` : ''}`;
+    this.onlineLabel.setText(
+      `ONLINE TEST · you are ${TEAMS[this.humanTeam].name} · ${link} · each screen plays its own match vs the AI until gameplay sync (T07) · Esc: leave`,
+    );
   }
 
   private createDebugOverlay(): void {
