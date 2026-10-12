@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH, HALF_LENGTH_SECONDS, TEAMS } from '../config';
+import { GAME_HEIGHT, GAME_WIDTH } from '../config';
+import { teamStyle } from './teamStyle';
 import { matchClock } from '../sim/rules';
 import type { GameState, RestartType } from '../sim/types';
 import type { MatchScene } from './MatchScene';
@@ -40,7 +41,6 @@ export class HudScene extends Phaser.Scene {
   private overlayTitle!: Phaser.GameObjects.Text;
   private overlayScore!: Phaser.GameObjects.Text;
   private overlayInfo!: Phaser.GameObjects.Text;
-  private playAgain!: Phaser.GameObjects.Text;
   private netPanel!: Phaser.GameObjects.Container;
   private netTitle!: Phaser.GameObjects.Text;
   private netBody!: Phaser.GameObjects.Text;
@@ -62,9 +62,9 @@ export class HudScene extends Phaser.Scene {
     bar.fillStyle(0x000000, 0.65);
     bar.fillRoundedRect(CX - BAR_W / 2, BAR_Y, BAR_W, BAR_H, 10);
     for (const team of [0, 1] as const) {
-      bar.fillStyle(TEAMS[team].kit, 1);
+      bar.fillStyle(teamStyle(team).kit, 1);
       bar.fillRoundedRect(team === 0 ? CX - BAR_W / 2 + 8 : CX + BAR_W / 2 - 20, BAR_Y + 8, 12, BAR_H - 16, 3);
-      bar.lineStyle(2, TEAMS[team].outline, 1);
+      bar.lineStyle(2, teamStyle(team).outline, 1);
       bar.strokeRoundedRect(team === 0 ? CX - BAR_W / 2 + 8 : CX + BAR_W / 2 - 20, BAR_Y + 8, 12, BAR_H - 16, 3);
     }
     this.names = [this.text(CX - 190, BAR_Y + BAR_H / 2, 20), this.text(CX + 190, BAR_Y + BAR_H / 2, 20)];
@@ -84,16 +84,8 @@ export class HudScene extends Phaser.Scene {
     this.overlayTitle = this.text(0, -120, 72);
     this.overlayScore = this.text(0, -20, 64);
     this.overlayInfo = this.text(0, 50, 26, '#dddddd');
-    this.playAgain = this.text(0, 135, 40, '#ffffff')
-      .setText('Play again')
-      .setPadding(28, 12, 28, 12)
-      .setBackgroundColor('#2e8b3d')
-      .setInteractive({ useHandCursor: true });
-    this.playAgain.on('pointerover', () => this.playAgain.setBackgroundColor('#3fae51'));
-    this.playAgain.on('pointerout', () => this.playAgain.setBackgroundColor('#2e8b3d'));
-    this.playAgain.on('pointerdown', () => this.newMatch());
     this.overlay = this.add
-      .container(0, 0, [shade, this.add.container(CX, GAME_HEIGHT / 2, [this.overlayTitle, this.overlayScore, this.overlayInfo, this.playAgain])])
+      .container(0, 0, [shade, this.add.container(CX, GAME_HEIGHT / 2, [this.overlayTitle, this.overlayScore, this.overlayInfo])])
       .setVisible(false);
 
     // Online: connection trouble / match ended (drawn above everything else).
@@ -108,8 +100,7 @@ export class HudScene extends Phaser.Scene {
       .setVisible(false);
 
     this.input.keyboard?.on('keydown-ENTER', () => {
-      if (this.match()?.netOverlay()?.ended) this.match()?.scene.start('MenuScene');
-      else if (this.matchState()?.phase === 'full-time' && !this.match()?.isOnline()) this.newMatch();
+      if (this.match()?.netOverlay()?.ended) this.match()?.quit();
     });
   }
 
@@ -121,46 +112,37 @@ export class HudScene extends Phaser.Scene {
     return this.match()?.getState();
   }
 
-  private newMatch(): void {
-    this.match()?.restartMatch();
-  }
-
   update(): void {
     const s = this.matchState();
     if (!s) return;
     for (const team of [0, 1] as const) {
-      this.names[team].setText(TEAMS[team].name);
+      this.names[team].setText(teamStyle(team).name);
       this.score[team].setText(String(s.score[team]));
     }
     this.clock.setText(formatClock(matchClock(s)));
-    this.half.setText(`${halfLabel(s.half)}  ·  ${formatClock(s.clock)}/${formatClock(HALF_LENGTH_SECONDS)}`);
+    this.half.setText(`${halfLabel(s.half)}  ·  ${formatClock(s.clock)}/${formatClock(s.halfLength)}`);
 
     // Set-piece label.
     const r = s.restart;
-    const label = s.phase === 'playing' && r && r.type !== 'kickoff' ? `${RESTART_LABEL[r.type]} — ${TEAMS[r.team].name}` : '';
+    const label = s.phase === 'playing' && r && r.type !== 'kickoff' ? `${RESTART_LABEL[r.type]} — ${teamStyle(r.team).name}` : '';
     this.restartLabel.setText(label).setVisible(label !== '');
 
     // GOAL! banner.
     const goal = s.phase === 'goal-scored' ? [...s.events].reverse().find((e) => e.type === 'goal') : undefined;
     this.goalBanner.setVisible(!!goal);
     if (goal && goal.team !== undefined) {
-      this.goalTeam.setText(`${TEAMS[goal.team].name}${goal.ownGoal ? ' (own goal)' : ''}`).setColor(hex(TEAMS[goal.team].kit)).setStroke('#ffffff', 5);
+      this.goalTeam.setText(`${teamStyle(goal.team).name}${goal.ownGoal ? ' (own goal)' : ''}`).setColor(hex(teamStyle(goal.team).kit)).setStroke('#ffffff', 5);
       const pulse = 1 + 0.06 * Math.sin(this.time.now / 90);
       this.goalBanner.setScale(pulse);
     }
 
-    // Half-time / full-time overlay.
+    // Half-time overlay (full time has its own results screen).
     const halfTime = s.phase === 'half-time';
-    const fullTime = s.phase === 'full-time';
-    this.overlay.setVisible(halfTime || fullTime);
-    if (halfTime || fullTime) {
-      this.overlayTitle.setText(halfTime ? 'HALF TIME' : 'FULL TIME');
-      this.overlayScore.setText(`${TEAMS[0].name} ${s.score[0]} – ${s.score[1]} ${TEAMS[1].name}`);
-      const result = s.score[0] === s.score[1] ? 'It ends in a draw' : `${TEAMS[s.score[0] > s.score[1] ? 0 : 1].name} win!`;
-      this.overlayInfo.setText(halfTime ? `Teams swap ends — ${Math.max(0, Math.ceil(s.phaseTimer))}` : result);
-      const online = !!this.match()?.isOnline();
-      this.playAgain.setVisible(fullTime && !online);
-      if (fullTime && online) this.overlayInfo.setText(`${result} · press Esc for the menu`);
+    this.overlay.setVisible(halfTime);
+    if (halfTime) {
+      this.overlayTitle.setText('HALF TIME');
+      this.overlayScore.setText(`${teamStyle(0).name} ${s.score[0]} – ${s.score[1]} ${teamStyle(1).name}`);
+      this.overlayInfo.setText(`Teams swap ends — ${Math.max(0, Math.ceil(s.phaseTimer))}`);
     }
 
     const net = this.match()?.netOverlay() ?? null;
@@ -168,7 +150,7 @@ export class HudScene extends Phaser.Scene {
     if (net) {
       this.netTitle.setText(net.title);
       this.netBody.setText(net.body);
-      this.netHint.setText(net.ended ? 'Press Enter or Esc to return to the menu' : 'Esc: leave the match');
+      this.netHint.setText(net.ended ? 'Press Enter or Esc to return to the menu' : 'Esc: menu');
     }
   }
 }

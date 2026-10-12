@@ -1,12 +1,13 @@
 // Network messages: typed, versioned, validated on receipt. Pure: no PeerJS, no DOM.
 import { version as packageVersion } from '../../package.json';
-import type { MatchEvent, MatchEventType, TeamId } from '../sim/types';
+import type { GoalRecord, MatchEvent, MatchEventType, MatchStats, TeamId } from '../sim/types';
+import { DEFAULT_LOOK, isLook, type Look } from '../teams';
 
 /**
  * Bump whenever any message below changes shape or meaning. The `hello` message itself must never change,
  * so that two different versions can always tell each other apart.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 /** The game version (package.json). Both players must run the same one; bump it with each task that ships. */
 export const GAME_VERSION: string = packageVersion;
 
@@ -18,6 +19,8 @@ export interface LobbyState {
   ready: [boolean, boolean];
   /** [host name, guest name]. */
   names: [string, string];
+  /** [host look, guest look]: team name and kit colour. The host keeps them from clashing. */
+  looks: [Look, Look];
 }
 
 /* ---- Handshake ---------------------------------------------------------------------------- */
@@ -36,13 +39,15 @@ export interface RejectMsg { t: 'reject'; reason: RejectReason; protocol: number
 export interface LobbyMsg { t: 'lobby'; lobby: LobbyState }
 /** Guest -> host: my ready flag. */
 export interface ReadyMsg { t: 'ready'; ready: boolean }
+/** Guest -> host: my team name and kit (the host may change it if it clashes with the host's). */
+export interface LookMsg { t: 'look'; look: Look }
 /** Guest -> host: please swap the teams (clears both ready flags). */
 export interface SwapMsg { t: 'swap' }
 /**
  * Host -> guest: the match is starting (or, after a reconnect, carrying on). `token` proves the guest is the
  * same player when it reconnects mid-match.
  */
-export interface StartMsg { t: 'start'; hostTeam: TeamId; seed: number; token: string }
+export interface StartMsg { t: 'start'; hostTeam: TeamId; seed: number; token: string; half: number }
 
 /* ---- Connection upkeep (both directions) ---------------------------------------------------- */
 
@@ -61,6 +66,12 @@ export interface ByeMsg { t: 'bye' }
 
 /** Host -> guest: a match event (goal, whistle...). Sent once, in order; the guest ignores ids it has seen. */
 export interface EventMsg { t: 'event'; event: MatchEvent }
+/** Host -> guest, once, at full time: the final statistics. */
+export interface StatsMsg { t: 'stats'; stats: MatchStats }
+/** Either way: "I want a rematch" (or no longer). The host starts it, with a `restart`, once both do. */
+export interface RematchMsg { t: 'rematch'; want: boolean }
+/** Host -> guest: a rematch starts now (a new match with this seed; the sides stay as they were). */
+export interface RestartMsg { t: 'restart'; seed: number }
 /** Guest -> host, after hello, when reconnecting mid-match: the token from `start` and the newest event id received. */
 export interface RejoinMsg { t: 'rejoin'; token: string; lastEvent: number }
 /** A snapshot or input packet (base64), when the unreliable channel is not available. */
@@ -68,9 +79,9 @@ export interface FastMsg { t: 'fast'; b: string }
 
 export type Message =
   | HelloMsg | WelcomeMsg | RejectMsg
-  | LobbyMsg | ReadyMsg | SwapMsg | StartMsg
+  | LobbyMsg | ReadyMsg | LookMsg | SwapMsg | StartMsg
   | PingMsg | PongMsg | ByeMsg
-  | EventMsg | RejoinMsg | FastMsg;
+  | EventMsg | StatsMsg | RematchMsg | RestartMsg | RejoinMsg | FastMsg;
 export type MessageType = Message['t'];
 
 /* ---- Validation ----------------------------------------------------------------------------- */
@@ -82,7 +93,7 @@ const isStr = (v: unknown): v is string => typeof v === 'string' && v.length <= 
 const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 const isTeam = (v: unknown): v is TeamId => v === 0 || v === 1;
 const isPair = <T>(v: unknown, f: (x: unknown) => x is T): v is [T, T] => Array.isArray(v) && v.length === 2 && f(v[0]) && f(v[1]);
-const isLobby = (v: unknown): v is LobbyState => isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr);
+const isLobby = (v: unknown): v is LobbyState => isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr) && isPair(v.looks, isLook);
 const isVersioned = (m: Obj): boolean => isNum(m.protocol) && isStr(m.game);
 const EVENT_TYPES: readonly MatchEventType[] = ['kickoff', 'goal', 'throw-in', 'goal-kick', 'corner', 'half-time', 'second-half', 'full-time'];
 const isOpt = <T>(v: unknown, f: (x: unknown) => x is T): boolean => v === undefined || f(v);
@@ -98,18 +109,26 @@ export const isMatchEvent = (v: unknown): v is MatchEvent =>
   isOpt(v.player, isNum) &&
   isOpt(v.ownGoal, isBool);
 
+const isGoal = (v: unknown): v is GoalRecord => isObj(v) && isTeam(v.team) && isNum(v.player) && isBool(v.ownGoal) && isNum(v.half) && isNum(v.clock);
+const isStats = (v: unknown): v is MatchStats =>
+  isObj(v) && isPair(v.shots, isNum) && isPair(v.possession, isNum) && Array.isArray(v.goals) && v.goals.length <= 100 && v.goals.every(isGoal);
+
 const VALIDATORS: Record<MessageType, (m: Obj) => boolean> = {
   hello: (m) => isVersioned(m) && isStr(m.name),
   welcome: (m) => isVersioned(m) && isStr(m.name) && isLobby(m.lobby),
   reject: (m) => isVersioned(m) && (m.reason === 'version' || m.reason === 'room-full'),
   lobby: (m) => isLobby(m.lobby),
   ready: (m) => isBool(m.ready),
+  look: (m) => isLook(m.look),
   swap: () => true,
-  start: (m) => isTeam(m.hostTeam) && isNum(m.seed) && isStr(m.token),
+  start: (m) => isTeam(m.hostTeam) && isNum(m.seed) && isStr(m.token) && isNum(m.half) && m.half >= 10 && m.half <= 1800,
   ping: (m) => isNum(m.id) && isNum(m.sent),
   pong: (m) => isNum(m.id) && isNum(m.sent),
   bye: () => true,
   event: (m) => isMatchEvent(m.event),
+  stats: (m) => isStats(m.stats),
+  rematch: (m) => isBool(m.want),
+  restart: (m) => isNum(m.seed),
   rejoin: (m) => isStr(m.token) && isNum(m.lastEvent),
   fast: (m) => typeof m.b === 'string' && m.b.length <= 4096,
 };
@@ -132,14 +151,19 @@ export function versionMismatch(remote: { protocol: number; game: string }, remo
   return `You have version ${GAME_VERSION}, ${who} version ${remote.game}. Both players should reload the page (Ctrl+F5 / Cmd+Shift+R) to get the latest version, then try again.`;
 }
 
-/** Default player names (T09 lets players choose). */
+/** Default player names (players choose their team's name and kit instead; these label the two connections). */
 export const HOST_NAME = 'Host';
 export const GUEST_NAME = 'Guest';
 
 /* ---- Lobby rules ------------------------------------------------------------------------------ */
 
-export function createLobbyState(hostName: string, guestName: string): LobbyState {
-  return { hostTeam: 0, ready: [false, false], names: [hostName, guestName] };
+export function createLobbyState(hostName: string, guestName: string, hostLook: Look = DEFAULT_LOOK, guestLook: Look = DEFAULT_LOOK): LobbyState {
+  return { hostTeam: 0, ready: [false, false], names: [hostName, guestName], looks: [{ ...hostLook }, { ...guestLook }] };
+}
+
+/** The two looks indexed by team (team 0 = home), whichever player is on which side. */
+export function looksByTeam(lobby: LobbyState): [Look, Look] {
+  return lobby.hostTeam === 0 ? [lobby.looks[0], lobby.looks[1]] : [lobby.looks[1], lobby.looks[0]];
 }
 
 /** The team a player is on: the host's, or the other one for the guest. */

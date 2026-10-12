@@ -28,6 +28,9 @@ export const LINE_THICKNESS = 4;
 /** Match timing: 2 halves of 3 minutes. */
 export const HALVES = 2;
 export const HALF_LENGTH_SECONDS = 3 * 60;
+/** Shots (match stats): a shoot-button kick within this distance of the goal line it attacks, aimed this far forward (cosine of the angle). */
+export const STAT_SHOT_RANGE = 450;
+export const STAT_SHOT_MIN_FORWARD = 0.3;
 
 /** Fixed simulation timestep (60 Hz). */
 export const SIM_HZ = 60;

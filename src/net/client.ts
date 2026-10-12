@@ -26,21 +26,23 @@ import {
   SIM_HZ,
 } from '../config';
 import { createMatchState, updatePlayer } from '../sim/simulation';
-import type { GameState, InputFrame, MatchEvent, PlayerState, TeamId } from '../sim/types';
+import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
+import type { GameState, InputFrame, MatchEvent, MatchStats, PlayerState, TeamId } from '../sim/types';
 import { kindForPeerError, netError, type NetErrorKind } from './errors';
 import { PlaybackClock, SnapshotBuffer } from './interpolation';
 import { seconds, type MatchDriver, type NetOverlay } from './match';
 import { describeRoute } from './ice';
 import { describeConditions } from './netsim';
 import { CONNECT_OPTIONS, createPeer, Link, loadIceServers, peerErrorType, peerIdForRoom, type IceSetup, type Lobby, type LobbyView, type StartInfo } from './peer';
-import { createLobbyState, GUEST_NAME, hello, HOST_NAME, teamOf, versionMismatch, type Message } from './protocol';
+import { createLobbyState, GUEST_NAME, hello, HOST_NAME, looksByTeam, teamOf, versionMismatch, type Message } from './protocol';
 import { applySnapshot, decodeSnapshot, encodeInputs, PACKET_SNAPSHOT, packetType, quantizeInput, type Snapshot } from './snapshot';
 import { LossMeter, RateMeter } from './stats';
 
 export class GuestLobby implements Lobby {
   readonly view: LobbyView;
   onStart: (info: StartInfo) => void = () => {};
-  /** Match messages from the host (events). */
+  onRestart: (seed: number) => void = () => {};
+  /** Match messages from the host (events, final stats). */
   onMatchMessage: (msg: Message) => void = () => {};
   /** The newest event id the match has received (sent when rejoining, so the host resends only what's missing). */
   lastEventId: () => number = () => 0;
@@ -60,17 +62,19 @@ export class GuestLobby implements Lobby {
   /** Closing the tab: say bye, so the other player hears straight away instead of after a timeout. */
   private readonly onPageHide = (): void => this.leave();
 
-  constructor(code: string) {
+  /** `look`: this player's team name and kit. */
+  constructor(code: string, private look: Look) {
     this.view = {
       role: 'guest',
       code,
       status: 'opening',
-      lobby: createLobbyState(HOST_NAME, GUEST_NAME),
+      lobby: createLobbyState(HOST_NAME, GUEST_NAME, resolveClash(DEFAULT_LOOK, look), look),
       pingMs: null,
       route: null,
       notice: null,
       error: null,
       reconnectUntil: null,
+      rematch: { mine: false, theirs: false },
     };
     window.addEventListener('pagehide', this.onPageHide);
     // The broker timeout also covers fetching TURN credentials (which gives up well before it).
@@ -227,6 +231,8 @@ export class GuestLobby implements Lobby {
         }
         this.view.lobby = msg.lobby;
         this.view.notice = null;
+        // Tell the host which team we'd like to be (it answers with the lobby, with any clash resolved).
+        if (!this.inMatch) this.link?.send({ t: 'look', look: this.look });
         if (this.inMatch) {
           // Back in: keep the give-up timer running until `start` confirms it.
           this.timer = setTimeout(() => this.fail('host-lost'), Math.max(0, (this.view.reconnectUntil ?? 0) - performance.now()));
@@ -239,6 +245,8 @@ export class GuestLobby implements Lobby {
         break;
       case 'lobby':
         this.view.lobby = msg.lobby;
+        // Remember what the host settled on, so a reconnect or a later change starts from it.
+        this.look = msg.lobby.looks[1];
         break;
       case 'start':
         this.token = msg.token;
@@ -251,10 +259,18 @@ export class GuestLobby implements Lobby {
         }
         this.inMatch = true;
         this.view.lobby = { ...this.view.lobby, hostTeam: msg.hostTeam };
-        this.onStart({ localTeam: teamOf(this.view.lobby, 'guest'), seed: msg.seed });
+        this.onStart({ localTeam: teamOf(this.view.lobby, 'guest'), seed: msg.seed, halfLength: msg.half, looks: looksByTeam(this.view.lobby) });
         break;
       case 'event':
+      case 'stats':
         this.onMatchMessage(msg);
+        break;
+      case 'rematch':
+        this.view.rematch = { ...this.view.rematch, theirs: msg.want };
+        break;
+      case 'restart':
+        this.view.rematch = { mine: false, theirs: false };
+        this.onRestart(msg.seed);
         break;
       default:
         break;
@@ -276,8 +292,19 @@ export class GuestLobby implements Lobby {
     this.link?.send({ t: 'ready', ready });
   }
 
+  setLook(look: Look): void {
+    this.look = look;
+    this.link?.send({ t: 'look', look });
+  }
+
   swapTeams(): void {
     this.link?.send({ t: 'swap' });
+  }
+
+  requestRematch(want: boolean): void {
+    if (!this.inMatch || this.view.status !== 'connected') return;
+    this.view.rematch = { ...this.view.rematch, mine: want };
+    this.link?.send({ t: 'rematch', want });
   }
 
   start(): void {
@@ -330,7 +357,7 @@ const smoothstep = (lo: number, hi: number, x: number): number => {
  */
 export class GuestMatch implements MatchDriver {
   readonly online = true;
-  readonly state: GameState;
+  state: GameState;
   private readonly buffer = new SnapshotBuffer();
   private readonly clock = new PlaybackClock((NET_INTERP_DELAY_MS * SIM_HZ) / 1000);
   private link: Link | null = null;
@@ -341,6 +368,9 @@ export class GuestMatch implements MatchDriver {
   private lastSnapAt = -Infinity;
   private lastEventId = 0;
   private readonly pending: MatchEvent[] = [];
+  private finalStats: MatchStats | null = null;
+  /** After a rematch starts: ignore snapshots from the old match still in flight (their ticks are not below this). */
+  private staleFrom = Infinity;
   private renderTick = -1;
   // Stats.
   private readonly snapRate = new RateMeter();
@@ -358,16 +388,48 @@ export class GuestMatch implements MatchDriver {
   constructor(
     private readonly lobby: GuestLobby,
     readonly localTeam: TeamId,
+    private readonly halfLength: number,
     seed?: number,
   ) {
     // Static player data (teams, roles, radii, numbers) comes from our own copy; snapshots fill in the rest.
-    this.state = createMatchState({ humans: [true, true], seed });
+    this.state = createMatchState({ humans: [true, true], seed, halfLength });
     lobby.onMatchMessage = (msg) => this.onMessage(msg);
     lobby.lastEventId = () => this.lastEventId;
+    lobby.onRestart = (restartSeed) => this.reset(restartSeed);
   }
 
   restart(): void {
-    // Only the host can restart a match.
+    // Only the host can start a new match (a rematch both players asked for arrives as a restart message).
+  }
+
+  stats(): MatchStats | null {
+    return this.finalStats;
+  }
+
+  rematch(): { mine: boolean; theirs: boolean } | null {
+    return this.lobby.view.rematch;
+  }
+
+  setRematch(want: boolean): void {
+    this.lobby.requestRematch(want);
+  }
+
+  /** The host started a rematch: forget the old match completely. */
+  private reset(seed: number): void {
+    this.staleFrom = this.newest ? this.newest.tick : Infinity;
+    this.state = createMatchState({ humans: [true, true], seed, halfLength: this.halfLength });
+    this.buffer.clear();
+    this.clock.reset();
+    this.newest = null;
+    this.lastSnapAt = -Infinity;
+    this.lastEventId = 0;
+    this.pending.length = 0;
+    this.finalStats = null;
+    this.renderTick = -1;
+    this.history.length = 0;
+    this.predicted = null;
+    this.predictedShown = false;
+    this.offset = { x: 0, y: 0 };
   }
 
   advance(dt: number, sample: () => InputFrame, nowMs: number): void {
@@ -392,6 +454,10 @@ export class GuestMatch implements MatchDriver {
   }
 
   private onMessage(msg: Message): void {
+    if (msg.t === 'stats') {
+      this.finalStats = msg.stats;
+      return;
+    }
     if (msg.t !== 'event') return;
     // Reliable and ordered, but after a reconnect the host may resend some: each id is used once only.
     if (msg.event.id <= this.lastEventId) return;
@@ -403,6 +469,8 @@ export class GuestMatch implements MatchDriver {
     if (packetType(bytes) !== PACKET_SNAPSHOT) return;
     const snap = decodeSnapshot(bytes);
     if (!snap || snap.players.length !== this.state.players.length) return;
+    if (snap.tick >= this.staleFrom) return; // the old match's last snapshots, still arriving
+    this.staleFrom = Infinity;
     const now = performance.now();
     this.snapBytes = bytes.length;
     this.snapRate.record(now);

@@ -18,12 +18,15 @@ import {
   POST_RADIUS,
   SHOT_MAX_CHARGE_TIME,
   GAME_WIDTH,
-  TEAMS,
 } from '../config';
 import { KeyboardInput } from '../input/keyboard';
+import { controlsSummary, settings } from '../settings';
+import { NEUTRAL_INPUT } from '../sim/simulation';
+import { randomOpponent, type Look } from '../teams';
+import { setTeamLooks, teamStyle } from './teamStyle';
 import { BOUNDARY } from '../sim/physics';
 import { roleOf } from '../sim/ai';
-import type { Difficulty, GameState, PlayerState, TeamId } from '../sim/types';
+import type { Difficulty, GameState, InputFrame, MatchStats, PlayerState, TeamId } from '../sim/types';
 import { GuestLobby, GuestMatch } from '../net/client';
 import { HostLobby, HostMatch } from '../net/host';
 import type { MatchDriver, NetOverlay } from '../net/match';
@@ -36,7 +39,14 @@ export interface MatchSceneData {
   seed?: number;
   /** The online lobby connection: the host runs the match and the guest follows it over this. */
   online?: Lobby;
+  /** Seconds per half (default: the match length in the settings). Online, the host's setting. */
+  halfLength?: number;
+  /** Both teams' names and kits, indexed by team (default: the saved look against a random opponent). */
+  looks?: [Look, Look];
 }
+
+/** How long the final whistle is left alone before the results screen appears. */
+const RESULTS_DELAY = 1.2;
 
 const ROLE_LABEL = { keeper: 'GK', defender: 'DEF', attacker: 'ATT' } as const;
 
@@ -66,6 +76,13 @@ export class MatchScene extends Phaser.Scene {
   private humanTeam: TeamId = 0;
   private seed?: number;
   private online?: Lobby;
+  private halfLength = 180;
+  private looks!: [Look, Look];
+  /** The pause menu is open (offline this also stops the match; online the match carries on without your input). */
+  private pauseOpen = false;
+  private frozen = false;
+  private resultsShown = false;
+  private fullTimeFor = 0;
   private onlineLabel?: Phaser.GameObjects.Text;
   /** Network debug overlay (toggle with F3): ping, snapshot rate, buffer, loss. */
   private debugNet = false;
@@ -77,8 +94,16 @@ export class MatchScene extends Phaser.Scene {
 
   init(data: MatchSceneData = {}): void {
     this.humanTeam = data.humanTeam ?? 0;
-    this.seed = data.seed;
     this.online = data.online;
+    // Offline matches get a fresh seed each time, so the AI doesn't play out the same match every time.
+    this.seed = data.seed ?? (data.online ? undefined : Math.floor(Math.random() * 0x7fffffff));
+    this.halfLength = data.halfLength ?? settings.halfMinutes * 60;
+    this.looks = data.looks ?? [settings.look, randomOpponent(settings.look)];
+    setTeamLooks(this.looks);
+    this.pauseOpen = false;
+    this.frozen = false;
+    this.resultsShown = false;
+    this.fullTimeFor = 0;
   }
 
   create(): void {
@@ -98,17 +123,29 @@ export class MatchScene extends Phaser.Scene {
       this.numberLabels[team] = label;
     }
 
-    this.keyboard = new KeyboardInput();
+    this.keyboard = new KeyboardInput(settings.bindings);
     this.scene.launch('HudScene');
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.keyboard.dispose();
-      this.scene.stop('HudScene');
+      for (const key of ['HudScene', 'PauseScene', 'ResultsScene']) this.scene.stop(key);
       this.online?.leave();
     });
-    this.input.keyboard?.on('keydown-ESC', () => this.scene.start('MenuScene'));
+    // Esc: the pause menu (or, once the match is over for good, back to the menu).
+    this.input.keyboard?.on('keydown-ESC', (e: KeyboardEvent) => {
+      if (e.repeat || this.resultsShown) return; // the results screen has its own Esc
+      if (this.driver.overlay(performance.now())?.ended) this.quit();
+      else if (this.pauseOpen) this.closePause();
+      else this.openPause();
+    });
+    if (settings.showControls) {
+      this.add
+        .text(GAME_WIDTH / 2, GAME_HEIGHT - 14, controlsSummary(settings.bindings), { fontFamily: 'sans-serif', fontSize: '14px', color: '#d8e4dc', stroke: '#000000', strokeThickness: 3 })
+        .setOrigin(0.5)
+        .setDepth(30);
+    }
     this.onlineLabel = this.online
       ? this.add
-          .text(PITCH_MARGIN, GAME_HEIGHT - PITCH_MARGIN / 2, '', { fontFamily: 'sans-serif', fontSize: '15px', color: '#ffffff', backgroundColor: '#000000a0', padding: { x: 6, y: 3 } })
+          .text(PITCH_MARGIN, GAME_HEIGHT - PITCH_MARGIN / 2 - 8, '', { fontFamily: 'sans-serif', fontSize: '15px', color: '#ffffff', backgroundColor: '#000000a0', padding: { x: 6, y: 3 } })
           .setOrigin(0, 0.5)
           .setDepth(30)
       : undefined;
@@ -141,9 +178,11 @@ export class MatchScene extends Phaser.Scene {
 
   private createDriver(difficulty?: Difficulty): MatchDriver {
     const online = this.online;
-    if (online instanceof HostLobby) return new HostMatch({ localTeam: this.humanTeam, seed: this.seed, difficulty, lobby: online });
-    if (online instanceof GuestLobby) return new GuestMatch(online, this.humanTeam, this.seed);
-    return new HostMatch({ localTeam: this.aiVsAi ? null : this.humanTeam, seed: this.seed, difficulty });
+    const level = difficulty ?? settings.difficulty;
+    const halfLength = this.halfLength;
+    if (online instanceof HostLobby) return new HostMatch({ localTeam: this.humanTeam, seed: this.seed, difficulty: level, halfLength, lobby: online });
+    if (online instanceof GuestLobby) return new GuestMatch(online, this.humanTeam, halfLength, this.seed);
+    return new HostMatch({ localTeam: this.aiVsAi ? null : this.humanTeam, seed: this.seed, difficulty: level, halfLength });
   }
 
   /** Read-only access for the HUD. */
@@ -160,14 +199,77 @@ export class MatchScene extends Phaser.Scene {
     return this.driver.overlay(performance.now());
   }
 
-  /** "Play again" (offline only): a brand-new match. */
+  /** Offline "Rematch": a brand-new match. (Online, a rematch starts through the lobby when both players ask.) */
   restartMatch(): void {
     this.driver.restart();
   }
 
+  stats(): MatchStats | null {
+    return this.driver.stats();
+  }
+
+  rematch(): { mine: boolean; theirs: boolean } | null {
+    return this.driver.rematch();
+  }
+
+  setRematch(want: boolean): void {
+    this.driver.setRematch(want);
+  }
+
+  /** Is the match over for good (the other player left, or the connection was lost)? */
+  isEnded(): boolean {
+    return !!this.driver.overlay(performance.now())?.ended;
+  }
+
+  /** The pause menu. Offline it freezes the match. Online it can't: your friend is still playing, so the match keeps going and only your input is ignored. */
+  openPause(): void {
+    if (this.pauseOpen) return;
+    this.pauseOpen = true;
+    this.frozen = !this.driver.online;
+    this.scene.launch('PauseScene', { online: this.driver.online });
+  }
+
+  closePause(): void {
+    if (!this.pauseOpen) return;
+    this.pauseOpen = false;
+    this.frozen = false;
+    this.scene.stop('PauseScene');
+  }
+
+  /** Leave the match (online: the other player is told) and go back to the title screen. */
+  quit(): void {
+    this.scene.start('MenuScene');
+  }
+
+  /** Local input for one tick: nothing while a menu is open (the keys belong to the menu then). */
+  private sampleInput(): InputFrame {
+    const frame = this.keyboard.sample();
+    return this.pauseOpen || this.resultsShown ? { ...NEUTRAL_INPUT, seq: frame.seq } : frame;
+  }
+
+  /** Full time: after a moment, the results screen goes over the match; it closes itself when a new match starts. */
+  private watchFullTime(dt: number): void {
+    const over = this.driver.state.phase === 'full-time';
+    if (!over) {
+      this.fullTimeFor = 0;
+      if (this.resultsShown) {
+        this.resultsShown = false;
+        this.scene.stop('ResultsScene');
+      }
+      return;
+    }
+    this.fullTimeFor += dt;
+    if (!this.resultsShown && this.fullTimeFor >= RESULTS_DELAY) {
+      this.closePause();
+      this.resultsShown = true;
+      this.scene.launch('ResultsScene');
+    }
+  }
+
   update(_time: number, delta: number): void {
     const now = performance.now();
-    this.driver.advance(delta / 1000, () => this.keyboard.sample(), now);
+    if (!this.frozen) this.driver.advance(delta / 1000, () => this.sampleInput(), now);
+    this.watchFullTime(delta / 1000);
     this.drawState(this.driver.state);
     this.drawOnlineStatus();
     this.netText.setVisible(this.debugNet);
@@ -183,7 +285,7 @@ export class MatchScene extends Phaser.Scene {
         : v.status === 'reconnecting'
           ? 'reconnecting…'
           : `disconnected${v.error ? ` (${v.error.title.toLowerCase()})` : ''}`;
-    this.onlineLabel.setText(`ONLINE · you are ${TEAMS[this.humanTeam].name} (${v.role}) · ${link} · F3: network info · Esc: leave`);
+    this.onlineLabel.setText(`ONLINE · you are ${teamStyle(this.humanTeam).name} (${v.role}) · ${link} · F3: network info · Esc: menu`);
   }
 
   private createDebugOverlay(): void {
@@ -217,7 +319,7 @@ export class MatchScene extends Phaser.Scene {
       const m = state.ai.players[i];
       label.setText(`${ROLE_LABEL[roleOf(p)]} ${m.intent}`).setPosition(p.pos.x, p.pos.y + p.radius + 4);
       if (m.intent === 'human') return;
-      g.lineStyle(1, TEAMS[p.team].kit, 0.9);
+      g.lineStyle(1, teamStyle(p.team).kit, 0.9);
       g.lineBetween(p.pos.x, p.pos.y, m.target.x, m.target.y);
       g.strokeCircle(m.target.x, m.target.y, 4);
       if (m.intent === 'pass' || m.intent === 'shoot' || m.intent === 'clear' || m.intent === 'distribute') {
@@ -228,7 +330,7 @@ export class MatchScene extends Phaser.Scene {
     if (on && !guest) {
       const t = state.ai.teams;
       const line = (i: 0 | 1): string =>
-        `${TEAMS[i].name} [${state.ai.difficulty[i]}] ${t[i].mode.padEnd(13)} passes ${t[i].passes}  shots ${t[i].shots}  tackles ${t[i].tackles}  saves ${t[i].saves}`;
+        `${teamStyle(i).name} [${state.ai.difficulty[i]}] ${t[i].mode.padEnd(13)} passes ${t[i].passes}  shots ${t[i].shots}  tackles ${t[i].tackles}  saves ${t[i].saves}`;
       this.debugTeams.setText(`${line(0)}\n${line(1)}\nAI debug (F2)`);
     }
   }
@@ -260,7 +362,7 @@ export class MatchScene extends Phaser.Scene {
     const { x, y } = p.pos;
     g.fillStyle(0x000000, 0.25);
     g.fillCircle(x + 2, y + 3, p.radius);
-    const team = TEAMS[p.team];
+    const team = teamStyle(p.team);
     g.fillStyle(p.tackleTimer > 0 ? 0xffffff : p.role === 'keeper' ? team.keeper : team.kit, p.tackleTimer > 0 ? 0.75 : 1);
     g.fillCircle(x, y, p.radius);
     g.lineStyle(2, team.outline, 1);

@@ -31,6 +31,9 @@ An online, top-down arcade football game that runs in the browser. Two players i
 src/
   main.ts              Phaser game bootstrap
   config.ts            All tunable constants (pitch size, speeds, friction, match length…)
+  settings.ts          Player settings in localStorage (try/catch), key bindings and their validation (pure apart from storage)
+  teams.ts             Preset team names and kit colours, clash prevention (pure)
+  matchStats.ts        Results-screen helpers: clock text, possession % (pure)
   sim/                 PURE TypeScript — no Phaser, no DOM, no network imports
     types.ts           GameState, PlayerState, BallState, InputFrame…
     physics.ts         Circle movement, friction, collisions, wall bounces
@@ -39,8 +42,11 @@ src/
     ai.ts              AI decisions -> produces InputFrames for AI-controlled players
   render/              Phaser scenes that DRAW a GameState (never change it)
     MatchScene.ts
-    MenuScene.ts / LobbyScene.ts / HudScene.ts / DiagnosticsScene.ts
-    ui.ts              Shared buttons/labels for menu and lobby
+    MenuScene.ts       Title screen
+    SettingsScene.ts / HowToPlayScene.ts / JoinScene.ts / TeamPickScene.ts / LobbyScene.ts / DiagnosticsScene.ts
+    HudScene.ts / PauseScene.ts / ResultsScene.ts   (drawn over MatchScene)
+    teamStyle.ts       The names and kit colours the current match is drawn with
+    ui.ts              Shared buttons/labels and `Focus` (keyboard navigation) for all menu screens
   input/
     keyboard.ts        Keyboard -> InputFrame
   net/
@@ -76,7 +82,9 @@ tests/                 Vitest tests for sim/
 | Switch player (no ball) | `Z` / `Shift` |
 | AI debug overlay (roles, intents, team modes) | `F2` / `` ` `` |
 | Network debug overlay (ping, snapshots, buffer, loss) | `F3` / `N` |
-| Back to menu / leave | `Esc` |
+| Pause menu (offline: pauses; online: the match keeps running) / back | `Esc` |
+
+All of the movement and action keys can be rebound under **Settings** (two keys per action); the table shows the defaults. `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved.
 
 URL options: `?room=CODE` (invite link: joins that room), `?aivsai` (both teams AI, spectate), `?difficulty=easy|normal|hard`, and for testing online play on one machine `?lag=50&jitter=10&loss=0.03` (simulated network, per window) and `?predict=0|1` (guest prediction off/on).
 
@@ -110,7 +118,7 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T06 | Networking: PeerJS host/join lobby with room codes | T05 | **Opus 5.5** | [x] |
 | T07 | Netcode: input sending, snapshots, interpolation, disconnects | T06 | **Opus 5.5** | [x] |
 | T08 | Real-world network test & TURN fallback | T07 | **Opus 5.5** | [!] code done; waiting on you: create TURN keys + `VITE_TURN_CREDENTIALS_URL` secret, then run the checklist in `docs/NETWORK_TESTING.md` |
-| T09 | Menus & game flow (title, host/join, settings, results) | T07 | Sonnet 5.5 | [ ] |
+| T09 | Menus & game flow (title, host/join, settings, results) | T07 | Sonnet 5.5 | [x] |
 | T10 | Juice & audio: sounds, goal celebration, team colours, camera | T05 | Sonnet 5.5 | [ ] |
 | T11 | Playtest & gameplay tuning | T04, T10 | Sonnet 5.5 | [ ] |
 | T12 | Release: README, how-to-play, final deploy | T11, T08, T09 | Haiku 5.5 | [ ] |
@@ -452,3 +460,4 @@ Finally, mark T12 as [x] in the ROADMAP.md task queue, commit, push and give me 
 - 2026-10-12 — T06: the game now opens on `MenuScene` (Play vs AI / Host / Join). Online: the host registers `browser-football-<code>` on the public PeerJS broker (codes like `PASS-4827`); the guest connects with one reliable JSON data channel, sends `hello` (protocol + game version from package.json — **bump `version` in package.json with each task**), and the host answers `welcome` or `reject`. The host owns `LobbyState` (teams, ready flags) and sends it on every change. `Link` pings every second and drops the connection after 8 s of silence. Start currently launches an independent offline match on each screen with the player's chosen team (`MatchOptions.humans`); the `Lobby` object is passed to `MatchScene` (`MatchSceneData.online`) for T07 to use. STUN/TURN config is in `config.ts` (`TURN_SERVERS` is empty, ready for T08).
 - 2026-10-12 — T07: host-authoritative netcode (protocol 2, game 0.7.0). `HostMatch` (net/host.ts) runs the only sim — offline play is a `HostMatch` with no lobby — and `GuestMatch` (net/client.ts) draws the host's snapshots. Two channels on one PeerJS connection: the reliable JSON one (handshake, lobby, ping, events, rejoin) and an extra **unreliable, unordered** `RTCDataChannel` (negotiated id `NET_FAST_CHANNEL_ID`, `maxRetransmits: 0`) for binary snapshots (host → guest, 30/s, **143 bytes**; JSON would be ~1.8 KB) and inputs (guest → host, 60/s, each packet repeats the last 4 frames). PeerJS's own `reliable: false` still retransmits, hence the extra channel; it falls back to base64 over the reliable channel if it can't open. The guest renders `NET_INTERP_DELAY_MS` (100 ms) behind, predicts only its own player's movement (blending back to the host's position near the ball) and releases events when the drawn match reaches their tick. Disconnects: either side pauses after `NET_STALL_MS` of silence; a dropped guest auto-reconnects (token from `start`, `rejoin` message, missed events resent) within `NET_RECONNECT_WINDOW_MS` (30 s), else the match ends; `bye` (Esc, closing the tab) ends it straight away. "Play again" is offline only (online rematch is T09). Note: a browser pauses a hidden tab's game loop, so if the host switches tabs the match pauses for both.
 - 2026-10-12 — T08 (game 0.8.0): **Test my connection** (menu → `DiagnosticsScene`, run by `net/diagnostics.ts`) checks the broker, gathers ICE candidates (host/srflx/relay, TURN errors explained, strict-NAT hint) and bounces data through the relay; the plain-English wording lives in pure `net/ice.ts` (tested). TURN comes from build-time env vars (`VITE_TURN_CREDENTIALS_URL`, or `VITE_TURN_URLS`/`_USERNAME`/`_CREDENTIAL`; GitHub secrets for the live site, `.env.local` locally) and `loadIceServers()` fetches/caches it. Fallback: ICE tries direct and relay together; if the attempt fails the guest retries once relay-only (`iceTransportPolicy: 'relay'`), the host lets a new attempt replace an unfinished one, and reconnects stay relayed. `Link.route` (from getStats) shows "Direct"/"Relayed" in the lobby and F3 overlay. Blocked only on TURN keys; server fallback written up in `docs/RELAY_SERVER_OPTION.md`. Note: the in-app preview pane doesn't fire requestAnimationFrame, so Phaser there must be stepped by hand (`__game.step`) for testing.
+- 2026-10-12 — T09 (game 0.9.0, protocol 3): full menu flow, all keyboard- and mouse-navigable (`Focus` in `render/ui.ts`: arrows/WASD move, Enter/Space press, ←/→ change a value row). Title (Play vs AI / Host online / Join online / Settings / How to play / Test my connection) → `JoinScene` (code entry) → `TeamPickScene` (team name + kit colour from `teams.ts` presets; remembered) → lobby or match; invite links (`?room=`) go to the team picker first. **Settings** (`settings.ts`, localStorage, validated on load): match length (1/2/3/5 min halves, now `GameState.halfLength`), AI difficulty, sound volume (stored for T10's audio to use; nothing plays yet), controls overlay on/off, and rebinding of move/pass/shoot/tackle/switch (two keys per action, duplicates and reserved keys refused). **Online teams**: each player's look travels in `LobbyState.looks`; the host resolves clashes (same kit colour or name) by moving the guest to the next free one, and lobby "Change kit/name" skip the other's. The match length is the host's (`start.half`). **Pause**: offline `Esc` freezes the match; online it only opens the menu and ignores your input while the match carries on (a shared freeze would let either player stall the other, and needs more protocol), saying so on the menu. **Results** (`ResultsScene`, ~1.2 s after full time): score, shots, possession %, goals with match time, Rematch / Menu. Stats are kept by the sim (`GameState.stats`: shoot-kick shots from the attacking end, possession = last team to touch the ball while in play, goal list) and sent to the guest once at full time (`stats` message). **Online rematch**: either player taps Rematch (`rematch` message, shown to the other as "wants a rematch"); when both have, the host starts a new match with a new seed (`restart` message) and the guest resets its state, ignoring the old match's last snapshots. Offline Rematch starts a new match with a fresh seed.

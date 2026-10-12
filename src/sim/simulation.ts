@@ -11,6 +11,7 @@ import {
   KEEPER_CLEAR_SPEED,
   KEEPER_INV_MASS,
   KEEPER_RADIUS,
+  HALF_LENGTH_SECONDS,
   KICKOFF_DELAY,
   PLAYERS_PER_TEAM,
   PLAYER_PLAYER_RESTITUTION,
@@ -32,6 +33,8 @@ import {
   SHOT_MAX_CHARGE_TIME,
   SHOT_MAX_SPEED,
   SHOT_MIN_SPEED,
+  STAT_SHOT_MIN_FORWARD,
+  STAT_SHOT_RANGE,
   TACKLE_COOLDOWN,
   TACKLE_DURATION,
   TACKLE_KNOCK_SPEED,
@@ -101,6 +104,8 @@ export interface MatchOptions {
   seed?: number;
   /** Team that kicks off (default home). */
   kickoffTeam?: TeamId;
+  /** Seconds per half (default HALF_LENGTH_SECONDS). */
+  halfLength?: number;
 }
 
 /**
@@ -143,6 +148,7 @@ export function createInitialState(options: MatchOptions = {}): GameState {
     ai: createAiState(players, controlled, options.difficulty, options.seed),
     phase: 'playing' as MatchPhase,
     phaseTimer: 0,
+    halfLength: options.halfLength ?? HALF_LENGTH_SECONDS,
     half: 1,
     clock: 0,
     score: [0, 0],
@@ -151,6 +157,7 @@ export function createInitialState(options: MatchOptions = {}): GameState {
     restart: null,
     events: [],
     nextEventId: 1,
+    stats: { shots: [0, 0], possession: [0, 0], goals: [] },
   };
 }
 
@@ -175,6 +182,7 @@ export function cloneState(s: GameState): GameState {
     ai: cloneAiState(s.ai),
     phase: s.phase,
     phaseTimer: s.phaseTimer,
+    halfLength: s.halfLength,
     half: s.half,
     clock: s.clock,
     score: [s.score[0], s.score[1]],
@@ -183,6 +191,7 @@ export function cloneState(s: GameState): GameState {
     restart: s.restart ? { ...s.restart, pos: { ...s.restart.pos } } : null,
     events: s.events.map((e) => ({ ...e, score: [e.score[0], e.score[1]] as [number, number] })),
     nextEventId: s.nextEventId,
+    stats: { shots: [s.stats.shots[0], s.stats.shots[1]], possession: [s.stats.possession[0], s.stats.possession[1]], goals: s.stats.goals.map((g) => ({ ...g })) },
   };
 }
 
@@ -265,7 +274,7 @@ function kickBall(p: PlayerState, ball: BallState, speed: number): void {
 
 /** Charging, kicks, tackle knocks and dribble touches for one player. */
 /** Returns true if the player touched the ball (kick, knock or dribble nudge). */
-function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt: number): boolean {
+function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt: number, shot?: { taken: boolean }): boolean {
   let touched = false;
   const d = distance(p, ball);
   const contact = p.radius + ball.radius;
@@ -302,6 +311,7 @@ function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt
     } else if (shootReleased) {
       kickBall(p, ball, shotSpeed(p.charge));
       touched = true;
+      if (shot) shot.taken = true;
     }
   }
   if (!input.shoot) p.charge = 0;
@@ -323,6 +333,13 @@ function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt
     }
   }
   return touched;
+}
+
+/** A shoot-button kick counts as a shot from the attacking end of the pitch, aimed roughly at goal (keepers never shoot). */
+function countsAsShot(p: PlayerState, attackDir: number): boolean {
+  if (p.role === 'keeper') return false;
+  const goalX = attackDir > 0 ? PITCH_LEFT + PITCH_WIDTH : PITCH_LEFT;
+  return Math.abs(goalX - p.pos.x) <= STAT_SHOT_RANGE && Math.cos(p.facing) * attackDir > STAT_SHOT_MIN_FORWARD;
 }
 
 /** Soft pushing: separate overlapping players (no overlap afterwards) and exchange a little momentum. */
@@ -364,7 +381,9 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
     const input = used[i];
     maybeStartTackle(p, input, ball);
     updatePlayer(p, input, dt);
-    if (interactWithBall(p, input, ball, dt)) next.lastTouch = { team: p.team, player: p.id };
+    const shot = { taken: false };
+    if (interactWithBall(p, input, ball, dt, shot)) next.lastTouch = { team: p.team, player: p.id };
+    if (shot.taken && countsAsShot(p, next.attackDir[p.team])) next.stats.shots[p.team] += 1;
     p.prevPass = input.pass;
     p.prevShoot = input.shoot;
     p.prevTackle = input.tackle;

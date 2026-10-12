@@ -1,5 +1,5 @@
 // What MatchScene drives each frame: the host's authoritative match (also used offline) or the guest's replica.
-import type { GameState, InputFrame } from '../sim/types';
+import type { GameState, InputFrame, MatchStats } from '../sim/types';
 
 /** A message covering the pitch: connection trouble, or why the match ended. */
 export interface NetOverlay {
@@ -18,8 +18,13 @@ export interface MatchDriver {
   overlay(nowMs: number): NetOverlay | null;
   /** Lines for the network debug overlay. */
   debugLines(nowMs: number): string[];
-  /** Offline only: start a new match. */
+  /** Offline: start a new match (online it only happens through an agreed rematch). */
   restart(): void;
+  /** The match statistics once the match has ended (the guest gets them from the host at full time), else null. */
+  stats(): MatchStats | null;
+  /** Online: who wants a rematch; null offline. */
+  rematch(): { mine: boolean; theirs: boolean } | null;
+  setRematch(want: boolean): void;
 }
 
 export const seconds = (ms: number): number => Math.max(0, Math.ceil(ms / 1000));

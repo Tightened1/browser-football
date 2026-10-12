@@ -148,6 +148,27 @@ export interface AiState {
   lastToucher: number;
 }
 
+/** One goal, for the results screen. */
+export interface GoalRecord {
+  /** Scoring team (for an own goal, the team that benefits). */
+  team: TeamId;
+  /** Player who touched the ball last (-1 = unknown). */
+  player: number;
+  ownGoal: boolean;
+  half: number;
+  /** Seconds played in that half. */
+  clock: number;
+}
+
+/** Simple match statistics, kept by the sim (so the host can send them to the guest at full time). */
+export interface MatchStats {
+  /** Shots per team: shoot-button kicks from the attacking part of the pitch, heading for goal. */
+  shots: [number, number];
+  /** Seconds each team had possession (the last team to touch the ball, while the ball is in play). */
+  possession: [number, number];
+  goals: GoalRecord[];
+}
+
 export interface GameState {
   /** Number of fixed steps simulated so far. */
   tick: number;
@@ -167,6 +188,8 @@ export interface GameState {
   phase: MatchPhase;
   /** Seconds spent in the current phase (counts down for the timed phases: see rules.ts). */
   phaseTimer: number;
+  /** Seconds in each half (match length / 2). */
+  halfLength: number;
   /** 1 or 2. */
   half: number;
   /** Seconds played in the current half. */
@@ -181,6 +204,7 @@ export interface GameState {
   /** The most recent events (capped), oldest first. Consumers remember the last `id` they handled. */
   events: MatchEvent[];
   nextEventId: number;
+  stats: MatchStats;
 }
 
 export type MatchPhase = 'pre-kickoff' | 'playing' | 'goal-scored' | 'half-time' | 'full-time';

@@ -19,6 +19,7 @@ import { hasTurn, parseIceServersResponse, selectedRoute, type Route, type Stats
 import { NetConditioner } from './netsim';
 import { decode, fromBase64, toBase64, type LobbyState, type Message } from './protocol';
 import type { TeamId } from '../sim/types';
+import type { Look } from '../teams';
 
 export { generateRoomCode, inviteLink, normalizeRoomCode, peerIdForRoom } from './roomCode';
 
@@ -287,12 +288,18 @@ export interface LobbyView {
   error: NetError | null;
   /** While reconnecting: performance.now() time the match is given up at. */
   reconnectUntil: number | null;
+  /** Full-time rematch: whether I want one, and whether the other player does. Both = it starts. */
+  rematch: { mine: boolean; theirs: boolean };
 }
 
 export interface StartInfo {
   /** The team this player controls. */
   localTeam: TeamId;
   seed: number;
+  /** Seconds per half (the host's setting). */
+  halfLength: number;
+  /** Both teams' looks, indexed by team. */
+  looks: [Look, Look];
 }
 
 export interface Lobby {
@@ -300,7 +307,13 @@ export interface Lobby {
   /** Called when the match starts (on both sides). */
   onStart: (info: StartInfo) => void;
   setReady(ready: boolean): void;
+  /** Change my team name / kit (the host keeps the two from clashing). */
+  setLook(look: Look): void;
   swapTeams(): void;
+  /** Full time: ask for (or withdraw) a rematch. It starts when both players have asked. */
+  requestRematch(want: boolean): void;
+  /** A rematch is starting (host and guest): begin a new match with this seed. */
+  onRestart: (seed: number) => void;
   /** Host only: start the match if both are ready. */
   start(): void;
   /** Leave: tell the other side, close the connection and unregister from the broker. */

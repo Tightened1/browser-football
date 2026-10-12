@@ -16,7 +16,8 @@ import {
   SIM_DT,
 } from '../config';
 import { createMatchState, NEUTRAL_INPUT, step } from '../sim/simulation';
-import type { Difficulty, GameState, InputFrame, TeamId } from '../sim/types';
+import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
+import type { Difficulty, GameState, InputFrame, MatchStats, TeamId } from '../sim/types';
 import { kindForPeerError, netError, NETWORK_HINT } from './errors';
 import { seconds, type MatchDriver, type NetOverlay } from './match';
 import { describeRoute } from './ice';
@@ -43,6 +44,7 @@ import {
   GAME_VERSION,
   GUEST_NAME,
   HOST_NAME,
+  looksByTeam,
   PROTOCOL_VERSION,
   swapTeams,
   teamOf,
@@ -51,19 +53,17 @@ import {
   type Message,
 } from './protocol';
 
+export interface HostLobbyOptions {
+  /** The host's team name and kit. */
+  look: Look;
+  /** Seconds per half for the match (the host's setting; the guest follows it). */
+  halfLength: number;
+}
+
 export class HostLobby implements Lobby {
-  readonly view: LobbyView = {
-    role: 'host',
-    code: '',
-    status: 'opening',
-    lobby: createLobbyState(HOST_NAME, GUEST_NAME),
-    pingMs: null,
-    route: null,
-    notice: null,
-    error: null,
-    reconnectUntil: null,
-  };
+  readonly view: LobbyView;
   onStart: (info: StartInfo) => void = () => {};
+  onRestart: (seed: number) => void = () => {};
   /** Mid-match, the guest came back: `lastEvent` is the newest event id it had received. */
   onRejoin: (lastEvent: number) => void = () => {};
 
@@ -86,7 +86,19 @@ export class HostLobby implements Lobby {
   /** Closing the tab: say bye, so the other player hears straight away instead of after a timeout. */
   private readonly onPageHide = (): void => this.leave();
 
-  constructor() {
+  constructor(private readonly opts: HostLobbyOptions) {
+    this.view = {
+      role: 'host',
+      code: '',
+      status: 'opening',
+      lobby: createLobbyState(HOST_NAME, GUEST_NAME, opts.look, resolveClash(DEFAULT_LOOK, opts.look)),
+      pingMs: null,
+      route: null,
+      notice: null,
+      error: null,
+      reconnectUntil: null,
+      rematch: { mine: false, theirs: false },
+    };
     // The broker timeout also covers fetching TURN credentials (which gives up well before it).
     this.brokerTimer = setTimeout(() => this.fail('broker-unreachable'), NET_BROKER_TIMEOUT_MS);
     void loadIceServers().then((ice) => {
@@ -212,7 +224,7 @@ export class HostLobby implements Lobby {
         return;
       }
       this.accepted = true;
-      this.view.lobby = { ...this.lobby, ready: [false, false], names: [HOST_NAME, msg.name || GUEST_NAME] };
+      this.view.lobby = { ...this.lobby, ready: [false, false], names: [HOST_NAME, msg.name || GUEST_NAME], looks: [this.lobby.looks[0], resolveClash(DEFAULT_LOOK, this.lobby.looks[0])] };
       this.view.status = 'connected';
       link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: HOST_NAME, lobby: this.lobby });
       return;
@@ -221,11 +233,19 @@ export class HostLobby implements Lobby {
       case 'ready':
         this.update({ ...this.lobby, ready: [this.lobby.ready[0], msg.ready] });
         break;
+      case 'look':
+        // The host's look wins a clash: the guest is given the next free kit (or name).
+        this.update({ ...this.lobby, looks: [this.lobby.looks[0], resolveClash(msg.look, this.lobby.looks[0])] });
+        break;
       case 'swap':
         this.update(swapTeams(this.lobby));
         break;
+      case 'rematch':
+        this.view.rematch = { ...this.view.rematch, theirs: msg.want };
+        this.maybeRematch();
+        break;
       default:
-        break; // input/snapshot/event: T07
+        break; // inputs and snapshots arrive on the fast channel, see HostMatch
     }
   }
 
@@ -279,7 +299,9 @@ export class HostLobby implements Lobby {
     this.view.reconnectUntil = null;
     this.view.notice = null;
     link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: HOST_NAME, lobby: this.lobby });
-    link.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed: 0, token: this.token });
+    link.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed: 0, token: this.token, half: this.opts.halfLength });
+    // It lost whatever rematch messages were in flight: start that conversation again.
+    link.send({ t: 'rematch', want: this.view.rematch.mine });
     this.onRejoin(lastEvent);
   }
 
@@ -309,7 +331,7 @@ export class HostLobby implements Lobby {
     clearTimeout(this.guestTimer);
     this.guest = null;
     this.accepted = false;
-    this.view.lobby = { ...this.lobby, ready: [false, false], names: [HOST_NAME, GUEST_NAME] };
+    this.view.lobby = { ...this.lobby, ready: [false, false], names: [HOST_NAME, GUEST_NAME], looks: [this.lobby.looks[0], resolveClash(DEFAULT_LOOK, this.lobby.looks[0])] };
     this.view.pingMs = null;
     this.view.route = null;
     if (this.isActive()) {
@@ -339,8 +361,31 @@ export class HostLobby implements Lobby {
     this.update({ ...this.lobby, ready: [ready, this.lobby.ready[1]] });
   }
 
+  setLook(look: Look): void {
+    // A guest's look is already settled, so the host's choice is the one that has to give way.
+    const mine = this.accepted ? resolveClash(look, this.lobby.looks[1]) : look;
+    this.update({ ...this.lobby, looks: [mine, this.lobby.looks[1]] });
+  }
+
   swapTeams(): void {
     this.update(swapTeams(this.lobby));
+  }
+
+  requestRematch(want: boolean): void {
+    if (!this.inMatch || !this.accepted) return;
+    this.view.rematch = { ...this.view.rematch, mine: want };
+    this.guest?.send({ t: 'rematch', want });
+    this.maybeRematch();
+  }
+
+  /** Both players want one: the host starts it. */
+  private maybeRematch(): void {
+    const r = this.view.rematch;
+    if (!this.inMatch || !this.accepted || !r.mine || !r.theirs) return;
+    const seed = Math.floor(Math.random() * 0x7fffffff);
+    this.view.rematch = { mine: false, theirs: false };
+    this.guest?.send({ t: 'restart', seed });
+    this.onRestart(seed);
   }
 
   start(): void {
@@ -348,8 +393,8 @@ export class HostLobby implements Lobby {
     const seed = Math.floor(Math.random() * 0x7fffffff);
     this.inMatch = true;
     this.token = Math.random().toString(36).slice(2, 12);
-    this.guest?.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed, token: this.token });
-    this.onStart({ localTeam: teamOf(this.lobby, 'host'), seed });
+    this.guest?.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed, token: this.token, half: this.opts.halfLength });
+    this.onStart({ localTeam: teamOf(this.lobby, 'host'), seed, halfLength: this.opts.halfLength, looks: looksByTeam(this.lobby) });
   }
 
   leave(): void {
@@ -383,6 +428,8 @@ export interface HostMatchOptions {
   localTeam: TeamId | null;
   seed?: number;
   difficulty?: Difficulty;
+  /** Seconds per half (default HALF_LENGTH_SECONDS). */
+  halfLength?: number;
   /** Online: the lobby whose guest controls the other team. Offline when absent. */
   lobby?: HostLobby;
 }
@@ -405,6 +452,7 @@ export class HostMatch implements MatchDriver {
   private lastReceivedSeq = -1;
   private lastAppliedSeq = -1;
   private lastEventSent = 0;
+  private statsSent = false;
   private paused = false;
   private resumeAt: number | null = null;
   private link: Link | null = null;
@@ -416,20 +464,39 @@ export class HostMatch implements MatchDriver {
   constructor(private readonly opts: HostMatchOptions) {
     this.online = !!opts.lobby;
     this.remoteTeam = opts.localTeam === 1 ? 0 : 1;
-    this.state = this.newState();
-    if (opts.lobby) opts.lobby.onRejoin = (lastEvent) => this.onRejoin(lastEvent);
+    this.state = this.newState(opts.seed);
+    if (opts.lobby) {
+      opts.lobby.onRejoin = (lastEvent) => this.onRejoin(lastEvent);
+      opts.lobby.onRestart = (seed) => this.restart(seed);
+    }
   }
 
-  private newState(): GameState {
-    const { localTeam, seed, difficulty } = this.opts;
+  private newState(seed: number | undefined): GameState {
+    const { localTeam, difficulty, halfLength } = this.opts;
     const humans: [boolean, boolean] = this.online ? [true, true] : [localTeam === 0, localTeam === 1];
-    return createMatchState({ aiVsAi: !this.online && localTeam === null, humans, seed, difficulty: difficulty && [difficulty, difficulty] });
+    return createMatchState({ aiVsAi: !this.online && localTeam === null, humans, seed, halfLength, difficulty: difficulty && [difficulty, difficulty] });
   }
 
-  restart(): void {
-    if (this.online) return;
-    this.state = this.newState();
+  /** A brand-new match (offline "play again", or an agreed online rematch). */
+  restart(seed?: number): void {
+    this.state = this.newState(seed ?? Math.floor(Math.random() * 0x7fffffff));
     this.acc = 0;
+    this.lastEventSent = 0;
+    this.statsSent = false;
+    this.queue = [];
+    this.lastRemote = null;
+  }
+
+  stats(): MatchStats | null {
+    return this.state.stats;
+  }
+
+  rematch(): { mine: boolean; theirs: boolean } | null {
+    return this.opts.lobby ? this.opts.lobby.view.rematch : null;
+  }
+
+  setRematch(want: boolean): void {
+    this.opts.lobby?.requestRematch(want);
   }
 
   private get ended(): boolean {
@@ -530,6 +597,11 @@ export class HostMatch implements MatchDriver {
       this.lastEventSent = event.id;
       this.link?.send({ t: 'event', event });
     }
+    // The final statistics, once, for the guest's results screen.
+    if (this.state.phase === 'full-time' && !this.statsSent) {
+      this.statsSent = true;
+      this.link?.send({ t: 'stats', stats: this.state.stats });
+    }
   }
 
   /** The guest reconnected: resend the events it missed, and start its inputs afresh. */
@@ -540,6 +612,7 @@ export class HostMatch implements MatchDriver {
     this.lastReceivedSeq = -1;
     this.inputLoss.reset();
     for (const event of this.state.events) if (event.id > lastEvent) this.link?.send({ t: 'event', event });
+    if (this.state.phase === 'full-time') this.link?.send({ t: 'stats', stats: this.state.stats });
   }
 
   overlay(nowMs: number): NetOverlay | null {

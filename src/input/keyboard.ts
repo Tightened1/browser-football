@@ -1,23 +1,14 @@
 // Keyboard -> InputFrame.
+import { DEFAULT_BINDINGS, normKey, type ActionId, type Bindings } from '../settings';
 import type { InputFrame } from '../sim/types';
 
-const LEFT = ['ArrowLeft', 'KeyA'];
-const RIGHT = ['ArrowRight', 'KeyD'];
-const UP = ['ArrowUp', 'KeyW'];
-const DOWN = ['ArrowDown', 'KeyS'];
-const PASS = ['KeyX'];
-const SHOOT = ['Space'];
-const TACKLE = ['KeyC'];
-const SWITCH = ['KeyZ', 'ShiftLeft', 'ShiftRight'];
+const anyDown = (keys: ReadonlySet<string>, codes: readonly string[]): boolean => codes.some((c) => c !== '' && keys.has(c));
 
-const ALL_KEYS = new Set([...LEFT, ...RIGHT, ...UP, ...DOWN, ...PASS, ...SHOOT, ...TACKLE, ...SWITCH]);
-
-const anyDown = (keys: ReadonlySet<string>, codes: string[]): boolean => codes.some((c) => keys.has(c));
-
-/** Pure mapping from the set of held key codes (KeyboardEvent.code) to an InputFrame. */
-export function buildInputFrame(keys: ReadonlySet<string>, seq: number): InputFrame {
-  let moveX = (anyDown(keys, RIGHT) ? 1 : 0) - (anyDown(keys, LEFT) ? 1 : 0);
-  let moveY = (anyDown(keys, DOWN) ? 1 : 0) - (anyDown(keys, UP) ? 1 : 0);
+/** Pure mapping from the set of held key codes (KeyboardEvent.code, left/right Shift as one) to an InputFrame. */
+export function buildInputFrame(keys: ReadonlySet<string>, seq: number, bindings: Bindings = DEFAULT_BINDINGS): InputFrame {
+  const down = (a: ActionId): boolean => anyDown(keys, bindings[a]);
+  let moveX = (down('right') ? 1 : 0) - (down('left') ? 1 : 0);
+  let moveY = (down('down') ? 1 : 0) - (down('up') ? 1 : 0);
   const len = Math.hypot(moveX, moveY);
   if (len > 0) {
     moveX /= len;
@@ -27,10 +18,10 @@ export function buildInputFrame(keys: ReadonlySet<string>, seq: number): InputFr
     seq,
     moveX,
     moveY,
-    pass: anyDown(keys, PASS),
-    shoot: anyDown(keys, SHOOT),
-    tackle: anyDown(keys, TACKLE),
-    switchPlayer: anyDown(keys, SWITCH),
+    pass: down('pass'),
+    shoot: down('shoot'),
+    tackle: down('tackle'),
+    switchPlayer: down('switch'),
   };
 }
 
@@ -40,21 +31,25 @@ export class KeyboardInput {
   /** Keys pressed since the last sample, so a tap shorter than one tick is not lost. */
   private readonly latched = new Set<string>();
   private seq = 0;
+  private readonly allKeys: ReadonlySet<string>;
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
-    if (!ALL_KEYS.has(e.code)) return;
+    const code = normKey(e.code);
+    if (!this.allKeys.has(code)) return;
     e.preventDefault(); // stop arrows/space scrolling the page
-    this.held.add(e.code);
-    this.latched.add(e.code);
+    this.held.add(code);
+    this.latched.add(code);
   };
   private readonly onKeyUp = (e: KeyboardEvent): void => {
-    if (!ALL_KEYS.has(e.code)) return;
+    const code = normKey(e.code);
+    if (!this.allKeys.has(code)) return;
     e.preventDefault();
-    this.held.delete(e.code);
+    this.held.delete(code);
   };
   private readonly onBlur = (): void => this.held.clear();
 
-  constructor() {
+  constructor(private readonly bindings: Bindings = DEFAULT_BINDINGS) {
+    this.allKeys = new Set(Object.values(bindings).flat().filter((k) => k !== ''));
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
@@ -63,7 +58,7 @@ export class KeyboardInput {
   sample(): InputFrame {
     const keys = new Set([...this.held, ...this.latched]);
     this.latched.clear();
-    return buildInputFrame(keys, this.seq++);
+    return buildInputFrame(keys, this.seq++, this.bindings);
   }
 
   dispose(): void {

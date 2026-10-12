@@ -3,7 +3,6 @@ import {
   GOAL_KICK_DISTANCE,
   GOAL_PAUSE,
   GOAL_WIDTH,
-  HALF_LENGTH_SECONDS,
   HALF_TIME_PAUSE,
   HALVES,
   KICKOFF_DELAY,
@@ -33,7 +32,7 @@ export function isFrozen(phase: MatchPhase): boolean {
 
 /** Seconds played in the whole match (both halves). */
 export function matchClock(state: GameState): number {
-  return (state.half - 1) * HALF_LENGTH_SECONDS + state.clock;
+  return (state.half - 1) * state.halfLength + state.clock;
 }
 
 /** Appends an event to the state's capped event list. */
@@ -200,7 +199,9 @@ function scoreGoal(state: GameState, side: -1 | 1): void {
   state.phaseTimer = GOAL_PAUSE;
   state.restart = null;
   state.kickoffTeam = conceding;
-  pushEvent(state, 'goal', { team: scorer, player: last ? last.player : -1, ownGoal: !!last && last.team === conceding });
+  const ownGoal = !!last && last.team === conceding;
+  state.stats.goals.push({ team: scorer, player: last ? last.player : -1, ownGoal, half: state.half, clock: state.clock });
+  pushEvent(state, 'goal', { team: scorer, player: last ? last.player : -1, ownGoal });
 }
 
 function endHalf(state: GameState): void {
@@ -238,15 +239,16 @@ export function updateRules(state: GameState, dt: number): void {
       if (state.phaseTimer <= 0) beginPlay(state);
       break;
     case 'playing':
-      state.clock = Math.min(HALF_LENGTH_SECONDS, state.clock + dt);
+      state.clock = Math.min(state.halfLength, state.clock + dt);
+      if (state.lastTouch) state.stats.possession[state.lastTouch.team] += dt;
       updateRestart(state, dt);
       checkBall(state);
-      if (state.phase === 'playing' && state.clock >= HALF_LENGTH_SECONDS) endHalf(state);
+      if (state.phase === 'playing' && state.clock >= state.halfLength) endHalf(state);
       break;
     case 'goal-scored':
       state.phaseTimer -= dt;
       if (state.phaseTimer > 0) break;
-      if (state.clock >= HALF_LENGTH_SECONDS) endHalf(state);
+      if (state.clock >= state.halfLength) endHalf(state);
       else startKickoff(state, state.kickoffTeam);
       break;
     case 'half-time':
