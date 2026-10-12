@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import {
   CENTRE_CIRCLE_RADIUS,
   COLORS,
+  CONTROL_RING_COLOR,
   GOAL_DEPTH,
   GOAL_WIDTH,
   LINE_THICKNESS,
@@ -15,6 +16,7 @@ import {
   POST_RADIUS,
   SHOT_MAX_CHARGE_TIME,
   SIM_DT,
+  TEAMS,
 } from '../config';
 import { KeyboardInput } from '../input/keyboard';
 import { BOUNDARY } from '../sim/physics';
@@ -27,6 +29,7 @@ export class MatchScene extends Phaser.Scene {
   private accumulator = 0;
   private keyboard!: KeyboardInput;
   private dynamic!: Phaser.GameObjects.Graphics;
+  private readonly numberLabels: Phaser.GameObjects.Text[] = [];
 
   constructor() {
     super('MatchScene');
@@ -37,6 +40,15 @@ export class MatchScene extends Phaser.Scene {
     this.accumulator = 0;
     this.drawPitch();
     this.dynamic = this.add.graphics();
+    this.numberLabels.length = 0;
+    for (const team of [0, 1]) {
+      const label = this.add
+        .text(0, 0, '', { fontFamily: 'sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#ffffff', stroke: '#000000', strokeThickness: 4 })
+        .setOrigin(0.5, 1)
+        .setDepth(10)
+        .setVisible(false);
+      this.numberLabels[team] = label;
+    }
 
     this.keyboard = new KeyboardInput();
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.keyboard.dispose());
@@ -74,7 +86,13 @@ export class MatchScene extends Phaser.Scene {
     g.clear();
     g.fillStyle(0xffffff, 1);
     for (const post of BOUNDARY.posts) g.fillCircle(post.pos.x, post.pos.y, POST_RADIUS);
-    for (const p of state.players) this.drawPlayer(g, p);
+    for (const p of state.players) this.drawPlayer(g, p, state.controlled[p.team] === p.id);
+    for (const team of [0, 1] as const) {
+      const cur = state.controlled[team] >= 0 ? state.players[state.controlled[team]] : undefined;
+      const label = this.numberLabels[team];
+      label.setVisible(!!cur);
+      if (cur) label.setText(String(cur.number)).setPosition(cur.pos.x, cur.pos.y - cur.radius - 10);
+    }
     // Ball: soft shadow, white body, dark outline.
     g.fillStyle(0x000000, 0.25);
     g.fillCircle(state.ball.pos.x + 2, state.ball.pos.y + 3, state.ball.radius);
@@ -84,14 +102,19 @@ export class MatchScene extends Phaser.Scene {
     g.strokeCircle(state.ball.pos.x, state.ball.pos.y, state.ball.radius);
   }
 
-  private drawPlayer(g: Phaser.GameObjects.Graphics, p: PlayerState): void {
+  private drawPlayer(g: Phaser.GameObjects.Graphics, p: PlayerState, controlled: boolean): void {
     const { x, y } = p.pos;
     g.fillStyle(0x000000, 0.25);
     g.fillCircle(x + 2, y + 3, p.radius);
-    g.fillStyle(p.tackleTimer > 0 ? 0x6fa3f5 : COLORS.player, 1);
+    const team = TEAMS[p.team];
+    g.fillStyle(p.tackleTimer > 0 ? 0xffffff : p.role === 'keeper' ? team.keeper : team.kit, p.tackleTimer > 0 ? 0.75 : 1);
     g.fillCircle(x, y, p.radius);
-    g.lineStyle(2, COLORS.playerOutline, 1);
+    g.lineStyle(2, team.outline, 1);
     g.strokeCircle(x, y, p.radius);
+    if (controlled) {
+      g.lineStyle(3, CONTROL_RING_COLOR, 1);
+      g.strokeCircle(x, y, p.radius + 5);
+    }
     // Facing indicator: a line and a dot at the front edge.
     const fx = Math.cos(p.facing);
     const fy = Math.sin(p.facing);

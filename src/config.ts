@@ -93,6 +93,56 @@ export const TACKLE_DURATION = 0.32;
 export const TACKLE_COOLDOWN = 0.9;
 export const TACKLE_KNOCK_SPEED = 650;
 
+/** Teams: 5-a-side (1 keeper + 4 outfield). Team 0 defends the left goal, team 1 the right. */
+export const PLAYERS_PER_TEAM = 5;
+/** Soft player-vs-player pushing. */
+export const PLAYER_PLAYER_RESTITUTION = 0.1;
+export const COLLISION_ITERATIONS = 2;
+
+/**
+ * Starting formation (2-2) for the four outfield slots, as fractions of the pitch:
+ * fx = distance from own goal line along the pitch (0..1), fy = across the pitch (0 = top).
+ */
+export const FORMATION: readonly { fx: number; fy: number }[] = [
+  { fx: 0.22, fy: 0.3 },
+  { fx: 0.22, fy: 0.7 },
+  { fx: 0.4, fy: 0.3 },
+  { fx: 0.4, fy: 0.7 },
+];
+/** Basic positioning: how far (0..1) an idle player is pulled from its formation spot towards the ball. */
+export const BALL_PULL_X = 0.35;
+export const BALL_PULL_Y = 0.25;
+/** Keep idle players this far inside the pitch edges (px). */
+export const AI_EDGE_MARGIN = 30;
+/** Within this distance of the target an AI player slows down proportionally (px). */
+export const AI_ARRIVE_RADIUS = 40;
+/** Closer than this to the target, an AI player stops (px). */
+export const AI_DEADZONE = 3;
+/** Fraction of full speed idle outfield players move at. */
+export const AI_MOVE_FACTOR = 0.8;
+
+/** Switching: teammates between the ball and their own goal count as this many px closer. */
+export const SWITCH_GOALSIDE_BIAS = 70;
+
+/** Goalkeepers. */
+export const KEEPER_RADIUS = 18;
+/** Distance of the keeper's centre in front of its goal line (px). */
+export const KEEPER_LINE_OFFSET = 24;
+/** The keeper tracks the ball's y within +/- this of the goal centre (px). */
+export const KEEPER_RANGE = 52;
+export const KEEPER_ARRIVE_RADIUS = 30;
+export const KEEPER_BALL_RESTITUTION = 0.15;
+/** Inverse mass of the keeper vs the ball (small = a hard shot barely moves the keeper). */
+export const KEEPER_INV_MASS = 0.1;
+/** After touching a keeper the ball always leaves at least this fast, away from the goal (px/s). */
+export const KEEPER_CLEAR_SPEED = 140;
+
+export const TEAMS = [
+  { name: 'Home', kit: 0x2a6fdb, keeper: 0xf2c94c, outline: 0x0b2a5e },
+  { name: 'Away', kit: 0xd9372b, keeper: 0x2fbf71, outline: 0x5e1410 },
+] as const;
+export const CONTROL_RING_COLOR = 0xffffff;
+
 export const COLORS = {
   player: 0x2a6fdb,
   playerOutline: 0x0b2a5e,

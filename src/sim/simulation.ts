@@ -5,7 +5,14 @@ import {
   DRIBBLE_BOOST,
   DRIBBLE_CONE,
   DRIBBLE_REACH,
+  COLLISION_ITERATIONS,
   DRIBBLE_TOUCH_INTERVAL,
+  KEEPER_BALL_RESTITUTION,
+  KEEPER_CLEAR_SPEED,
+  KEEPER_INV_MASS,
+  KEEPER_RADIUS,
+  PLAYERS_PER_TEAM,
+  PLAYER_PLAYER_RESTITUTION,
   KICK_PLAYER_VEL_FACTOR,
   KICK_REACH,
   KICK_TOUCH_LOCKOUT,
@@ -38,7 +45,9 @@ import {
   moveCircle,
   speedOf,
 } from './physics';
-import type { BallState, GameState, InputFrame, PlayerState, TeamId } from './types';
+import { aiInput, formationPosition } from './ai';
+import { applySwitching, updateTouches } from './control';
+import type { BallState, GameState, InputFrame, PlayerRole, PlayerState, TeamId } from './types';
 
 export const NEUTRAL_INPUT: InputFrame = {
   seq: 0,
@@ -50,13 +59,23 @@ export const NEUTRAL_INPUT: InputFrame = {
   switchPlayer: false,
 };
 
-export function createPlayer(id: number, team: TeamId, x: number, y: number): PlayerState {
+export function createPlayer(
+  id: number,
+  team: TeamId,
+  x: number,
+  y: number,
+  role: PlayerRole = 'outfield',
+  slot = 1,
+): PlayerState {
   return {
     id,
     team,
+    role,
+    slot,
+    number: slot + 1,
     pos: { x, y },
     vel: { x: 0, y: 0 },
-    radius: PLAYER_RADIUS,
+    radius: role === 'keeper' ? KEEPER_RADIUS : PLAYER_RADIUS,
     facing: team === 0 ? 0 : Math.PI,
     charge: 0,
     tackleTimer: 0,
@@ -68,18 +87,35 @@ export function createPlayer(id: number, team: TeamId, x: number, y: number): Pl
   };
 }
 
+/** Two full teams in formation, ball on the centre spot. Team 0 (home) is human-controlled. */
 export function createInitialState(): GameState {
   const midX = PITCH_LEFT + PITCH_WIDTH / 2;
   const midY = PITCH_TOP + PITCH_HEIGHT / 2;
+  const attackDir: [number, number] = [1, -1];
+  const players: PlayerState[] = [];
+  for (const team of [0, 1] as const) {
+    for (let slot = 0; slot < PLAYERS_PER_TEAM; slot++) {
+      const pos = formationPosition(slot, attackDir[team]);
+      players.push(createPlayer(players.length, team, pos.x, pos.y, slot === 0 ? 'keeper' : 'outfield', slot));
+    }
+  }
   return {
     tick: 0,
-    ball: {
-      pos: { x: midX, y: midY },
-      vel: { x: 0, y: 0 },
-      radius: BALL_RADIUS,
-    },
-    players: [createPlayer(0, 0, midX - 150, midY)],
+    ball: { pos: { x: midX, y: midY }, vel: { x: 0, y: 0 }, radius: BALL_RADIUS },
+    players,
+    controlled: [PLAYERS_PER_TEAM - 1, -1], // home's front-most outfield player; away has no human
+    attackDir,
+    lastTouch: null,
+    prevSwitch: [false, false],
   };
+}
+
+/** One human-controlled player alone on the pitch (for tests and debugging). */
+export function createSoloState(x: number, y: number): GameState {
+  const s = createInitialState();
+  s.players = [createPlayer(0, 0, x, y)];
+  s.controlled = [0, -1];
+  return s;
 }
 
 export function cloneState(s: GameState): GameState {
@@ -87,6 +123,10 @@ export function cloneState(s: GameState): GameState {
     tick: s.tick,
     ball: { pos: { ...s.ball.pos }, vel: { ...s.ball.vel }, radius: s.ball.radius },
     players: s.players.map((p) => ({ ...p, pos: { ...p.pos }, vel: { ...p.vel } })),
+    controlled: [s.controlled[0], s.controlled[1]],
+    attackDir: [s.attackDir[0], s.attackDir[1]],
+    lastTouch: s.lastTouch ? { ...s.lastTouch } : null,
+    prevSwitch: [s.prevSwitch[0], s.prevSwitch[1]],
   };
 }
 
@@ -164,7 +204,9 @@ function kickBall(p: PlayerState, ball: BallState, speed: number): void {
 }
 
 /** Charging, kicks, tackle knocks and dribble touches for one player. */
-function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt: number): void {
+/** Returns true if the player touched the ball (kick, knock or dribble nudge). */
+function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt: number): boolean {
+  let touched = false;
   const d = distance(p, ball);
   const contact = p.radius + ball.radius;
   const sliding = p.tackleTimer > 0;
@@ -183,8 +225,9 @@ function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt
       ball.vel.x = kx * TACKLE_KNOCK_SPEED;
       ball.vel.y = ky * TACKLE_KNOCK_SPEED;
       p.touchTimer = KICK_TOUCH_LOCKOUT;
+      touched = true;
     }
-    return;
+    return touched;
   }
 
   // Shoot: hold to charge (capped), release to kick. Pass: press to kick at medium power.
@@ -192,14 +235,19 @@ function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt
   const shootReleased = !input.shoot && p.prevShoot;
   const passPressed = input.pass && !p.prevPass;
   if (d <= contact + KICK_REACH) {
-    if (passPressed) kickBall(p, ball, PASS_SPEED);
-    else if (shootReleased) kickBall(p, ball, shotSpeed(p.charge));
+    if (passPressed) {
+      kickBall(p, ball, PASS_SPEED);
+      touched = true;
+    } else if (shootReleased) {
+      kickBall(p, ball, shotSpeed(p.charge));
+      touched = true;
+    }
   }
   if (!input.shoot) p.charge = 0;
 
   // Dribble: a touch while running nudges the ball ahead; it then runs free until the next touch.
   const speed = speedOf(p.vel);
-  if (p.touchTimer === 0 && speed > 20 && d <= contact + DRIBBLE_REACH && d > 1e-9) {
+  if (p.role !== 'keeper' && p.touchTimer === 0 && speed > 20 && d <= contact + DRIBBLE_REACH && d > 1e-9) {
     const dirX = p.vel.x / speed;
     const dirY = p.vel.y / speed;
     const toBallX = (ball.pos.x - p.pos.x) / d;
@@ -210,23 +258,45 @@ function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt
       ball.vel.x = dirX * out;
       ball.vel.y = dirY * out;
       p.touchTimer = DRIBBLE_TOUCH_INTERVAL;
+      touched = true;
     }
+  }
+  return touched;
+}
+
+/** Soft pushing: separate overlapping players (no overlap afterwards) and exchange a little momentum. */
+function resolvePlayerCollisions(players: PlayerState[]): void {
+  for (let iter = 0; iter < COLLISION_ITERATIONS; iter++) {
+    for (let i = 0; i < players.length; i++) {
+      for (let j = i + 1; j < players.length; j++) {
+        collideCircles(players[i], players[j], PLAYER_PLAYER_RESTITUTION, 1, 1);
+      }
+    }
+    for (const p of players) collideWithBoundary(p, undefined, 1, 0);
   }
 }
 
-export function step(state: GameState, inputs: readonly InputFrame[], dt: number): GameState {
+/** inputs[team] is that team's human input; teams without one (or players not controlled) use the AI. */
+export function step(state: GameState, inputs: readonly (InputFrame | undefined)[], dt: number): GameState {
   const next = cloneState(state);
   const ball = next.ball;
 
+  applySwitching(next, inputs);
+  const used = next.players.map((p) => {
+    const human = next.controlled[p.team] === p.id ? inputs[p.team] : undefined;
+    return human ?? aiInput(next, p);
+  });
+
   next.players.forEach((p, i) => {
-    const input = inputs[i] ?? NEUTRAL_INPUT;
+    const input = used[i];
     maybeStartTackle(p, input, ball);
     updatePlayer(p, input, dt);
-    interactWithBall(p, input, ball, dt);
+    if (interactWithBall(p, input, ball, dt)) next.lastTouch = { team: p.team, player: p.id };
     p.prevPass = input.pass;
     p.prevShoot = input.shoot;
     p.prevTackle = input.tackle;
   });
+  resolvePlayerCollisions(next.players);
 
   applyRollingFriction(ball, dt);
   capSpeed(ball, BALL_MAX_SPEED);
@@ -237,10 +307,22 @@ export function step(state: GameState, inputs: readonly InputFrame[], dt: number
   const subDt = dt / substeps;
   for (let i = 0; i < substeps; i++) {
     moveCircle(ball, subDt);
-    for (const p of next.players) collideCircles(p, ball, PLAYER_BALL_RESTITUTION, 0, 1);
+    for (const p of next.players) {
+      if (p.role === 'keeper') {
+        // Keepers block: nearly dead bounce, barely moved by the ball, and the ball always leaves the goal.
+        if (collideCircles(p, ball, KEEPER_BALL_RESTITUTION, KEEPER_INV_MASS, 1)) {
+          const dir = next.attackDir[p.team];
+          if (ball.vel.x * dir < KEEPER_CLEAR_SPEED) ball.vel.x = dir * KEEPER_CLEAR_SPEED;
+          next.lastTouch = { team: p.team, player: p.id };
+        }
+      } else {
+        collideCircles(p, ball, PLAYER_BALL_RESTITUTION, 1, 1);
+      }
+    }
     collideWithBoundary(ball, undefined, WALL_TANGENT_KEEP);
   }
 
+  updateTouches(next);
   next.tick = state.tick + 1;
   return next;
 }

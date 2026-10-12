@@ -16,9 +16,17 @@ export type BallState = CircleBody;
 
 export type TeamId = 0 | 1;
 
+export type PlayerRole = 'keeper' | 'outfield';
+
 export interface PlayerState extends CircleBody {
+  /** Index in GameState.players. */
   id: number;
   team: TeamId;
+  role: PlayerRole;
+  /** Formation slot within the team: 0 = keeper, 1..4 = outfield. */
+  slot: number;
+  /** Shirt number shown above the controlled player. */
+  number: number;
   /** Facing angle in radians. */
   facing: number;
   /** Seconds the shoot button has been held (0 when not charging). Capped at SHOT_MAX_CHARGE_TIME. */
@@ -35,7 +43,7 @@ export interface PlayerState extends CircleBody {
   prevTackle: boolean;
 }
 
-/** One tick of input for one controller. Until T03, inputs[i] drives players[i]. */
+/** One tick of input for one human controller; inputs[team] drives that team's controlled player. */
 export interface InputFrame {
   /** Increasing sequence number (used by netcode later). */
   seq: number;
@@ -53,4 +61,12 @@ export interface GameState {
   tick: number;
   ball: BallState;
   players: PlayerState[];
+  /** Id of the player each team's human controls, or -1 if the team has no human. */
+  controlled: [number, number];
+  /** Direction (+1 right / -1 left along x) each team attacks. */
+  attackDir: [number, number];
+  /** Last team/player to touch the ball (null before the first touch). */
+  lastTouch: { team: TeamId; player: number } | null;
+  /** Previous-tick switch button per team, for press edge detection. */
+  prevSwitch: [boolean, boolean];
 }

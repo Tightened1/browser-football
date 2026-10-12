@@ -13,7 +13,7 @@ import {
   TACKLE_COOLDOWN,
 } from '../src/config';
 import { buildInputFrame } from '../src/input/keyboard';
-import { createInitialState, NEUTRAL_INPUT, shotSpeed, step } from '../src/sim/simulation';
+import { createSoloState, NEUTRAL_INPUT, shotSpeed, step } from '../src/sim/simulation';
 import type { GameState, InputFrame } from '../src/sim/types';
 
 const midY = PITCH_TOP + PITCH_HEIGHT / 2;
@@ -23,8 +23,7 @@ const speedOf = (v: { x: number; y: number }) => Math.hypot(v.x, v.y);
 
 /** Player at (x, y), ball placed elsewhere, nothing moving. */
 function setup(px: number, py: number, bx = 900, by = 150): GameState {
-  const s = createInitialState();
-  s.players[0].pos = { x: px, y: py };
+  const s = createSoloState(px, py);
   s.ball.pos = { x: bx, y: by };
   return s;
 }
