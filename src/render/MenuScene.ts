@@ -45,6 +45,8 @@ export class MenuScene extends Phaser.Scene {
     this.message = label(this, CX, 585, 22, UI_COLORS.warn).setWordWrapWidth(900);
     if (data.message) this.message.setText(data.message);
 
+    button(this, CX, 655, 'Test my connection', () => this.scene.start('DiagnosticsScene'), { size: 20, width: 260, secondary: true });
+
     label(this, CX, GAME_HEIGHT - 95, 18, UI_COLORS.muted).setText(
       'Move: arrows / WASD    Pass: X    Shoot: Space (hold to charge)    Tackle: C    Switch: Z / Shift    Menu: Esc',
     );

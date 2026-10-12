@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, TEAMS } from '../config';
 import { GuestLobby } from '../net/client';
 import { HostLobby } from '../net/host';
+import { describeRoute } from '../net/ice';
 import { inviteLink, type Lobby, type LobbyView } from '../net/peer';
 import { canStart, teamOf } from '../net/protocol';
 import type { TeamId } from '../sim/types';
@@ -28,6 +29,7 @@ interface Card {
   who: Phaser.GameObjects.Text;
   ready: Phaser.GameObjects.Text;
   ping: Phaser.GameObjects.Text;
+  route: Phaser.GameObjects.Text;
 }
 
 /** Online lobby: room code and invite link, both players, ping, team choice, ready, start. Reads the lobby's view; buttons call the lobby. */
@@ -104,8 +106,9 @@ export class LobbyScene extends Phaser.Scene {
     return {
       bg,
       who: label(this, x, CARD_Y - 10, 26, UI_COLORS.text, true),
-      ready: label(this, x, CARD_Y + 30, 20),
-      ping: label(this, x, CARD_Y + 62, 17, UI_COLORS.muted),
+      ready: label(this, x, CARD_Y + 26, 20),
+      ping: label(this, x, CARD_Y + 54, 17, UI_COLORS.muted),
+      route: label(this, x, CARD_Y + 78, 16, UI_COLORS.muted).setWordWrapWidth(CARD_W - 20),
     };
   }
 
@@ -176,6 +179,7 @@ export class LobbyScene extends Phaser.Scene {
       card.who.setText(v.role === 'host' ? 'Waiting for a player…' : 'Connecting…').setColor(UI_COLORS.muted);
       card.ready.setText('');
       card.ping.setText('');
+      card.route.setText('');
       return;
     }
     const name = v.lobby.names[idx];
@@ -183,6 +187,8 @@ export class LobbyScene extends Phaser.Scene {
     const ready = v.lobby.ready[idx];
     card.ready.setText(ready ? '✔ READY' : 'Not ready').setColor(ready ? UI_COLORS.good : UI_COLORS.muted);
     card.ping.setText(isMe ? '' : `Ping: ${v.pingMs === null ? '…' : `${Math.round(v.pingMs)} ms`}`);
+    // "Connection: Direct (same network, UDP)" / "Connection: Relayed (through a TURN relay server, TLS)"
+    card.route.setText(isMe ? '' : `Connection: ${v.route ? describeRoute(v.route) : 'checking…'}`).setColor(v.route?.kind === 'relayed' ? UI_COLORS.warn : UI_COLORS.muted);
   }
 }
 

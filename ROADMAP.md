@@ -17,7 +17,7 @@ An online, top-down arcade football game that runs in the browser. Two players i
 | Language / tooling | TypeScript + Vite | `npm run dev` / `npm run build` |
 | Rendering | Phaser 3 (rendering, input, scenes only) | |
 | Physics / game logic | **Custom pure-TypeScript simulation** (no Phaser physics) | Keeps logic network-friendly and testable |
-| Networking | PeerJS (WebRTC peer-to-peer), **host-authoritative** | Free public PeerJS broker for signalling |
+| Networking | PeerJS (WebRTC peer-to-peer), **host-authoritative** | Free public PeerJS broker for signalling; TURN relay fallback (Metered recommended, keys via build-time secrets — `docs/NETWORK_TESTING.md`) |
 | Hosting | **GitHub Pages**, auto-deployed by GitHub Actions | If P2P fails on some networks, add TURN relay or switch to a Node/Socket.io server later |
 | Testing | Vitest for simulation logic | |
 
@@ -39,12 +39,14 @@ src/
     ai.ts              AI decisions -> produces InputFrames for AI-controlled players
   render/              Phaser scenes that DRAW a GameState (never change it)
     MatchScene.ts
-    MenuScene.ts / LobbyScene.ts / HudScene.ts
+    MenuScene.ts / LobbyScene.ts / HudScene.ts / DiagnosticsScene.ts
     ui.ts              Shared buttons/labels for menu and lobby
   input/
     keyboard.ts        Keyboard -> InputFrame
   net/
-    peer.ts            PeerJS connection, Link (typed messages, ping, liveness), lobby interface
+    peer.ts            PeerJS connection, ICE/TURN server loading, Link (typed messages, ping, liveness, route), lobby interface
+    ice.ts             ICE candidates, direct/relayed route from stats, TURN responses, diagnostics wording (pure)
+    diagnostics.ts     Connection test: broker, candidate gathering, relay round trip
     roomCode.ts        Room codes, invite links, peer IDs (pure)
     errors.ts          Player-facing network errors (pure)
     protocol.ts        Versioned message types (handshake, lobby, ping, events, rejoin) (pure)
@@ -107,7 +109,7 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T05 | Match rules: kickoff, goals, out of play, timer, HUD | T03 | Sonnet 5.5 | [x] |
 | T06 | Networking: PeerJS host/join lobby with room codes | T05 | **Opus 5.5** | [x] |
 | T07 | Netcode: input sending, snapshots, interpolation, disconnects | T06 | **Opus 5.5** | [x] |
-| T08 | Real-world network test & TURN fallback | T07 | **Opus 5.5** | [ ] |
+| T08 | Real-world network test & TURN fallback | T07 | **Opus 5.5** | [!] code done; waiting on you: create TURN keys + `VITE_TURN_CREDENTIALS_URL` secret, then run the checklist in `docs/NETWORK_TESTING.md` |
 | T09 | Menus & game flow (title, host/join, settings, results) | T07 | Sonnet 5.5 | [ ] |
 | T10 | Juice & audio: sounds, goal celebration, team colours, camera | T05 | Sonnet 5.5 | [ ] |
 | T11 | Playtest & gameplay tuning | T04, T10 | Sonnet 5.5 | [ ] |
@@ -437,7 +439,7 @@ Finally, mark T12 as [x] in the ROADMAP.md task queue, commit, push and give me 
 | B02 | Gamepad support (browser Gamepad API) | Sonnet 5.5 |
 | B03 | Mobile touch controls (virtual joystick) | Sonnet 5.5 |
 | B04 | 2v2 humans online (more peers, more controlled players per team) | Opus 5.5 |
-| B05 | Switch to a Node/Socket.io server if P2P is unreliable | Opus 5.5 |
+| B05 | Switch to a Node/Socket.io server if P2P is unreliable (plan: `docs/RELAY_SERVER_OPTION.md`) | Opus 5.5 |
 | B06 | Penalty shoot-out after a draw | Sonnet 5.5 |
 | B07 | Replays of goals (record snapshots) | Opus 5.5 |
 
@@ -449,3 +451,4 @@ Finally, mark T12 as [x] in the ROADMAP.md task queue, commit, push and give me 
 - 2026-10-12 — T05: match flow in `sim/rules.ts` (phases `pre-kickoff | playing | goal-scored | half-time | full-time`, score, half, clock, `restart`, capped `events` list with increasing ids — consumers remember the last id they handled). The ball now uses `BALL_BOUNDARY` (nets and posts only, no touchline/end-line walls) so it can leave the pitch; players still use the closed `BOUNDARY`. Set pieces (throw-in, goal kick, corner, kickoff) place the ball and a taker, keep the opposition clear and auto-release after `RESTART_AUTO_DELAY`. `createMatchState()` starts a real match in pre-kickoff; `createInitialState()` is open play for tests. HUD in `render/HudScene.ts`; "Play again" calls `MatchScene.restartMatch()`.
 - 2026-10-12 — T06: the game now opens on `MenuScene` (Play vs AI / Host / Join). Online: the host registers `browser-football-<code>` on the public PeerJS broker (codes like `PASS-4827`); the guest connects with one reliable JSON data channel, sends `hello` (protocol + game version from package.json — **bump `version` in package.json with each task**), and the host answers `welcome` or `reject`. The host owns `LobbyState` (teams, ready flags) and sends it on every change. `Link` pings every second and drops the connection after 8 s of silence. Start currently launches an independent offline match on each screen with the player's chosen team (`MatchOptions.humans`); the `Lobby` object is passed to `MatchScene` (`MatchSceneData.online`) for T07 to use. STUN/TURN config is in `config.ts` (`TURN_SERVERS` is empty, ready for T08).
 - 2026-10-12 — T07: host-authoritative netcode (protocol 2, game 0.7.0). `HostMatch` (net/host.ts) runs the only sim — offline play is a `HostMatch` with no lobby — and `GuestMatch` (net/client.ts) draws the host's snapshots. Two channels on one PeerJS connection: the reliable JSON one (handshake, lobby, ping, events, rejoin) and an extra **unreliable, unordered** `RTCDataChannel` (negotiated id `NET_FAST_CHANNEL_ID`, `maxRetransmits: 0`) for binary snapshots (host → guest, 30/s, **143 bytes**; JSON would be ~1.8 KB) and inputs (guest → host, 60/s, each packet repeats the last 4 frames). PeerJS's own `reliable: false` still retransmits, hence the extra channel; it falls back to base64 over the reliable channel if it can't open. The guest renders `NET_INTERP_DELAY_MS` (100 ms) behind, predicts only its own player's movement (blending back to the host's position near the ball) and releases events when the drawn match reaches their tick. Disconnects: either side pauses after `NET_STALL_MS` of silence; a dropped guest auto-reconnects (token from `start`, `rejoin` message, missed events resent) within `NET_RECONNECT_WINDOW_MS` (30 s), else the match ends; `bye` (Esc, closing the tab) ends it straight away. "Play again" is offline only (online rematch is T09). Note: a browser pauses a hidden tab's game loop, so if the host switches tabs the match pauses for both.
+- 2026-10-12 — T08 (game 0.8.0): **Test my connection** (menu → `DiagnosticsScene`, run by `net/diagnostics.ts`) checks the broker, gathers ICE candidates (host/srflx/relay, TURN errors explained, strict-NAT hint) and bounces data through the relay; the plain-English wording lives in pure `net/ice.ts` (tested). TURN comes from build-time env vars (`VITE_TURN_CREDENTIALS_URL`, or `VITE_TURN_URLS`/`_USERNAME`/`_CREDENTIAL`; GitHub secrets for the live site, `.env.local` locally) and `loadIceServers()` fetches/caches it. Fallback: ICE tries direct and relay together; if the attempt fails the guest retries once relay-only (`iceTransportPolicy: 'relay'`), the host lets a new attempt replace an unfinished one, and reconnects stay relayed. `Link.route` (from getStats) shows "Direct"/"Relayed" in the lobby and F3 overlay. Blocked only on TURN keys; server fallback written up in `docs/RELAY_SERVER_OPTION.md`. Note: the in-app preview pane doesn't fire requestAnimationFrame, so Phaser there must be stepped by hand (`__game.step`) for testing.

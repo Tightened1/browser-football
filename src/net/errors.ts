@@ -24,7 +24,7 @@ export interface NetError {
 }
 
 export const NETWORK_HINT =
-  "Work, school and public Wi-Fi networks often block direct peer-to-peer connections. Try from a home network, or use a phone's mobile hotspot.";
+  "Work, school and public Wi-Fi networks often block direct peer-to-peer connections. Try from a home network, or use a phone's mobile hotspot. \"Test my connection\" on the menu shows what your network allows.";
 
 const BASE: Record<NetErrorKind, Omit<NetError, 'kind'>> = {
   'room-not-found': {
@@ -51,7 +51,7 @@ const BASE: Record<NetErrorKind, Omit<NetError, 'kind'>> = {
   },
   'connection-failed': {
     title: "Couldn't connect",
-    message: 'The two browsers found each other but could not open a direct connection.',
+    message: 'The two browsers found each other but could not open a connection between them.',
     hint: NETWORK_HINT,
   },
   timeout: {

@@ -19,8 +19,22 @@ import { createMatchState, NEUTRAL_INPUT, step } from '../sim/simulation';
 import type { Difficulty, GameState, InputFrame, TeamId } from '../sim/types';
 import { kindForPeerError, netError, NETWORK_HINT } from './errors';
 import { seconds, type MatchDriver, type NetOverlay } from './match';
+import { describeRoute } from './ice';
 import { describeConditions } from './netsim';
-import { CONNECT_OPTIONS, createPeer, generateRoomCode, Link, peerErrorType, peerIdForRoom, type CloseReason, type Lobby, type LobbyView, type StartInfo } from './peer';
+import {
+  CONNECT_OPTIONS,
+  createPeer,
+  generateRoomCode,
+  Link,
+  loadIceServers,
+  peerErrorType,
+  peerIdForRoom,
+  type CloseReason,
+  type IceSetup,
+  type Lobby,
+  type LobbyView,
+  type StartInfo,
+} from './peer';
 import { decodeInputs, encodeSnapshot, mergeInputs, PACKET_INPUTS, packetType, takeSnapshot } from './snapshot';
 import { LossMeter, RateMeter } from './stats';
 import {
@@ -44,6 +58,7 @@ export class HostLobby implements Lobby {
     status: 'opening',
     lobby: createLobbyState(HOST_NAME, GUEST_NAME),
     pingMs: null,
+    route: null,
     notice: null,
     error: null,
     reconnectUntil: null,
@@ -64,14 +79,25 @@ export class HostLobby implements Lobby {
   private brokerTimer: ReturnType<typeof setTimeout> | undefined;
   private guestTimer: ReturnType<typeof setTimeout> | undefined;
   private pingTimer: ReturnType<typeof setInterval>;
+  private ice: IceSetup | null = null;
+  /** Abandons the incoming connection that is still being set up (not open yet), if any. */
+  private cancelPending: (() => void) | null = null;
 
   /** Closing the tab: say bye, so the other player hears straight away instead of after a timeout. */
   private readonly onPageHide = (): void => this.leave();
 
   constructor() {
-    this.openRoom();
+    // The broker timeout also covers fetching TURN credentials (which gives up well before it).
+    this.brokerTimer = setTimeout(() => this.fail('broker-unreachable'), NET_BROKER_TIMEOUT_MS);
+    void loadIceServers().then((ice) => {
+      this.ice = ice;
+      if (this.isActive()) this.openRoom();
+    });
     window.addEventListener('pagehide', this.onPageHide);
-    this.pingTimer = setInterval(() => (this.view.pingMs = this.accepted ? (this.guest?.pingMs ?? null) : null), 250);
+    this.pingTimer = setInterval(() => {
+      this.view.pingMs = this.accepted ? (this.guest?.pingMs ?? null) : null;
+      this.view.route = this.accepted ? (this.guest?.route ?? null) : null;
+    }, 250);
   }
 
   private get lobby(): LobbyState {
@@ -86,7 +112,7 @@ export class HostLobby implements Lobby {
   private openRoom(): void {
     this.attempts++;
     const code = generateRoomCode();
-    const peer = createPeer(peerIdForRoom(code));
+    const peer = createPeer(this.ice?.servers ?? [], { id: peerIdForRoom(code) });
     this.peer = peer;
     this.view.code = code;
     this.view.status = 'opening';
@@ -123,7 +149,10 @@ export class HostLobby implements Lobby {
       this.onIncomingRejoin(conn);
       return;
     }
-    if (this.guest || this.view.status === 'connecting' || !this.isActive()) {
+    // A new attempt while the last one is still being set up is the same guest retrying (through the relay, after
+    // the direct attempt failed on their side), so it replaces the old one.
+    this.cancelPending?.();
+    if (this.guest || !this.isActive()) {
       // One guest per room: tell anyone else the room is full.
       conn.on('open', () => new Link(conn).close({ t: 'reject', reason: 'room-full', protocol: PROTOCOL_VERSION, game: GAME_VERSION }));
       return;
@@ -135,11 +164,19 @@ export class HostLobby implements Lobby {
     this.view.status = 'connecting';
     this.view.notice = null;
     let settled = false;
-    const failed = (): void => {
-      if (settled) return;
+    const settle = (): boolean => {
+      if (settled) return false;
       settled = true;
       clearTimeout(this.guestTimer);
-      this.backToWaiting(`A player tried to join, but the connection couldn't be made. ${NETWORK_HINT}`);
+      if (this.cancelPending === cancel) this.cancelPending = null;
+      return true;
+    };
+    const cancel = (): void => {
+      if (settle()) conn.close();
+    };
+    this.cancelPending = cancel;
+    const failed = (): void => {
+      if (settle()) this.backToWaiting(`A player tried to join, but the connection couldn't be made. ${NETWORK_HINT}`);
     };
     this.guestTimer = setTimeout(() => {
       failed();
@@ -148,9 +185,7 @@ export class HostLobby implements Lobby {
     conn.on('error', failed);
     conn.on('iceStateChanged', (s) => s === 'failed' && failed());
     conn.on('open', () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(this.guestTimer);
+      if (!settle()) return;
       const link = new Link(conn);
       this.guest = link;
       this.accepted = false;
@@ -276,6 +311,7 @@ export class HostLobby implements Lobby {
     this.accepted = false;
     this.view.lobby = { ...this.lobby, ready: [false, false], names: [HOST_NAME, GUEST_NAME] };
     this.view.pingMs = null;
+    this.view.route = null;
     if (this.isActive()) {
       this.view.status = 'waiting';
       if (notice !== null) this.view.notice = notice;
@@ -328,6 +364,7 @@ export class HostLobby implements Lobby {
     clearTimeout(this.guestTimer);
     clearTimeout(this.reconnectTimer);
     clearInterval(this.pingTimer);
+    this.cancelPending?.();
     this.view.reconnectUntil = null;
     this.guest?.close();
     this.guest = null;
@@ -533,6 +570,7 @@ export class HostMatch implements MatchDriver {
       `inputs in     ${this.inputRate.rate(nowMs).toFixed(0)}/s · loss ${(this.inputLoss.loss() * 100).toFixed(1)}%`,
       `input queue   ${this.queue.length} (max ${NET_INPUT_BUFFER_MAX})`,
       `channel       ${link ? (link.hasFastChannel ? 'unreliable' : 'reliable fallback') : 'none'}`,
+      `route         ${link?.route ? describeRoute(link.route) : '…'}`,
       `simulated     ${link ? describeConditions(link.conditioner.conditions) : '-'}`,
       `state         ${this.paused ? 'paused' : 'running'} · tick ${this.state.tick}`,
     ];

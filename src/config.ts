@@ -1,5 +1,6 @@
 // All tunable constants live here.
 import type { Difficulty } from './sim/types';
+import { turnServersFromEnv } from './net/ice';
 
 /** Pitch playing area in world units (pixels at 1x). */
 export const PITCH_WIDTH = 1050;
@@ -303,15 +304,41 @@ export const STUN_SERVERS: RTCIceServer[] = [
 ];
 
 /* ===== TURN SERVERS (T08) ======================================================================
- * TURN relays the game data when a direct connection is impossible (e.g. strict corporate or
- * mobile networks). None are configured yet, so those networks will fail to connect.
- * T08 adds entries here, for example:
- *   { urls: 'turn:<host>:443?transport=tcp', username: '<user>', credential: '<password>' }
+ * TURN relays the game data when a direct connection is impossible (strict corporate, school or
+ * mobile networks). Set-up steps: docs/NETWORK_TESTING.md. Two ways, both read at BUILD time from
+ * env variables (.env.local on your machine, GitHub repository secrets for the live site), so no
+ * keys are committed to git. Note they still end up in the published JavaScript.
+ *   A) A URL that returns ICE servers as JSON (recommended):
+ *        VITE_TURN_CREDENTIALS_URL=https://<app>.metered.live/api/v1/turn/credentials?apiKey=<key>
+ *      or the address of your own Cloudflare Worker that mints short-lived Cloudflare TURN credentials.
+ *   B) Fixed credentials:
+ *        VITE_TURN_URLS=turn:host:80,turn:host:443?transport=tcp,turns:host:443?transport=tcp
+ *        VITE_TURN_USERNAME=...   VITE_TURN_CREDENTIAL=...
+ * Nothing set = no relay: players on strict networks can't connect (the diagnostics screen says so).
  * ============================================================================================= */
-export const TURN_SERVERS: RTCIceServer[] = [];
+const env = import.meta.env;
+export const TURN_SERVERS: RTCIceServer[] = turnServersFromEnv(env.VITE_TURN_URLS, env.VITE_TURN_USERNAME, env.VITE_TURN_CREDENTIAL);
+export const TURN_CREDENTIALS_URL: string = env.VITE_TURN_CREDENTIALS_URL ?? '';
+/** Give up fetching TURN credentials after this long and carry on without the relay (ms). */
+export const TURN_FETCH_TIMEOUT_MS = 4_000;
+/** Reuse fetched TURN credentials for this long before fetching fresh ones (ms). Keep below their lifetime. */
+export const TURN_CACHE_MS = 30 * 60_000;
 
-/** Everything handed to WebRTC (RTCConfiguration.iceServers). */
+/** STUN plus any fixed TURN servers. Fetched TURN servers are added at connect time (net/peer.ts loadIceServers). */
 export const ICE_SERVERS: RTCIceServer[] = [...STUN_SERVERS, ...TURN_SERVERS];
+
+/**
+ * Relay fallback. WebRTC tries the direct routes and the relay at the same time and prefers direct; if that whole
+ * attempt still fails, the guest tries once more with relay only. With a relay available, the first attempt
+ * gets this long before the relay-only retry (which then gets NET_CONNECT_TIMEOUT_MS).
+ */
+export const NET_RELAY_RETRY = true;
+export const NET_DIRECT_ATTEMPT_TIMEOUT_MS = 10_000;
+/** How often an open connection re-checks whether it is direct or relayed (ms). */
+export const NET_ROUTE_CHECK_MS = 3_000;
+/** Connection diagnostics: time allowed for collecting candidates, and for the relay round trip (ms). */
+export const DIAG_GATHER_TIMEOUT_MS = 10_000;
+export const DIAG_RELAY_TIMEOUT_MS = 12_000;
 
 /** Room codes look like PASS-4827: a word from this list plus digits (no 0/1, and no I/L/O in the words). */
 export const ROOM_CODE_WORDS = [

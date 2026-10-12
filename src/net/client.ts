@@ -9,6 +9,7 @@ import {
   NET_CLOSE_FLUSH_MS,
   NET_CONNECT_TIMEOUT_MS,
   NET_CORRECTION_HALF_LIFE,
+  NET_DIRECT_ATTEMPT_TIMEOUT_MS,
   NET_CORRECTION_SNAP,
   NET_HANDSHAKE_TIMEOUT_MS,
   NET_INPUT_REDUNDANCY,
@@ -18,6 +19,7 @@ import {
   NET_PREDICTION,
   NET_RECONNECT_RETRY_MS,
   NET_RECONNECT_WINDOW_MS,
+  NET_RELAY_RETRY,
   NET_SNAPSHOT_INTERVAL_TICKS,
   NET_STALL_MS,
   SIM_DT,
@@ -28,8 +30,9 @@ import type { GameState, InputFrame, MatchEvent, PlayerState, TeamId } from '../
 import { kindForPeerError, netError, type NetErrorKind } from './errors';
 import { PlaybackClock, SnapshotBuffer } from './interpolation';
 import { seconds, type MatchDriver, type NetOverlay } from './match';
+import { describeRoute } from './ice';
 import { describeConditions } from './netsim';
-import { CONNECT_OPTIONS, createPeer, Link, peerErrorType, peerIdForRoom, type Lobby, type LobbyView, type StartInfo } from './peer';
+import { CONNECT_OPTIONS, createPeer, Link, loadIceServers, peerErrorType, peerIdForRoom, type IceSetup, type Lobby, type LobbyView, type StartInfo } from './peer';
 import { createLobbyState, GUEST_NAME, hello, HOST_NAME, teamOf, versionMismatch, type Message } from './protocol';
 import { applySnapshot, decodeSnapshot, encodeInputs, PACKET_SNAPSHOT, packetType, quantizeInput, type Snapshot } from './snapshot';
 import { LossMeter, RateMeter } from './stats';
@@ -50,16 +53,41 @@ export class GuestLobby implements Lobby {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private pendingConn: DataConnection | null = null;
   private readonly pingTimer: ReturnType<typeof setInterval>;
+  private ice: IceSetup | null = null;
+  /** After a failed first attempt, every connection (including mid-match reconnects) goes through the relay. */
+  private relayOnly = false;
 
   /** Closing the tab: say bye, so the other player hears straight away instead of after a timeout. */
   private readonly onPageHide = (): void => this.leave();
 
   constructor(code: string) {
-    this.view = { role: 'guest', code, status: 'opening', lobby: createLobbyState(HOST_NAME, GUEST_NAME), pingMs: null, notice: null, error: null, reconnectUntil: null };
+    this.view = {
+      role: 'guest',
+      code,
+      status: 'opening',
+      lobby: createLobbyState(HOST_NAME, GUEST_NAME),
+      pingMs: null,
+      route: null,
+      notice: null,
+      error: null,
+      reconnectUntil: null,
+    };
     window.addEventListener('pagehide', this.onPageHide);
+    // The broker timeout also covers fetching TURN credentials (which gives up well before it).
     this.timer = setTimeout(() => this.fail('broker-unreachable'), NET_BROKER_TIMEOUT_MS);
-    this.newPeer();
-    this.pingTimer = setInterval(() => (this.view.pingMs = this.link?.pingMs ?? null), 250);
+    void loadIceServers().then((ice) => {
+      this.ice = ice;
+      if (this.isActive()) this.newPeer();
+    });
+    this.pingTimer = setInterval(() => {
+      this.view.pingMs = this.link?.pingMs ?? null;
+      this.view.route = this.link?.route ?? null;
+    }, 250);
+  }
+
+  /** The relay-only retry is possible: a relay is set up and this isn't already the retry. */
+  private get canRetryViaRelay(): boolean {
+    return NET_RELAY_RETRY && !this.relayOnly && !!this.ice?.turn;
   }
 
   get matchLink(): Link | null {
@@ -68,11 +96,11 @@ export class GuestLobby implements Lobby {
 
   /** The guest gets a broker-assigned ID; only the host's ID is derived from the room code. */
   private newPeer(): void {
-    const peer = createPeer();
+    const peer = createPeer(this.ice?.servers ?? [], { relayOnly: this.relayOnly });
     this.peer = peer;
     peer.on('open', () => {
       if (peer !== this.peer) return;
-      if (this.view.status === 'opening') this.connect(peer);
+      if (this.view.status === 'opening' || this.view.status === 'connecting') this.connect(peer);
       else if (this.view.status === 'reconnecting') this.reconnectAttempt();
     });
     peer.on('error', (err) => {
@@ -88,19 +116,37 @@ export class GuestLobby implements Lobby {
     this.view.status = 'connecting';
     const conn = peer.connect(peerIdForRoom(this.view.code), CONNECT_OPTIONS);
     // If the host's ID isn't registered, the broker answers and PeerJS emits 'peer-unavailable' (-> room not found).
-    this.timer = setTimeout(() => this.fail('timeout'), NET_CONNECT_TIMEOUT_MS);
-    const failed = (): void => {
-      if (this.view.status === 'connecting') this.fail('connection-failed');
+    const failed = (kind: NetErrorKind): void => {
+      if (peer !== this.peer || this.view.status !== 'connecting') return;
+      if (this.canRetryViaRelay) this.retryViaRelay();
+      else if (this.relayOnly) this.fail(kind, "Couldn't connect to the host, not even through the relay server.");
+      else this.fail(kind);
     };
-    conn.on('error', failed);
-    conn.on('iceStateChanged', (s) => s === 'failed' && failed());
+    this.timer = setTimeout(() => failed('timeout'), this.canRetryViaRelay ? NET_DIRECT_ATTEMPT_TIMEOUT_MS : NET_CONNECT_TIMEOUT_MS);
+    conn.on('error', () => failed('connection-failed'));
+    conn.on('iceStateChanged', (s) => s === 'failed' && failed('connection-failed'));
     conn.on('open', () => {
-      if (!this.isActive()) return;
+      if (!this.isActive() || peer !== this.peer) return;
       clearTimeout(this.timer);
       this.attach(new Link(conn));
       this.link?.send(hello(GUEST_NAME));
       this.timer = setTimeout(() => this.fail('timeout'), NET_HANDSHAKE_TIMEOUT_MS);
     });
+  }
+
+  /**
+   * The first attempt (direct routes and relay together) failed: start again with a new peer that may only use the
+   * relay. The host treats the new connection as replacing the failed one.
+   */
+  private retryViaRelay(): void {
+    clearTimeout(this.timer);
+    this.relayOnly = true;
+    this.view.notice = 'No direct route to the host — retrying through the relay server…';
+    const old = this.peer;
+    this.peer = null;
+    old?.destroy();
+    this.timer = setTimeout(() => this.fail('broker-unreachable'), NET_BROKER_TIMEOUT_MS);
+    this.newPeer(); // its 'open' connects again
   }
 
   private attach(link: Link): void {
@@ -180,6 +226,7 @@ export class GuestLobby implements Lobby {
           return;
         }
         this.view.lobby = msg.lobby;
+        this.view.notice = null;
         if (this.inMatch) {
           // Back in: keep the give-up timer running until `start` confirms it.
           this.timer = setTimeout(() => this.fail('host-lost'), Math.max(0, (this.view.reconnectUntil ?? 0) - performance.now()));
@@ -249,6 +296,7 @@ export class GuestLobby implements Lobby {
     clearTimeout(this.retryTimer);
     clearInterval(this.pingTimer);
     this.view.pingMs = null;
+    this.view.route = null;
     this.view.reconnectUntil = null;
     this.pendingConn?.close();
     this.pendingConn = null;
@@ -496,6 +544,7 @@ export class GuestMatch implements MatchDriver {
       `prediction    ${this.predict ? `on · blend ${this.blend.toFixed(2)} · last fix ${this.lastCorrection.toFixed(1)} px` : 'off'}`,
       `events        ${this.lastEventId} received · ${this.pending.length} waiting`,
       `channel       ${link ? (link.hasFastChannel ? 'unreliable' : 'reliable fallback') : 'none'}`,
+      `route         ${link?.route ? describeRoute(link.route) : '…'}`,
       `simulated     ${link ? describeConditions(link.conditioner.conditions) : '-'}`,
     ];
   }
