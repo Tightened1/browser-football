@@ -94,7 +94,7 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T02 | Player control: move, dribble, pass, shoot, tackle | T01 | Sonnet 5.5 | [x] |
 | T03 | Teams, keepers & player switching | T02 | Sonnet 5.5 | [x] |
 | T04 | AI teammates & opponents | T03 | **Opus 5.5** | [x] |
-| T05 | Match rules: kickoff, goals, out of play, timer, HUD | T03 | Sonnet 5.5 | [ ] |
+| T05 | Match rules: kickoff, goals, out of play, timer, HUD | T03 | Sonnet 5.5 | [x] |
 | T06 | Networking: PeerJS host/join lobby with room codes | T05 | **Opus 5.5** | [ ] |
 | T07 | Netcode: input sending, snapshots, interpolation, disconnects | T06 | **Opus 5.5** | [ ] |
 | T08 | Real-world network test & TURN fallback | T07 | **Opus 5.5** | [ ] |
@@ -436,3 +436,4 @@ Finally, mark T12 as [x] in the ROADMAP.md task queue, commit, push and give me 
 ## 7. Change log
 - 2026-10-09 — Roadmap created. Decisions: online 1v1 with AI teammates, top-down, keyboard, GitHub Pages.
 - 2026-10-12 — T04: role/state AI in `sim/ai.ts` (memory + seeded RNG live in `GameState.ai`); difficulty profiles and `AI_VS_AI` in `config.ts`. Sim tweaks: a tackle slides in the steered direction, a keeper's slide is a dive (blocks, doesn't knock the ball on), and players are processed in alternating order each tick so ball contests are fair between teams. `sim/rules.ts` has a **temporary** goal reset (ball in the net → kickoff positions after 1.2 s, no score) that T05 should replace.
+- 2026-10-12 — T05: match flow in `sim/rules.ts` (phases `pre-kickoff | playing | goal-scored | half-time | full-time`, score, half, clock, `restart`, capped `events` list with increasing ids — consumers remember the last id they handled). The ball now uses `BALL_BOUNDARY` (nets and posts only, no touchline/end-line walls) so it can leave the pitch; players still use the closed `BOUNDARY`. Set pieces (throw-in, goal kick, corner, kickoff) place the ball and a taker, keep the opposition clear and auto-release after `RESTART_AUTO_DELAY`. `createMatchState()` starts a real match in pre-kickoff; `createInitialState()` is open play for tests. HUD in `render/HudScene.ts`; "Play again" calls `MatchScene.restartMatch()`.

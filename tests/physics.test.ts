@@ -10,7 +10,7 @@ import {
   SIM_DT,
   WALL_RESTITUTION,
 } from '../src/config';
-import { collideCircles } from '../src/sim/physics';
+import { BALL_BOUNDARY, collideCircles, collideWithBoundary, moveCircle } from '../src/sim/physics';
 import { createInitialState, step } from '../src/sim/simulation';
 import type { GameState, InputFrame } from '../src/sim/types';
 
@@ -51,29 +51,35 @@ describe('ball physics', () => {
     expect(s.ball.pos.x).toBeGreaterThan(300);
   });
 
-  it('bounces off the top wall with energy loss', () => {
-    let s = stateWith(500, PITCH_TOP + 60, 0, -600);
-    s = run(s, 20);
-    expect(s.ball.vel.y).toBeGreaterThan(0);
-    expect(s.ball.vel.y).toBeLessThan(600 * WALL_RESTITUTION);
-    expect(s.ball.pos.y).toBeGreaterThanOrEqual(PITCH_TOP + BALL_RADIUS - 1e-6);
-  });
-
-  it('never escapes the pitch even when hit very hard', () => {
-    let s = stateWith(500, 300, 5000, 3000);
-    for (let i = 0; i < 600; i++) {
-      s = step(s, [], SIM_DT);
-      expect(s.ball.pos.y).toBeGreaterThan(PITCH_TOP);
-      expect(s.ball.pos.y).toBeLessThan(PITCH_BOTTOM);
-      expect(s.ball.pos.x).toBeGreaterThan(PITCH_LEFT - GOAL_DEPTH);
-      expect(s.ball.pos.x).toBeLessThan(PITCH_RIGHT + GOAL_DEPTH);
+  it('bounces off the top wall (closed outline, as players see it) with energy loss', () => {
+    const ball = { pos: { x: 500, y: PITCH_TOP + 60 }, vel: { x: 0, y: -600 }, radius: BALL_RADIUS };
+    for (let i = 0; i < 20; i++) {
+      moveCircle(ball, SIM_DT);
+      collideWithBoundary(ball);
     }
+    expect(ball.vel.y).toBeGreaterThan(0);
+    expect(ball.vel.y).toBeLessThanOrEqual(600 * WALL_RESTITUTION + 1e-9);
+    expect(ball.pos.y).toBeGreaterThanOrEqual(PITCH_TOP + BALL_RADIUS - 1e-6);
   });
 
-  it('bounces off a solid end line away from the goal mouth', () => {
-    const s = run(stateWith(PITCH_LEFT + 60, PITCH_TOP + 60, -500, 0), 30);
-    expect(s.ball.vel.x).toBeGreaterThan(0);
-    expect(s.ball.pos.x).toBeGreaterThanOrEqual(PITCH_LEFT + BALL_RADIUS - 1e-6);
+  it('bounces off a solid end line away from the goal mouth (closed outline)', () => {
+    const ball = { pos: { x: PITCH_LEFT + 60, y: PITCH_TOP + 60 }, vel: { x: -500, y: 0 }, radius: BALL_RADIUS };
+    for (let i = 0; i < 30; i++) {
+      moveCircle(ball, SIM_DT);
+      collideWithBoundary(ball);
+    }
+    expect(ball.vel.x).toBeGreaterThan(0);
+    expect(ball.pos.x).toBeGreaterThanOrEqual(PITCH_LEFT + BALL_RADIUS - 1e-6);
+  });
+
+  it('the ball itself has no touchline or end-line walls, only nets and posts', () => {
+    const ball = { pos: { x: 500, y: PITCH_TOP + 20 }, vel: { x: 0, y: -600 }, radius: BALL_RADIUS };
+    for (let i = 0; i < 20; i++) {
+      moveCircle(ball, SIM_DT);
+      collideWithBoundary(ball, BALL_BOUNDARY);
+    }
+    expect(ball.pos.y).toBeLessThan(PITCH_TOP - BALL_RADIUS);
+    expect(ball.vel.y).toBeLessThan(0);
   });
 
   it('enters the goal and bounces off the back net', () => {

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config';
+import { HudScene } from './render/HudScene';
 import { MatchScene } from './render/MatchScene';
 
 const game = new Phaser.Game({
@@ -12,7 +13,7 @@ const game = new Phaser.Game({
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
-  scene: [MatchScene],
+  scene: [MatchScene, HudScene],
 });
 
 // Dev only: lets the browser console inspect the running game.

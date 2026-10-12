@@ -21,7 +21,7 @@ import {
 } from '../config';
 import { KeyboardInput } from '../input/keyboard';
 import { BOUNDARY } from '../sim/physics';
-import { createInitialState, step } from '../sim/simulation';
+import { createMatchState, step } from '../sim/simulation';
 import { roleOf } from '../sim/ai';
 import type { Difficulty, GameState, InputFrame, PlayerState } from '../sim/types';
 
@@ -37,7 +37,8 @@ function urlOptions(): { aiVsAi: boolean; difficulty?: Difficulty } {
 
 /** Draws the match. Reads state only; never changes it. */
 export class MatchScene extends Phaser.Scene {
-  private state: GameState = createInitialState();
+  private state: GameState = createMatchState();
+  private options: { aiVsAi: boolean; difficulty?: Difficulty } = { aiVsAi: false };
   private accumulator = 0;
   private keyboard!: KeyboardInput;
   private dynamic!: Phaser.GameObjects.Graphics;
@@ -55,8 +56,9 @@ export class MatchScene extends Phaser.Scene {
 
   create(): void {
     const opts = urlOptions();
+    this.options = opts;
     this.aiVsAi = opts.aiVsAi;
-    this.state = createInitialState({ aiVsAi: opts.aiVsAi, difficulty: opts.difficulty && [opts.difficulty, opts.difficulty] });
+    this.state = this.newState();
     this.accumulator = 0;
     this.drawPitch();
     this.dynamic = this.add.graphics();
@@ -72,7 +74,11 @@ export class MatchScene extends Phaser.Scene {
     }
 
     this.keyboard = new KeyboardInput();
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.keyboard.dispose());
+    this.scene.launch('HudScene');
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.keyboard.dispose();
+      this.scene.stop('HudScene');
+    });
 
     if (DEBUG_CLICK_KICK) {
       // Debug only, render-side: pokes the ball towards the pointer. Off by default (see config.ts).
@@ -85,6 +91,22 @@ export class MatchScene extends Phaser.Scene {
         ball.vel.y = (dy / d) * DEBUG_KICK_SPEED;
       });
     }
+  }
+
+  private newState(): GameState {
+    const d = this.options.difficulty;
+    return createMatchState({ aiVsAi: this.options.aiVsAi, difficulty: d && [d, d] });
+  }
+
+  /** Read-only access for the HUD. */
+  getState(): GameState {
+    return this.state;
+  }
+
+  /** "Play again": a brand-new match. */
+  restartMatch(): void {
+    this.state = this.newState();
+    this.accumulator = 0;
   }
 
   update(_time: number, delta: number): void {

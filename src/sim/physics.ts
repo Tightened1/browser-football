@@ -32,8 +32,13 @@ export interface Boundary {
   posts: Post[];
 }
 
-/** Pitch outline with a goal-mouth opening in each end line, plus net walls and posts. */
-export function buildBoundary(): Boundary {
+/**
+ * Pitch outline with a goal-mouth opening in each end line, plus net walls and posts.
+ * `openField` leaves out the touchline and end-line walls (nets and posts stay): that is what the ball
+ * uses, so it can leave the pitch and the rules can award a throw-in, goal kick or corner. Players use
+ * the closed outline.
+ */
+export function buildBoundary(openField = false): Boundary {
   const midY = (PITCH_TOP + PITCH_BOTTOM) / 2;
   const goalTop = midY - GOAL_WIDTH / 2;
   const goalBottom = midY + GOAL_WIDTH / 2;
@@ -46,19 +51,22 @@ export function buildBoundary(): Boundary {
   const R = PITCH_RIGHT;
   const T = PITCH_TOP;
   const B = PITCH_BOTTOM;
-  const walls: Wall[] = [
+  const outline: Wall[] = [
     w(L, T, R, T, WALL_RESTITUTION),
     w(L, B, R, B, WALL_RESTITUTION),
     // Left end line, split by the goal mouth.
     w(L, T, L, goalTop, WALL_RESTITUTION),
     w(L, goalBottom, L, B, WALL_RESTITUTION),
+    // Right end line.
+    w(R, T, R, goalTop, WALL_RESTITUTION),
+    w(R, goalBottom, R, B, WALL_RESTITUTION),
+  ];
+  const walls: Wall[] = [
+    ...(openField ? [] : outline),
     // Left goal net: sides and back.
     w(L, goalTop, L - GOAL_DEPTH, goalTop, NET_RESTITUTION),
     w(L - GOAL_DEPTH, goalTop, L - GOAL_DEPTH, goalBottom, NET_RESTITUTION),
     w(L - GOAL_DEPTH, goalBottom, L, goalBottom, NET_RESTITUTION),
-    // Right end line.
-    w(R, T, R, goalTop, WALL_RESTITUTION),
-    w(R, goalBottom, R, B, WALL_RESTITUTION),
     // Right goal net.
     w(R, goalTop, R + GOAL_DEPTH, goalTop, NET_RESTITUTION),
     w(R + GOAL_DEPTH, goalTop, R + GOAL_DEPTH, goalBottom, NET_RESTITUTION),
@@ -74,6 +82,8 @@ export function buildBoundary(): Boundary {
 }
 
 export const BOUNDARY: Boundary = buildBoundary();
+/** What the ball bounces off: no touchline/end-line walls, so it can go out of play. */
+export const BALL_BOUNDARY: Boundary = buildBoundary(true);
 
 export function speedOf(v: Vec2): number {
   return Math.hypot(v.x, v.y);

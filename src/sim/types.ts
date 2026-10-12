@@ -163,6 +163,55 @@ export interface GameState {
   prevSwitch: [boolean, boolean];
   /** AI memory and its random number generator. */
   ai: AiState;
-  /** Temporary until T05: seconds the ball has been in a net (a kickoff reset follows). */
-  goalTimer: number;
+  /** Match flow (rules.ts). */
+  phase: MatchPhase;
+  /** Seconds spent in the current phase (counts down for the timed phases: see rules.ts). */
+  phaseTimer: number;
+  /** 1 or 2. */
+  half: number;
+  /** Seconds played in the current half. */
+  clock: number;
+  /** Goals per team. */
+  score: [number, number];
+  /** Team taking (or that took) the current kickoff, and the team that kicked off the match. */
+  kickoffTeam: TeamId;
+  firstKickoffTeam: TeamId;
+  /** A set piece waiting to be taken (kickoff, throw-in, goal kick, corner), or null in open play. */
+  restart: Restart | null;
+  /** The most recent events (capped), oldest first. Consumers remember the last `id` they handled. */
+  events: MatchEvent[];
+  nextEventId: number;
+}
+
+export type MatchPhase = 'pre-kickoff' | 'playing' | 'goal-scored' | 'half-time' | 'full-time';
+
+export type RestartType = 'kickoff' | 'throw-in' | 'goal-kick' | 'corner';
+
+export interface Restart {
+  type: RestartType;
+  team: TeamId;
+  /** Where the ball is placed. */
+  pos: Vec2;
+  /** Player id placed next to the ball to take it. */
+  taker: number;
+  /** Seconds until the restart is released automatically (the opposition keeps clear until then). */
+  timer: number;
+}
+
+export type MatchEventType = 'kickoff' | 'goal' | 'throw-in' | 'goal-kick' | 'corner' | 'half-time' | 'second-half' | 'full-time';
+
+export interface MatchEvent {
+  /** Increasing; never reused within a match. */
+  id: number;
+  tick: number;
+  type: MatchEventType;
+  /** goal: scoring team. Restarts and kickoff: the team taking it. */
+  team?: TeamId;
+  /** goal: player who touched the ball last (-1 if unknown). */
+  player?: number;
+  ownGoal?: boolean;
+  half: number;
+  /** Seconds played in the half when it happened. */
+  clock: number;
+  score: [number, number];
 }

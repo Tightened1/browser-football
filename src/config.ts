@@ -257,5 +257,29 @@ export const AI_SHOT_DETECT_SPEED = 260;
 /** Only react to shots arriving within this time (s). */
 export const AI_SHOT_DETECT_TIME = 0.9;
 
-/** Temporary (until T05 adds proper rules): seconds a ball stays in the net before a kickoff reset. */
-export const GOAL_RESET_DELAY = 1.2;
+/* ---------------------------------------------------------------------------------------------
+ * Match rules (T05)
+ * ------------------------------------------------------------------------------------------- */
+
+/** Seconds players stand in formation before a kickoff (also at the start of the match). */
+export const KICKOFF_DELAY = 1;
+/** Seconds of "GOAL!" before the next kickoff. */
+export const GOAL_PAUSE = 2;
+/** Seconds of half-time before the second half. */
+export const HALF_TIME_PAUSE = 4;
+/** A restart (kickoff, throw-in, goal kick, corner) is released after this long if nobody has played the ball. */
+export const RESTART_AUTO_DELAY = 1;
+/** The team not taking a restart is kept this far from the ball until it is released (px). */
+export const RESTART_CLEAR_RADIUS = 90;
+/** The ball is placed this far inside the pitch lines (px), so it is not immediately out again. */
+export const RESTART_INSET = BALL_RADIUS + 3;
+/** Throw-ins are taken at least this far from the end lines (px). */
+export const THROW_IN_MIN_END_DISTANCE = 60;
+/** Goal-kick spot: distance from the goal line (px). */
+export const GOAL_KICK_DISTANCE = 70;
+/** Gap between the taker and the ball when placed (px). */
+export const RESTART_TAKER_GAP = 2;
+/** The ball moving this far from its spot means the restart has been played (px). */
+export const RESTART_PLAYED_DISTANCE = 3;
+/** How many recent events the state keeps. */
+export const MAX_EVENTS = 40;

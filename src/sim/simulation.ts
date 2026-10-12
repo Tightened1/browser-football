@@ -11,6 +11,7 @@ import {
   KEEPER_CLEAR_SPEED,
   KEEPER_INV_MASS,
   KEEPER_RADIUS,
+  KICKOFF_DELAY,
   PLAYERS_PER_TEAM,
   PLAYER_PLAYER_RESTITUTION,
   KICK_PLAYER_VEL_FACTOR,
@@ -41,14 +42,15 @@ import {
   applyRollingFriction,
   capSpeed,
   collideCircles,
+  BALL_BOUNDARY,
   collideWithBoundary,
   moveCircle,
   speedOf,
 } from './physics';
 import { cloneAiState, computeAiInputs, createAiState, formationPosition } from './ai';
 import { applySwitching, updateTouches } from './control';
-import { updateGoalReset } from './rules';
-import type { BallState, Difficulty, GameState, InputFrame, PlayerRole, PlayerState, TeamId } from './types';
+import { isFrozen, updateRules } from './rules';
+import type { BallState, Difficulty, GameState, InputFrame, MatchPhase, PlayerRole, PlayerState, TeamId } from './types';
 
 export const NEUTRAL_INPUT: InputFrame = {
   seq: 0,
@@ -95,9 +97,25 @@ export interface MatchOptions {
   difficulty?: [Difficulty, Difficulty];
   /** Seed for the AI's random number generator. */
   seed?: number;
+  /** Team that kicks off (default home). */
+  kickoffTeam?: TeamId;
 }
 
-/** Two full teams in formation, ball on the centre spot. Team 0 (home) is human-controlled unless aiVsAi. */
+/**
+ * A real match: two full teams in formation, in the pre-kickoff phase. Play starts after KICKOFF_DELAY with
+ * the kickoff team on the centre spot. Team 0 (home) is human-controlled unless aiVsAi.
+ */
+export function createMatchState(options: MatchOptions = {}): GameState {
+  const s = createInitialState(options);
+  s.phase = 'pre-kickoff';
+  s.phaseTimer = KICKOFF_DELAY;
+  return s;
+}
+
+/**
+ * Two full teams in formation, ball on the centre spot, already in open play (phase 'playing', no restart
+ * pending) -- handy for tests and debugging. Use createMatchState for a real match.
+ */
 export function createInitialState(options: MatchOptions = {}): GameState {
   const midX = PITCH_LEFT + PITCH_WIDTH / 2;
   const midY = PITCH_TOP + PITCH_HEIGHT / 2;
@@ -120,7 +138,16 @@ export function createInitialState(options: MatchOptions = {}): GameState {
     lastTouch: null,
     prevSwitch: [false, false],
     ai: createAiState(players, controlled, options.difficulty, options.seed),
-    goalTimer: 0,
+    phase: 'playing' as MatchPhase,
+    phaseTimer: 0,
+    half: 1,
+    clock: 0,
+    score: [0, 0],
+    kickoffTeam: options.kickoffTeam ?? 0,
+    firstKickoffTeam: options.kickoffTeam ?? 0,
+    restart: null,
+    events: [],
+    nextEventId: 1,
   };
 }
 
@@ -143,7 +170,16 @@ export function cloneState(s: GameState): GameState {
     lastTouch: s.lastTouch ? { ...s.lastTouch } : null,
     prevSwitch: [s.prevSwitch[0], s.prevSwitch[1]],
     ai: cloneAiState(s.ai),
-    goalTimer: s.goalTimer,
+    phase: s.phase,
+    phaseTimer: s.phaseTimer,
+    half: s.half,
+    clock: s.clock,
+    score: [s.score[0], s.score[1]],
+    kickoffTeam: s.kickoffTeam,
+    firstKickoffTeam: s.firstKickoffTeam,
+    restart: s.restart ? { ...s.restart, pos: { ...s.restart.pos } } : null,
+    events: s.events.map((e) => ({ ...e, score: [e.score[0], e.score[1]] as [number, number] })),
+    nextEventId: s.nextEventId,
   };
 }
 
@@ -300,6 +336,13 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   const next = cloneState(state);
   const ball = next.ball;
 
+  // Before kickoff, at half-time and at full time nothing moves; only the rules' timers run.
+  if (isFrozen(next.phase)) {
+    next.tick = state.tick + 1;
+    updateRules(next, dt);
+    return next;
+  }
+
   applySwitching(next, inputs);
   // The AI produces InputFrames like a human would; a controlled player with no human input this tick is AI-driven.
   const human: [boolean, boolean] = [next.controlled[0] >= 0 && !!inputs[0], next.controlled[1] >= 0 && !!inputs[1]];
@@ -343,11 +386,11 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
         collideCircles(p, ball, PLAYER_BALL_RESTITUTION, 1, 1);
       }
     }
-    collideWithBoundary(ball, undefined, WALL_TANGENT_KEEP);
+    collideWithBoundary(ball, BALL_BOUNDARY, WALL_TANGENT_KEEP);
   }
 
   updateTouches(next);
-  updateGoalReset(next, dt);
   next.tick = state.tick + 1;
+  updateRules(next, dt);
   return next;
 }
