@@ -220,8 +220,11 @@ function maybeStartTackle(p: PlayerState, input: InputFrame, ball: BallState): v
   p.tackleCooldown = TACKLE_COOLDOWN;
 }
 
-/** Movement, facing and timers for one player. Does not touch the ball. */
-function updatePlayer(p: PlayerState, input: InputFrame, dt: number): void {
+/**
+ * Movement, facing and timers for one player. Does not touch the ball or other players.
+ * Exported for the online guest's prediction of its own player (net/client.ts).
+ */
+export function updatePlayer(p: PlayerState, input: InputFrame, dt: number): void {
   p.tackleCooldown = Math.max(0, p.tackleCooldown - dt);
   p.touchTimer = Math.max(0, p.touchTimer - dt);
 

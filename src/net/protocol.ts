@@ -1,12 +1,12 @@
 // Network messages: typed, versioned, validated on receipt. Pure: no PeerJS, no DOM.
 import { version as packageVersion } from '../../package.json';
-import type { InputFrame, MatchEvent, TeamId } from '../sim/types';
+import type { MatchEvent, MatchEventType, TeamId } from '../sim/types';
 
 /**
  * Bump whenever any message below changes shape or meaning. The `hello` message itself must never change,
  * so that two different versions can always tell each other apart.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 /** The game version (package.json). Both players must run the same one; bump it with each task that ships. */
 export const GAME_VERSION: string = packageVersion;
 
@@ -38,8 +38,11 @@ export interface LobbyMsg { t: 'lobby'; lobby: LobbyState }
 export interface ReadyMsg { t: 'ready'; ready: boolean }
 /** Guest -> host: please swap the teams (clears both ready flags). */
 export interface SwapMsg { t: 'swap' }
-/** Host -> guest: the match is starting. */
-export interface StartMsg { t: 'start'; hostTeam: TeamId; seed: number }
+/**
+ * Host -> guest: the match is starting (or, after a reconnect, carrying on). `token` proves the guest is the
+ * same player when it reconnects mid-match.
+ */
+export interface StartMsg { t: 'start'; hostTeam: TeamId; seed: number; token: string }
 
 /* ---- Connection upkeep (both directions) ---------------------------------------------------- */
 
@@ -49,20 +52,25 @@ export interface PongMsg { t: 'pong'; id: number; sent: number }
 /** Leaving on purpose (the connection closes straight after). */
 export interface ByeMsg { t: 'bye' }
 
-/* ---- Match (placeholders: T07 fills these in) ---------------------------------------------- */
+/* ---- Match ------------------------------------------------------------------------------------
+ * Channels: this reliable, ordered JSON channel carries everything that must arrive (handshake, lobby, ping,
+ * events, rejoin). Snapshots and inputs are binary packets (snapshot.ts) on a second, unreliable unordered
+ * channel (peer.ts), because a newer one always replaces an older one and a retransmit would only arrive late
+ * and hold up everything behind it. If that channel can't be opened, they fall back to `fast` messages here.
+ */
 
-/** Guest -> host: the guest's input for one tick. */
-export interface InputMsg { t: 'input'; frame: InputFrame }
-/** Host -> guest: the authoritative game state (format decided in T07). */
-export interface SnapshotMsg { t: 'snapshot'; tick: number; data: unknown }
-/** Host -> guest: a match event (goal, whistle...), delivered exactly once. */
+/** Host -> guest: a match event (goal, whistle...). Sent once, in order; the guest ignores ids it has seen. */
 export interface EventMsg { t: 'event'; event: MatchEvent }
+/** Guest -> host, after hello, when reconnecting mid-match: the token from `start` and the newest event id received. */
+export interface RejoinMsg { t: 'rejoin'; token: string; lastEvent: number }
+/** A snapshot or input packet (base64), when the unreliable channel is not available. */
+export interface FastMsg { t: 'fast'; b: string }
 
 export type Message =
   | HelloMsg | WelcomeMsg | RejectMsg
   | LobbyMsg | ReadyMsg | SwapMsg | StartMsg
   | PingMsg | PongMsg | ByeMsg
-  | InputMsg | SnapshotMsg | EventMsg;
+  | EventMsg | RejoinMsg | FastMsg;
 export type MessageType = Message['t'];
 
 /* ---- Validation ----------------------------------------------------------------------------- */
@@ -76,6 +84,19 @@ const isTeam = (v: unknown): v is TeamId => v === 0 || v === 1;
 const isPair = <T>(v: unknown, f: (x: unknown) => x is T): v is [T, T] => Array.isArray(v) && v.length === 2 && f(v[0]) && f(v[1]);
 const isLobby = (v: unknown): v is LobbyState => isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr);
 const isVersioned = (m: Obj): boolean => isNum(m.protocol) && isStr(m.game);
+const EVENT_TYPES: readonly MatchEventType[] = ['kickoff', 'goal', 'throw-in', 'goal-kick', 'corner', 'half-time', 'second-half', 'full-time'];
+const isOpt = <T>(v: unknown, f: (x: unknown) => x is T): boolean => v === undefined || f(v);
+export const isMatchEvent = (v: unknown): v is MatchEvent =>
+  isObj(v) &&
+  isNum(v.id) &&
+  isNum(v.tick) &&
+  EVENT_TYPES.includes(v.type as MatchEventType) &&
+  isNum(v.half) &&
+  isNum(v.clock) &&
+  isPair(v.score, isNum) &&
+  isOpt(v.team, isTeam) &&
+  isOpt(v.player, isNum) &&
+  isOpt(v.ownGoal, isBool);
 
 const VALIDATORS: Record<MessageType, (m: Obj) => boolean> = {
   hello: (m) => isVersioned(m) && isStr(m.name),
@@ -84,13 +105,13 @@ const VALIDATORS: Record<MessageType, (m: Obj) => boolean> = {
   lobby: (m) => isLobby(m.lobby),
   ready: (m) => isBool(m.ready),
   swap: () => true,
-  start: (m) => isTeam(m.hostTeam) && isNum(m.seed),
+  start: (m) => isTeam(m.hostTeam) && isNum(m.seed) && isStr(m.token),
   ping: (m) => isNum(m.id) && isNum(m.sent),
   pong: (m) => isNum(m.id) && isNum(m.sent),
   bye: () => true,
-  input: (m) => isObj(m.frame),
-  snapshot: (m) => isNum(m.tick),
-  event: (m) => isObj(m.event),
+  event: (m) => isMatchEvent(m.event),
+  rejoin: (m) => isStr(m.token) && isNum(m.lastEvent),
+  fast: (m) => typeof m.b === 'string' && m.b.length <= 4096,
 };
 
 /** Checks that received data is a well-formed message; anything else (wrong shape, unknown type) gives null. */
@@ -134,4 +155,23 @@ export function swapTeams(lobby: LobbyState): LobbyState {
 /** The host may start once a guest is connected and both players are ready. */
 export function canStart(lobby: LobbyState, guestConnected: boolean): boolean {
   return guestConnected && lobby.ready[0] && lobby.ready[1];
+}
+
+/* ---- Base64 for the `fast` fallback --------------------------------------------------------------- */
+
+export function toBase64(bytes: Uint8Array): string {
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s);
+}
+
+export function fromBase64(text: string): Uint8Array | null {
+  try {
+    const s = atob(text);
+    const bytes = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
 }

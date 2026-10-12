@@ -3,6 +3,9 @@
 export type NetErrorKind =
   | 'room-not-found'
   | 'host-left'
+  | 'host-lost'
+  | 'guest-left'
+  | 'guest-lost'
   | 'connection-failed'
   | 'timeout'
   | 'broker-unreachable'
@@ -32,6 +35,19 @@ const BASE: Record<NetErrorKind, Omit<NetError, 'kind'>> = {
     title: 'The host left',
     message: 'The host closed the game or lost their connection.',
     hint: 'Ask them to host again and send you the new code.',
+  },
+  'host-lost': {
+    title: 'Lost the host',
+    message: "The connection to the host dropped and couldn't be restored in time, so the match is over.",
+    hint: NETWORK_HINT,
+  },
+  'guest-left': {
+    title: 'Your friend left',
+    message: 'Your friend left the match.',
+  },
+  'guest-lost': {
+    title: 'Your friend lost connection',
+    message: "Your friend's connection dropped and they didn't reconnect in time, so the match is over.",
   },
   'connection-failed': {
     title: "Couldn't connect",

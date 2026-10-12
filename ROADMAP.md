@@ -47,9 +47,14 @@ src/
     peer.ts            PeerJS connection, Link (typed messages, ping, liveness), lobby interface
     roomCode.ts        Room codes, invite links, peer IDs (pure)
     errors.ts          Player-facing network errors (pure)
-    protocol.ts        Versioned message types (handshake, lobby, ping, input, snapshot, events)
-    host.ts            Runs the sim, broadcasts snapshots
-    client.ts          Sends inputs, interpolates snapshots
+    protocol.ts        Versioned message types (handshake, lobby, ping, events, rejoin) (pure)
+    snapshot.ts        Binary snapshot and input packets (pure)
+    interpolation.ts   Snapshot buffer, interpolation, render clock (pure)
+    stats.ts           Rate / packet-loss meters for the network overlay (pure)
+    netsim.ts          Simulated latency / jitter / loss for testing
+    match.ts           MatchDriver: what MatchScene advances and draws
+    host.ts            HostLobby + HostMatch: runs the sim (also offline), broadcasts snapshots and events
+    client.ts          GuestLobby + GuestMatch: sends inputs, interpolates snapshots, predicts own player
 tests/                 Vitest tests for sim/
 ```
 
@@ -68,9 +73,10 @@ tests/                 Vitest tests for sim/
 | Tackle / slide (no ball) | `C` |
 | Switch player (no ball) | `Z` / `Shift` |
 | AI debug overlay (roles, intents, team modes) | `F2` / `` ` `` |
+| Network debug overlay (ping, snapshots, buffer, loss) | `F3` / `N` |
 | Back to menu / leave | `Esc` |
 
-URL options: `?room=CODE` (invite link: joins that room), `?aivsai` (both teams AI, spectate) and `?difficulty=easy|normal|hard`.
+URL options: `?room=CODE` (invite link: joins that room), `?aivsai` (both teams AI, spectate), `?difficulty=easy|normal|hard`, and for testing online play on one machine `?lag=50&jitter=10&loss=0.03` (simulated network, per window) and `?predict=0|1` (guest prediction off/on).
 
 ---
 
@@ -100,7 +106,7 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T04 | AI teammates & opponents | T03 | **Opus 5.5** | [x] |
 | T05 | Match rules: kickoff, goals, out of play, timer, HUD | T03 | Sonnet 5.5 | [x] |
 | T06 | Networking: PeerJS host/join lobby with room codes | T05 | **Opus 5.5** | [x] |
-| T07 | Netcode: input sending, snapshots, interpolation, disconnects | T06 | **Opus 5.5** | [ ] |
+| T07 | Netcode: input sending, snapshots, interpolation, disconnects | T06 | **Opus 5.5** | [x] |
 | T08 | Real-world network test & TURN fallback | T07 | **Opus 5.5** | [ ] |
 | T09 | Menus & game flow (title, host/join, settings, results) | T07 | Sonnet 5.5 | [ ] |
 | T10 | Juice & audio: sounds, goal celebration, team colours, camera | T05 | Sonnet 5.5 | [ ] |
@@ -442,3 +448,4 @@ Finally, mark T12 as [x] in the ROADMAP.md task queue, commit, push and give me 
 - 2026-10-12 — T04: role/state AI in `sim/ai.ts` (memory + seeded RNG live in `GameState.ai`); difficulty profiles and `AI_VS_AI` in `config.ts`. Sim tweaks: a tackle slides in the steered direction, a keeper's slide is a dive (blocks, doesn't knock the ball on), and players are processed in alternating order each tick so ball contests are fair between teams. `sim/rules.ts` has a **temporary** goal reset (ball in the net → kickoff positions after 1.2 s, no score) that T05 should replace.
 - 2026-10-12 — T05: match flow in `sim/rules.ts` (phases `pre-kickoff | playing | goal-scored | half-time | full-time`, score, half, clock, `restart`, capped `events` list with increasing ids — consumers remember the last id they handled). The ball now uses `BALL_BOUNDARY` (nets and posts only, no touchline/end-line walls) so it can leave the pitch; players still use the closed `BOUNDARY`. Set pieces (throw-in, goal kick, corner, kickoff) place the ball and a taker, keep the opposition clear and auto-release after `RESTART_AUTO_DELAY`. `createMatchState()` starts a real match in pre-kickoff; `createInitialState()` is open play for tests. HUD in `render/HudScene.ts`; "Play again" calls `MatchScene.restartMatch()`.
 - 2026-10-12 — T06: the game now opens on `MenuScene` (Play vs AI / Host / Join). Online: the host registers `browser-football-<code>` on the public PeerJS broker (codes like `PASS-4827`); the guest connects with one reliable JSON data channel, sends `hello` (protocol + game version from package.json — **bump `version` in package.json with each task**), and the host answers `welcome` or `reject`. The host owns `LobbyState` (teams, ready flags) and sends it on every change. `Link` pings every second and drops the connection after 8 s of silence. Start currently launches an independent offline match on each screen with the player's chosen team (`MatchOptions.humans`); the `Lobby` object is passed to `MatchScene` (`MatchSceneData.online`) for T07 to use. STUN/TURN config is in `config.ts` (`TURN_SERVERS` is empty, ready for T08).
+- 2026-10-12 — T07: host-authoritative netcode (protocol 2, game 0.7.0). `HostMatch` (net/host.ts) runs the only sim — offline play is a `HostMatch` with no lobby — and `GuestMatch` (net/client.ts) draws the host's snapshots. Two channels on one PeerJS connection: the reliable JSON one (handshake, lobby, ping, events, rejoin) and an extra **unreliable, unordered** `RTCDataChannel` (negotiated id `NET_FAST_CHANNEL_ID`, `maxRetransmits: 0`) for binary snapshots (host → guest, 30/s, **143 bytes**; JSON would be ~1.8 KB) and inputs (guest → host, 60/s, each packet repeats the last 4 frames). PeerJS's own `reliable: false` still retransmits, hence the extra channel; it falls back to base64 over the reliable channel if it can't open. The guest renders `NET_INTERP_DELAY_MS` (100 ms) behind, predicts only its own player's movement (blending back to the host's position near the ball) and releases events when the drawn match reaches their tick. Disconnects: either side pauses after `NET_STALL_MS` of silence; a dropped guest auto-reconnects (token from `start`, `rejoin` message, missed events resent) within `NET_RECONNECT_WINDOW_MS` (30 s), else the match ends; `bye` (Esc, closing the tab) ends it straight away. "Play again" is offline only (online rematch is T09). Note: a browser pauses a hidden tab's game loop, so if the host switches tabs the match pauses for both.

@@ -41,6 +41,10 @@ export class HudScene extends Phaser.Scene {
   private overlayScore!: Phaser.GameObjects.Text;
   private overlayInfo!: Phaser.GameObjects.Text;
   private playAgain!: Phaser.GameObjects.Text;
+  private netPanel!: Phaser.GameObjects.Container;
+  private netTitle!: Phaser.GameObjects.Text;
+  private netBody!: Phaser.GameObjects.Text;
+  private netHint!: Phaser.GameObjects.Text;
 
   constructor() {
     super('HudScene');
@@ -92,8 +96,20 @@ export class HudScene extends Phaser.Scene {
       .container(0, 0, [shade, this.add.container(CX, GAME_HEIGHT / 2, [this.overlayTitle, this.overlayScore, this.overlayInfo, this.playAgain])])
       .setVisible(false);
 
+    // Online: connection trouble / match ended (drawn above everything else).
+    const netShade = this.add.rectangle(CX, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.55);
+    const netBox = this.add.rectangle(CX, GAME_HEIGHT / 2, 760, 260, 0x22303a, 0.95).setStrokeStyle(3, 0xffd23f);
+    this.netTitle = this.text(0, -70, 44, '#ffd23f');
+    this.netBody = this.text(0, 5, 22, '#ffffff', false).setWordWrapWidth(680).setAlign('center');
+    this.netHint = this.text(0, 85, 18, '#cccccc', false);
+    this.netPanel = this.add
+      .container(0, 0, [netShade, netBox, this.add.container(CX, GAME_HEIGHT / 2, [this.netTitle, this.netBody, this.netHint])])
+      .setDepth(100)
+      .setVisible(false);
+
     this.input.keyboard?.on('keydown-ENTER', () => {
-      if (this.matchState()?.phase === 'full-time') this.newMatch();
+      if (this.match()?.netOverlay()?.ended) this.match()?.scene.start('MenuScene');
+      else if (this.matchState()?.phase === 'full-time' && !this.match()?.isOnline()) this.newMatch();
     });
   }
 
@@ -142,7 +158,17 @@ export class HudScene extends Phaser.Scene {
       this.overlayScore.setText(`${TEAMS[0].name} ${s.score[0]} – ${s.score[1]} ${TEAMS[1].name}`);
       const result = s.score[0] === s.score[1] ? 'It ends in a draw' : `${TEAMS[s.score[0] > s.score[1] ? 0 : 1].name} win!`;
       this.overlayInfo.setText(halfTime ? `Teams swap ends — ${Math.max(0, Math.ceil(s.phaseTimer))}` : result);
-      this.playAgain.setVisible(fullTime);
+      const online = !!this.match()?.isOnline();
+      this.playAgain.setVisible(fullTime && !online);
+      if (fullTime && online) this.overlayInfo.setText(`${result} · press Esc for the menu`);
+    }
+
+    const net = this.match()?.netOverlay() ?? null;
+    this.netPanel.setVisible(!!net);
+    if (net) {
+      this.netTitle.setText(net.title);
+      this.netBody.setText(net.body);
+      this.netHint.setText(net.ended ? 'Press Enter or Esc to return to the menu' : 'Esc: leave the match');
     }
   }
 }

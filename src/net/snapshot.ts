@@ -1,0 +1,286 @@
+// Binary packets for the unreliable channel: host -> guest snapshots, guest -> host inputs. Pure: no PeerJS, no DOM.
+import { SHOT_MAX_CHARGE_TIME } from '../config';
+import type { GameState, InputFrame, MatchPhase, RestartType, TeamId } from '../sim/types';
+
+/* ---- Snapshot ---------------------------------------------------------------------------------- */
+
+export interface BodySnap {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
+export interface PlayerSnap extends BodySnap {
+  facing: number;
+  /** Seconds the shot has been charged. */
+  charge: number;
+  tackling: boolean;
+}
+
+/** Everything the guest needs to draw one moment of the match (static player data comes from its own copy). */
+export interface Snapshot {
+  tick: number;
+  /** Seq of the newest guest input the host had applied by this tick (-1 = none yet). */
+  ack: number;
+  phase: MatchPhase;
+  half: number;
+  score: [number, number];
+  clock: number;
+  phaseTimer: number;
+  /** Direction team 0 attacks (team 1 attacks the other way). */
+  attackDir0: 1 | -1;
+  kickoffTeam: TeamId;
+  controlled: [number, number];
+  restart: { type: RestartType; team: TeamId } | null;
+  /** Id of the newest match event so far (events themselves go on the reliable channel). */
+  lastEventId: number;
+  /** Host has paused the match (connection trouble); resumeIn > 0 = counting down to resume (s). */
+  paused: boolean;
+  resumeIn: number;
+  ball: BodySnap;
+  players: PlayerSnap[];
+}
+
+/** Network-only fields the host adds to a snapshot. */
+export interface SnapshotNet {
+  ack: number;
+  paused: boolean;
+  resumeIn: number;
+}
+
+export function takeSnapshot(s: GameState, net: SnapshotNet): Snapshot {
+  const body = (b: { pos: { x: number; y: number }; vel: { x: number; y: number } }): BodySnap => ({ x: b.pos.x, y: b.pos.y, vx: b.vel.x, vy: b.vel.y });
+  return {
+    tick: s.tick,
+    ack: net.ack,
+    phase: s.phase,
+    half: s.half,
+    score: [s.score[0], s.score[1]],
+    clock: s.clock,
+    phaseTimer: s.phaseTimer,
+    attackDir0: s.attackDir[0] > 0 ? 1 : -1,
+    kickoffTeam: s.kickoffTeam,
+    controlled: [s.controlled[0], s.controlled[1]],
+    restart: s.restart ? { type: s.restart.type, team: s.restart.team } : null,
+    lastEventId: s.events.length ? s.events[s.events.length - 1].id : 0,
+    paused: net.paused,
+    resumeIn: net.resumeIn,
+    ball: body(s.ball),
+    players: s.players.map((p) => ({ ...body(p), facing: p.facing, charge: p.charge, tackling: p.tackleTimer > 0 })),
+  };
+}
+
+/** Copies a snapshot into a GameState the renderer can draw (players' static data must already be there). */
+export function applySnapshot(s: GameState, snap: Snapshot): void {
+  s.tick = snap.tick;
+  s.phase = snap.phase;
+  s.half = snap.half;
+  s.score = [snap.score[0], snap.score[1]];
+  s.clock = snap.clock;
+  s.phaseTimer = snap.phaseTimer;
+  s.attackDir = [snap.attackDir0, -snap.attackDir0 as 1 | -1];
+  s.kickoffTeam = snap.kickoffTeam;
+  s.controlled = [snap.controlled[0], snap.controlled[1]];
+  s.restart = snap.restart ? { ...snap.restart, pos: { x: snap.ball.x, y: snap.ball.y }, taker: -1, timer: 0 } : null;
+  s.ball.pos = { x: snap.ball.x, y: snap.ball.y };
+  s.ball.vel = { x: snap.ball.vx, y: snap.ball.vy };
+  snap.players.forEach((ps, i) => {
+    const p = s.players[i];
+    if (!p) return;
+    p.pos = { x: ps.x, y: ps.y };
+    p.vel = { x: ps.vx, y: ps.vy };
+    p.facing = ps.facing;
+    p.charge = ps.charge;
+    p.tackleTimer = ps.tackling ? 0.01 : 0;
+  });
+}
+
+/* ---- Binary layout -------------------------------------------------------------------------------
+ * Snapshot (little-endian):
+ *   u8 type=1 · u32 tick · u32 ack+1 · u8 phase · u8 half · u8 score0 · u8 score1 · u16 clock (1/100 s)
+ *   u16 phaseTimer (1/100 s) · u8 flags (attackDir0>0, kickoffTeam, paused) · u8 resumeIn (1/10 s)
+ *   i8 controlled0 · i8 controlled1 · u8 restart (0 none, else type+1 | team<<4) · u16 lastEventId · u8 players
+ *   ball: i16 x, y (1/16 px) · i16 vx, vy (1/8 px/s)
+ *   per player: i16 x, y · i16 vx, vy · u8 facing (1/256 turn) · u8 charge (1/255 of max) · u8 flags (tackling)
+ * Inputs: u8 type=2 · u8 count · u32 newest seq · per frame, newest first: i8 moveX, i8 moveY (1/127) · u8 buttons
+ * ------------------------------------------------------------------------------------------------- */
+
+export const PACKET_SNAPSHOT = 1;
+export const PACKET_INPUTS = 2;
+
+const PHASES: readonly MatchPhase[] = ['pre-kickoff', 'playing', 'goal-scored', 'half-time', 'full-time'];
+const RESTARTS: readonly RestartType[] = ['kickoff', 'throw-in', 'goal-kick', 'corner'];
+const POS_SCALE = 16;
+const VEL_SCALE = 8;
+const TIME_SCALE = 100;
+const HEADER_BYTES = 25;
+const BODY_BYTES = 8;
+const PLAYER_BYTES = BODY_BYTES + 3;
+const TAU = Math.PI * 2;
+
+const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+const i16 = (v: number, scale: number): number => clamp(Math.round(v * scale), -32768, 32767);
+const u16 = (v: number, scale: number): number => clamp(Math.round(v * scale), 0, 65535);
+const u8 = (v: number): number => clamp(Math.round(v), 0, 255);
+
+export function snapshotBytes(players: number): number {
+  return HEADER_BYTES + BODY_BYTES + players * PLAYER_BYTES;
+}
+
+function writeBody(v: DataView, o: number, b: BodySnap): number {
+  v.setInt16(o, i16(b.x, POS_SCALE), true);
+  v.setInt16(o + 2, i16(b.y, POS_SCALE), true);
+  v.setInt16(o + 4, i16(b.vx, VEL_SCALE), true);
+  v.setInt16(o + 6, i16(b.vy, VEL_SCALE), true);
+  return o + BODY_BYTES;
+}
+
+function readBody(v: DataView, o: number): BodySnap {
+  return {
+    x: v.getInt16(o, true) / POS_SCALE,
+    y: v.getInt16(o + 2, true) / POS_SCALE,
+    vx: v.getInt16(o + 4, true) / VEL_SCALE,
+    vy: v.getInt16(o + 6, true) / VEL_SCALE,
+  };
+}
+
+export function encodeSnapshot(s: Snapshot): Uint8Array {
+  const bytes = new Uint8Array(snapshotBytes(s.players.length));
+  const v = new DataView(bytes.buffer);
+  v.setUint8(0, PACKET_SNAPSHOT);
+  v.setUint32(1, s.tick >>> 0, true);
+  v.setUint32(5, (s.ack + 1) >>> 0, true);
+  v.setUint8(9, PHASES.indexOf(s.phase));
+  v.setUint8(10, u8(s.half));
+  v.setUint8(11, u8(s.score[0]));
+  v.setUint8(12, u8(s.score[1]));
+  v.setUint16(13, u16(s.clock, TIME_SCALE), true);
+  v.setUint16(15, u16(s.phaseTimer, TIME_SCALE), true);
+  v.setUint8(17, (s.attackDir0 > 0 ? 1 : 0) | (s.kickoffTeam << 1) | (s.paused ? 4 : 0));
+  v.setUint8(18, u8(s.resumeIn * 10));
+  v.setInt8(19, clamp(s.controlled[0], -1, 127));
+  v.setInt8(20, clamp(s.controlled[1], -1, 127));
+  v.setUint8(21, s.restart ? (RESTARTS.indexOf(s.restart.type) + 1) | (s.restart.team << 4) : 0);
+  v.setUint16(22, clamp(s.lastEventId, 0, 65535), true);
+  v.setUint8(24, s.players.length);
+  let o = writeBody(v, HEADER_BYTES, s.ball);
+  for (const p of s.players) {
+    o = writeBody(v, o, p);
+    const turn = (((p.facing % TAU) + TAU) % TAU) / TAU;
+    v.setUint8(o, Math.round(turn * 256) & 255);
+    v.setUint8(o + 1, u8((p.charge / SHOT_MAX_CHARGE_TIME) * 255));
+    v.setUint8(o + 2, p.tackling ? 1 : 0);
+    o += 3;
+  }
+  return bytes;
+}
+
+/** Null if the bytes are not a well-formed snapshot. */
+export function decodeSnapshot(bytes: Uint8Array): Snapshot | null {
+  if (bytes.length < HEADER_BYTES + BODY_BYTES || bytes[0] !== PACKET_SNAPSHOT) return null;
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = v.getUint8(24);
+  if (bytes.length !== snapshotBytes(count)) return null;
+  const phase = PHASES[v.getUint8(9)];
+  const restartByte = v.getUint8(21);
+  const restartType = restartByte ? RESTARTS[(restartByte & 15) - 1] : undefined;
+  if (!phase || (restartByte && !restartType)) return null;
+  const flags = v.getUint8(17);
+  const players: PlayerSnap[] = [];
+  let o = HEADER_BYTES + BODY_BYTES;
+  for (let i = 0; i < count; i++) {
+    const b = readBody(v, o);
+    o += BODY_BYTES;
+    let facing = (v.getUint8(o) / 256) * TAU;
+    if (facing > Math.PI) facing -= TAU;
+    players.push({ ...b, facing, charge: (v.getUint8(o + 1) / 255) * SHOT_MAX_CHARGE_TIME, tackling: (v.getUint8(o + 2) & 1) === 1 });
+    o += 3;
+  }
+  return {
+    tick: v.getUint32(1, true),
+    ack: v.getUint32(5, true) - 1,
+    phase,
+    half: v.getUint8(10),
+    score: [v.getUint8(11), v.getUint8(12)],
+    clock: v.getUint16(13, true) / TIME_SCALE,
+    phaseTimer: v.getUint16(15, true) / TIME_SCALE,
+    attackDir0: flags & 1 ? 1 : -1,
+    kickoffTeam: ((flags >> 1) & 1) as TeamId,
+    controlled: [v.getInt8(19), v.getInt8(20)],
+    restart: restartType ? { type: restartType, team: ((restartByte >> 4) & 1) as TeamId } : null,
+    lastEventId: v.getUint16(22, true),
+    paused: (flags & 4) !== 0,
+    resumeIn: v.getUint8(18) / 10,
+    ball: readBody(v, HEADER_BYTES),
+    players,
+  };
+}
+
+/* ---- Inputs ------------------------------------------------------------------------------------- */
+
+const BTN_PASS = 1;
+const BTN_SHOOT = 2;
+const BTN_TACKLE = 4;
+const BTN_SWITCH = 8;
+const MOVE_SCALE = 127;
+
+/** The frame exactly as the host will see it after the trip through the wire format (prediction must use this). */
+export function quantizeInput(f: InputFrame): InputFrame {
+  const q = (x: number): number => clamp(Math.round(x * MOVE_SCALE), -MOVE_SCALE, MOVE_SCALE) / MOVE_SCALE;
+  return { ...f, moveX: q(f.moveX), moveY: q(f.moveY) };
+}
+
+/** `frames` oldest first, with consecutive seqs; at most 255. */
+export function encodeInputs(frames: readonly InputFrame[]): Uint8Array {
+  const n = Math.min(255, frames.length);
+  const bytes = new Uint8Array(6 + n * 3);
+  const v = new DataView(bytes.buffer);
+  v.setUint8(0, PACKET_INPUTS);
+  v.setUint8(1, n);
+  v.setUint32(2, n ? frames[frames.length - 1].seq >>> 0 : 0, true);
+  for (let i = 0; i < n; i++) {
+    const f = frames[frames.length - 1 - i];
+    const o = 6 + i * 3;
+    v.setInt8(o, clamp(Math.round(f.moveX * MOVE_SCALE), -MOVE_SCALE, MOVE_SCALE));
+    v.setInt8(o + 1, clamp(Math.round(f.moveY * MOVE_SCALE), -MOVE_SCALE, MOVE_SCALE));
+    v.setUint8(o + 2, (f.pass ? BTN_PASS : 0) | (f.shoot ? BTN_SHOOT : 0) | (f.tackle ? BTN_TACKLE : 0) | (f.switchPlayer ? BTN_SWITCH : 0));
+  }
+  return bytes;
+}
+
+/** Frames oldest first, or null if malformed. */
+export function decodeInputs(bytes: Uint8Array): InputFrame[] | null {
+  if (bytes.length < 6 || bytes[0] !== PACKET_INPUTS) return null;
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const n = v.getUint8(1);
+  if (bytes.length !== 6 + n * 3) return null;
+  const newest = v.getUint32(2, true);
+  const frames: InputFrame[] = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const seq = newest - i;
+    if (seq < 0) continue;
+    const o = 6 + i * 3;
+    const b = v.getUint8(o + 2);
+    frames.push({
+      seq,
+      moveX: v.getInt8(o) / MOVE_SCALE,
+      moveY: v.getInt8(o + 1) / MOVE_SCALE,
+      pass: (b & BTN_PASS) !== 0,
+      shoot: (b & BTN_SHOOT) !== 0,
+      tackle: (b & BTN_TACKLE) !== 0,
+      switchPlayer: (b & BTN_SWITCH) !== 0,
+    });
+  }
+  return frames;
+}
+
+/** Combines two queued input frames into one (the host's backlog), keeping any button press from either. */
+export function mergeInputs(older: InputFrame, newer: InputFrame): InputFrame {
+  return { ...newer, pass: older.pass || newer.pass, tackle: older.tackle || newer.tackle, switchPlayer: older.switchPlayer || newer.switchPlayer };
+}
+
+/** Packet type of a binary message (0 if empty). */
+export function packetType(bytes: Uint8Array): number {
+  return bytes.length ? bytes[0] : 0;
+}

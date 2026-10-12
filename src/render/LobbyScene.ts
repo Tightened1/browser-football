@@ -196,6 +196,8 @@ function statusText(v: LobbyView): string {
       return v.role === 'host' ? 'A player is connecting…' : `Connecting to room ${v.code}…`;
     case 'connected':
       return v.role === 'host' ? 'Connected! When you are both ready, press Start match.' : 'Connected! Press Ready, then the host starts the match.';
+    case 'reconnecting':
+      return 'Reconnecting…';
     case 'failed':
       return 'Connection failed.';
     case 'closed':

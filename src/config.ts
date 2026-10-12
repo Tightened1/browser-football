@@ -337,3 +337,59 @@ export const NET_LINK_TIMEOUT_MS = 8_000;
 export const NET_PING_SMOOTHING = 0.3;
 /** Delay before closing a connection after a final message (reject/bye), so it gets delivered (ms). */
 export const NET_CLOSE_FLUSH_MS = 400;
+
+/* ---------------------------------------------------------------------------------------------
+ * Netcode (T07). The host runs the only simulation; the guest sends inputs and draws snapshots.
+ * ------------------------------------------------------------------------------------------- */
+
+/** The host sends a snapshot every this many sim ticks (2 at 60 Hz = 30 snapshots a second). */
+export const NET_SNAPSHOT_INTERVAL_TICKS = 2;
+/** The guest draws the match this far behind the newest snapshot, so it always has two to interpolate between (ms). */
+export const NET_INTERP_DELAY_MS = 100;
+/** Snapshots kept by the guest (older ones are dropped). */
+export const NET_SNAPSHOT_BUFFER_SIZE = 32;
+/** When snapshots stop arriving, keep moving things along their velocity for at most this long, then freeze (ms). */
+export const NET_MAX_EXTRAPOLATION_MS = 100;
+/** Between two snapshots, anything that moved further than this teleported (kickoff reset, set piece): snap, don't slide (px). */
+export const NET_TELEPORT_DISTANCE = 40;
+/** The render clock jumps instead of drifting when it is this far off its target (ticks). */
+export const NET_CLOCK_RESET_TICKS = 30;
+/** How fast the render clock adapts to snapshots arriving earlier / later than expected (0..1 per snapshot). */
+export const NET_CLOCK_ADAPT_EARLY = 0.2;
+export const NET_CLOCK_ADAPT_LATE = 0.02;
+
+/** Every input packet repeats the guest's last few input frames, so a lost packet loses no key press. */
+export const NET_INPUT_REDUNDANCY = 4;
+/** The host buffers at most this many unplayed guest inputs; beyond that, the oldest are merged (keeps input lag low). */
+export const NET_INPUT_BUFFER_MAX = 3;
+
+/** Client-side prediction of the guest's own controlled player (movement only). Can be turned off with ?predict=0. */
+export const NET_PREDICTION = true;
+/**
+ * Near the ball the predicted player would run ahead of the (older) ball, so the drawn position blends back to the
+ * host's: fully predicted beyond FAR px between player and ball edges, fully authoritative within NEAR px.
+ */
+export const NET_PREDICT_BLEND_NEAR = 25;
+export const NET_PREDICT_BLEND_FAR = 110;
+/** Prediction corrections are smoothed out with this half-life (s) instead of snapping. */
+export const NET_CORRECTION_HALF_LIFE = 0.08;
+/** A correction bigger than this snaps straight away (px). */
+export const NET_CORRECTION_SNAP = 60;
+
+/** Pause the match when nothing has arrived from the other player for this long (ms). */
+export const NET_STALL_MS = 1_500;
+/** After a dropped connection, the guest may reconnect to the same room within this time (ms), else the match ends. */
+export const NET_RECONNECT_WINDOW_MS = 30_000;
+/** The guest retries the connection this often while reconnecting (ms). */
+export const NET_RECONNECT_RETRY_MS = 3_000;
+/** Countdown before play resumes after a pause (ms). */
+export const NET_RESUME_COUNTDOWN_MS = 2_000;
+/** RTCDataChannel id of the unreliable channel (negotiated on both sides; PeerJS's own channel uses a low id). */
+export const NET_FAST_CHANNEL_ID = 100;
+
+/**
+ * Simulated network conditions, for testing two windows on one machine. Applied by each side to what it sends:
+ * latencyMs is added one way (so ping goes up by about twice that), jitterMs is a random extra 0..jitterMs, and
+ * loss (0..1) drops packets on the unreliable channel only. Override from the URL: ?lag=50&jitter=20&loss=0.05.
+ */
+export const NET_SIMULATION = { latencyMs: 0, jitterMs: 0, loss: 0 };

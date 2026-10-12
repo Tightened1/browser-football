@@ -17,14 +17,16 @@ import {
   DEBUG_KICK_SPEED,
   POST_RADIUS,
   SHOT_MAX_CHARGE_TIME,
-  SIM_DT,
+  GAME_WIDTH,
   TEAMS,
 } from '../config';
 import { KeyboardInput } from '../input/keyboard';
 import { BOUNDARY } from '../sim/physics';
-import { createMatchState, step } from '../sim/simulation';
 import { roleOf } from '../sim/ai';
-import type { Difficulty, GameState, InputFrame, PlayerState, TeamId } from '../sim/types';
+import type { Difficulty, GameState, PlayerState, TeamId } from '../sim/types';
+import { GuestLobby, GuestMatch } from '../net/client';
+import { HostLobby, HostMatch } from '../net/host';
+import type { MatchDriver, NetOverlay } from '../net/match';
 import type { Lobby } from '../net/peer';
 
 /** How MatchScene is started: offline vs the AI by default; online (from the lobby) with the player's team. */
@@ -32,7 +34,7 @@ export interface MatchSceneData {
   /** The team the local player controls (default home). */
   humanTeam?: TeamId;
   seed?: number;
-  /** The online lobby connection (T06: kept open, shown in a status line; T07 syncs the match over it). */
+  /** The online lobby connection: the host runs the match and the guest follows it over this. */
   online?: Lobby;
 }
 
@@ -46,11 +48,12 @@ function urlOptions(): { aiVsAi: boolean; difficulty?: Difficulty } {
   return { aiVsAi: AI_VS_AI || q.has('aivsai'), difficulty };
 }
 
-/** Draws the match. Reads state only; never changes it. */
+/**
+ * Draws the match. Reads state only; never changes it. The match itself is advanced by a driver: a HostMatch
+ * (offline, or the online host: the only real simulation) or, for the online guest, a GuestMatch.
+ */
 export class MatchScene extends Phaser.Scene {
-  private state: GameState = createMatchState();
-  private options: { aiVsAi: boolean; difficulty?: Difficulty } = { aiVsAi: false };
-  private accumulator = 0;
+  private driver!: MatchDriver;
   private keyboard!: KeyboardInput;
   private dynamic!: Phaser.GameObjects.Graphics;
   private readonly numberLabels: Phaser.GameObjects.Text[] = [];
@@ -64,6 +67,9 @@ export class MatchScene extends Phaser.Scene {
   private seed?: number;
   private online?: Lobby;
   private onlineLabel?: Phaser.GameObjects.Text;
+  /** Network debug overlay (toggle with F3): ping, snapshot rate, buffer, loss. */
+  private debugNet = false;
+  private netText!: Phaser.GameObjects.Text;
 
   constructor() {
     super('MatchScene');
@@ -77,10 +83,8 @@ export class MatchScene extends Phaser.Scene {
 
   create(): void {
     const opts = urlOptions();
-    this.options = opts;
-    this.aiVsAi = opts.aiVsAi;
-    this.state = this.newState();
-    this.accumulator = 0;
+    this.aiVsAi = !this.online && opts.aiVsAi;
+    this.driver = this.createDriver(opts.difficulty);
     this.drawPitch();
     this.dynamic = this.add.graphics();
     this.createDebugOverlay();
@@ -108,11 +112,24 @@ export class MatchScene extends Phaser.Scene {
           .setOrigin(0, 0.5)
           .setDepth(30)
       : undefined;
+    this.netText = this.add
+      .text(GAME_WIDTH - 8, GAME_HEIGHT - 8, '', { fontFamily: 'monospace', fontSize: '13px', color: '#ffffff', backgroundColor: '#000000b0', padding: { x: 6, y: 4 } })
+      .setOrigin(1, 1)
+      .setDepth(40)
+      .setVisible(false);
+    // F3 (captured, so the browser's find bar doesn't open) or N.
+    this.input.keyboard?.addCapture('F3');
+    const toggleNet = (): void => {
+      this.debugNet = !this.debugNet;
+    };
+    this.input.keyboard?.on('keydown-F3', toggleNet);
+    this.input.keyboard?.on('keydown-N', toggleNet);
 
     if (DEBUG_CLICK_KICK) {
       // Debug only, render-side: pokes the ball towards the pointer. Off by default (see config.ts).
       this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-        const { ball } = this.state;
+        if (this.driver.online) return;
+        const { ball } = this.driver.state;
         const dx = pointer.worldX - ball.pos.x;
         const dy = pointer.worldY - ball.pos.y;
         const d = Math.hypot(dx, dy) || 1;
@@ -122,59 +139,58 @@ export class MatchScene extends Phaser.Scene {
     }
   }
 
-  private newState(): GameState {
-    const d = this.options.difficulty;
-    const humans: [boolean, boolean] = [this.humanTeam === 0, this.humanTeam === 1];
-    return createMatchState({ aiVsAi: this.options.aiVsAi, humans, seed: this.seed, difficulty: d && [d, d] });
+  private createDriver(difficulty?: Difficulty): MatchDriver {
+    const online = this.online;
+    if (online instanceof HostLobby) return new HostMatch({ localTeam: this.humanTeam, seed: this.seed, difficulty, lobby: online });
+    if (online instanceof GuestLobby) return new GuestMatch(online, this.humanTeam, this.seed);
+    return new HostMatch({ localTeam: this.aiVsAi ? null : this.humanTeam, seed: this.seed, difficulty });
   }
 
   /** Read-only access for the HUD. */
   getState(): GameState {
-    return this.state;
+    return this.driver.state;
   }
 
-  /** "Play again": a brand-new match. */
+  isOnline(): boolean {
+    return this.driver.online;
+  }
+
+  /** Connection trouble / match ended online (drawn by the HUD), or null. */
+  netOverlay(): NetOverlay | null {
+    return this.driver.overlay(performance.now());
+  }
+
+  /** "Play again" (offline only): a brand-new match. */
   restartMatch(): void {
-    this.state = this.newState();
-    this.accumulator = 0;
+    this.driver.restart();
   }
 
   update(_time: number, delta: number): void {
-    // Fixed 60 Hz timestep; clamp so a stalled tab doesn't cause a spiral of catch-up steps.
-    this.accumulator += Math.min(delta / 1000, 0.25);
-    while (this.accumulator >= SIM_DT) {
-      this.state = step(this.state, this.collectInputs(), SIM_DT);
-      this.accumulator -= SIM_DT;
-    }
-    this.drawState(this.state);
+    const now = performance.now();
+    this.driver.advance(delta / 1000, () => this.keyboard.sample(), now);
+    this.drawState(this.driver.state);
     this.drawOnlineStatus();
+    this.netText.setVisible(this.debugNet);
+    if (this.debugNet) this.netText.setText(this.driver.debugLines(now).join('\n'));
   }
 
-  private collectInputs(): (InputFrame | undefined)[] {
-    const local = this.keyboard.sample();
-    const inputs: (InputFrame | undefined)[] = [undefined, undefined];
-    if (!this.aiVsAi) inputs[this.humanTeam] = local;
-    return inputs;
-  }
-
-  /** T06 placeholder: the connection stays open during the match, but each screen still runs its own match. */
   private drawOnlineStatus(): void {
     if (!this.online || !this.onlineLabel) return;
     const v = this.online.view;
     const link =
       v.status === 'connected'
-        ? `connected, ping ${v.pingMs === null ? '…' : Math.round(v.pingMs)} ms`
-        : `disconnected${v.error ? ` (${v.error.title.toLowerCase()})` : ''}`;
-    this.onlineLabel.setText(
-      `ONLINE TEST · you are ${TEAMS[this.humanTeam].name} · ${link} · each screen plays its own match vs the AI until gameplay sync (T07) · Esc: leave`,
-    );
+        ? `ping ${v.pingMs === null ? '…' : Math.round(v.pingMs)} ms`
+        : v.status === 'reconnecting'
+          ? 'reconnecting…'
+          : `disconnected${v.error ? ` (${v.error.title.toLowerCase()})` : ''}`;
+    this.onlineLabel.setText(`ONLINE · you are ${TEAMS[this.humanTeam].name} (${v.role}) · ${link} · F3: network info · Esc: leave`);
   }
 
   private createDebugOverlay(): void {
     this.debugGfx = this.add.graphics().setDepth(20);
     this.debugLabels.length = 0;
     const style = { fontFamily: 'monospace', fontSize: '11px', color: '#ffffff', backgroundColor: '#000000a0', padding: { x: 2, y: 1 } };
-    for (let i = 0; i < this.state.players.length; i++) {
+    for (let i = 0; i < this.driver.state.players.length; i++) {
       this.debugLabels.push(this.add.text(0, 0, '', style).setOrigin(0.5, 0).setDepth(21).setVisible(false));
     }
     this.debugTeams = this.add.text(8, 6, '', { ...style, fontSize: '13px' }).setDepth(21).setVisible(false);
@@ -191,10 +207,13 @@ export class MatchScene extends Phaser.Scene {
     g.clear();
     const on = this.debugAi;
     this.debugTeams.setVisible(on);
+    // The guest's copy of the state has no AI memory: the AI only runs on the host.
+    const guest = this.online?.view.role === 'guest';
+    if (on && guest) this.debugTeams.setText('AI debug (F2) is only available on the host, where the AI runs');
     state.players.forEach((p, i) => {
       const label = this.debugLabels[i];
-      label.setVisible(on);
-      if (!on) return;
+      label.setVisible(on && !guest);
+      if (!on || guest) return;
       const m = state.ai.players[i];
       label.setText(`${ROLE_LABEL[roleOf(p)]} ${m.intent}`).setPosition(p.pos.x, p.pos.y + p.radius + 4);
       if (m.intent === 'human') return;
@@ -206,7 +225,7 @@ export class MatchScene extends Phaser.Scene {
         g.lineBetween(state.ball.pos.x, state.ball.pos.y, m.kickTarget.x, m.kickTarget.y);
       }
     });
-    if (on) {
+    if (on && !guest) {
       const t = state.ai.teams;
       const line = (i: 0 | 1): string =>
         `${TEAMS[i].name} [${state.ai.difficulty[i]}] ${t[i].mode.padEnd(13)} passes ${t[i].passes}  shots ${t[i].shots}  tackles ${t[i].tackles}  saves ${t[i].saves}`;

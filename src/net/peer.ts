@@ -3,6 +3,7 @@ import Peer, { type DataConnection } from 'peerjs';
 import {
   ICE_SERVERS,
   NET_CLOSE_FLUSH_MS,
+  NET_FAST_CHANNEL_ID,
   NET_LINK_TIMEOUT_MS,
   NET_PING_INTERVAL_MS,
   NET_PING_SMOOTHING,
@@ -10,7 +11,8 @@ import {
   PEER_SERVER,
 } from '../config';
 import type { NetError } from './errors';
-import { decode, type LobbyState, type Message } from './protocol';
+import { NetConditioner } from './netsim';
+import { decode, fromBase64, toBase64, type LobbyState, type Message } from './protocol';
 import type { TeamId } from '../sim/types';
 
 export { generateRoomCode, inviteLink, normalizeRoomCode, peerIdForRoom } from './roomCode';
@@ -26,7 +28,10 @@ export function peerErrorType(err: unknown): string {
   return typeof err === 'object' && err !== null && typeof (err as { type?: unknown }).type === 'string' ? (err as { type: string }).type : 'unknown';
 }
 
-/** Data channel options: reliable and ordered, JSON-encoded. (T07 may add an unreliable channel for snapshots.) */
+/**
+ * PeerJS data channel options: reliable and ordered, JSON-encoded. (PeerJS's `reliable: false` only makes a
+ * channel unordered, still retransmitting, so the truly unreliable channel is created by Link itself.)
+ */
 export const CONNECT_OPTIONS = { reliable: true, serialization: 'json' } as const;
 
 export type CloseReason = 'bye' | 'closed' | 'timeout';
@@ -34,18 +39,26 @@ export type CloseReason = 'bye' | 'closed' | 'timeout';
 /**
  * An open data connection: sends and receives typed, validated messages, measures ping, and notices when
  * the other side goes silent. Ping/pong and bye are handled here and not passed on.
+ *
+ * Besides PeerJS's reliable JSON channel it opens a second, unreliable and unordered binary channel on the same
+ * connection (`sendFast` / `onFast`) for snapshots and inputs. Both ends create it with the same fixed id
+ * (a "negotiated" channel), so no extra signalling is needed. Simulated latency/loss (netsim.ts) applies here.
  */
 export class Link {
   /** Smoothed round-trip time (ms), or null before the first pong. */
   pingMs: number | null = null;
   onMessage: (msg: Message) => void = () => {};
+  /** A binary packet from the unreliable channel (or its reliable fallback). */
+  onFast: (bytes: Uint8Array) => void = () => {};
   /** Called once, when the link closes for any reason. */
   onClose: (reason: CloseReason) => void = () => {};
+  readonly conditioner = new NetConditioner();
 
   private closed = false;
   private lastHeard = performance.now();
   private pingId = 0;
   private readonly timer: ReturnType<typeof setInterval>;
+  private fast: RTCDataChannel | null = null;
 
   constructor(readonly conn: DataConnection) {
     conn.on('data', (data) => this.receive(data));
@@ -54,6 +67,7 @@ export class Link {
     conn.on('iceStateChanged', (s) => {
       if (s === 'failed' || s === 'closed') this.finish('closed');
     });
+    this.openFastChannel();
     this.timer = setInterval(() => this.tick(), NET_PING_INTERVAL_MS);
     this.sendPing();
   }
@@ -62,13 +76,45 @@ export class Link {
     return !this.closed;
   }
 
+  /** Milliseconds since anything at all arrived from the other side. */
+  get silentMs(): number {
+    return performance.now() - this.lastHeard;
+  }
+
+  /** True when the unreliable channel is in use (false = fast packets go over the reliable channel). */
+  get hasFastChannel(): boolean {
+    return this.fast?.readyState === 'open';
+  }
+
   send(msg: Message): void {
     if (this.closed || !this.conn.open) return;
-    try {
-      void this.conn.send(msg);
-    } catch {
-      this.finish('closed');
+    this.conditioner.send(() => {
+      // Not `this.closed`: a final message (reject, bye) may still be on its way after close().
+      if (!this.conn.open) return;
+      try {
+        void this.conn.send(msg);
+      } catch {
+        this.finish('closed');
+      }
+    }, true);
+  }
+
+  /** Unreliable: may be lost, duplicated or reordered. */
+  sendFast(bytes: Uint8Array): void {
+    if (this.closed) return;
+    const fast = this.fast;
+    if (fast?.readyState !== 'open') {
+      this.send({ t: 'fast', b: toBase64(bytes) });
+      return;
     }
+    this.conditioner.send(() => {
+      if (fast.readyState !== 'open') return;
+      try {
+        fast.send(bytes as Uint8Array<ArrayBuffer>);
+      } catch {
+        // Unreliable anyway; a failing channel shows up as silence or a close.
+      }
+    }, false);
   }
 
   /** Close on purpose: optionally send a final message (e.g. a reject), then bye, then close shortly after. */
@@ -77,7 +123,22 @@ export class Link {
     if (final) this.send(final);
     this.send({ t: 'bye' });
     this.finish(null);
-    setTimeout(() => this.conn.close(), NET_CLOSE_FLUSH_MS);
+    setTimeout(() => this.conn.close(), NET_CLOSE_FLUSH_MS + this.conditioner.maxDelayMs);
+  }
+
+  private openFastChannel(): void {
+    try {
+      const ch = this.conn.peerConnection.createDataChannel('fast', { negotiated: true, id: NET_FAST_CHANNEL_ID, ordered: false, maxRetransmits: 0 });
+      ch.binaryType = 'arraybuffer';
+      ch.onmessage = (e: MessageEvent) => {
+        if (this.closed || !(e.data instanceof ArrayBuffer)) return;
+        this.lastHeard = performance.now();
+        this.onFast(new Uint8Array(e.data));
+      };
+      this.fast = ch;
+    } catch (err) {
+      console.warn('[net] no unreliable channel, using the reliable one for snapshots', err);
+    }
   }
 
   private receive(data: unknown): void {
@@ -93,7 +154,10 @@ export class Link {
       const rtt = Math.max(0, performance.now() - msg.sent);
       this.pingMs = this.pingMs === null ? rtt : this.pingMs + (rtt - this.pingMs) * NET_PING_SMOOTHING;
     } else if (msg.t === 'bye') this.finish('bye');
-    else this.onMessage(msg);
+    else if (msg.t === 'fast') {
+      const bytes = fromBase64(msg.b);
+      if (bytes) this.onFast(bytes);
+    } else this.onMessage(msg);
   }
 
   private tick(): void {
@@ -125,9 +189,10 @@ export type LobbyRole = 'host' | 'guest';
 /**
  * opening: registering with the broker · waiting: host, room open, no guest yet ·
  * connecting: a peer-to-peer connection / handshake is in progress · connected: both players in the lobby ·
+ * reconnecting: mid-match, the connection dropped and the guest is trying to get back (until `reconnectUntil`) ·
  * failed: see `error` · closed: we left.
  */
-export type LobbyStatus = 'opening' | 'waiting' | 'connecting' | 'connected' | 'failed' | 'closed';
+export type LobbyStatus = 'opening' | 'waiting' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'closed';
 
 export interface LobbyView {
   role: LobbyRole;
@@ -140,6 +205,8 @@ export interface LobbyView {
   /** Non-fatal information for the player (e.g. "your friend left"). */
   notice: string | null;
   error: NetError | null;
+  /** While reconnecting: performance.now() time the match is given up at. */
+  reconnectUntil: number | null;
 }
 
 export interface StartInfo {
@@ -158,4 +225,6 @@ export interface Lobby {
   start(): void;
   /** Leave: tell the other side, close the connection and unregister from the broker. */
   leave(): void;
+  /** During the match: the link to the other player while connected (it changes after a reconnect). */
+  readonly matchLink: Link | null;
 }
