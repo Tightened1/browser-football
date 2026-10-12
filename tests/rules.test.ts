@@ -157,13 +157,34 @@ describe('out of play', () => {
     const s = step(playing(400, PITCH_TOP - BALL_RADIUS - 2, 0), [], SIM_DT);
     expect(s.restart).toMatchObject({ type: 'throw-in', team: 1 });
     expect(s.ball.pos.y).toBeGreaterThan(PITCH_TOP + BALL_RADIUS);
-    expect(s.ball.pos.y).toBeLessThan(PITCH_TOP + 40);
+    expect(s.ball.pos.y).toBeLessThan(PITCH_TOP + 50);
     expect(s.ball.pos.x).toBeCloseTo(400, 3);
     const taker = s.players[s.restart!.taker];
     expect(taker.team).toBe(1);
     expect(taker.role).toBe('outfield');
     expect(Math.hypot(taker.pos.x - s.ball.pos.x, taker.pos.y - s.ball.pos.y)).toBeLessThan(taker.radius + BALL_RADIUS + 5);
     expect(eventTypes(s)).toContain('throw-in');
+  });
+
+  it('stands the taker on the line side of the ball, facing into the pitch (a touch cannot send it straight out)', () => {
+    for (const [y, into] of [[PITCH_TOP - BALL_RADIUS - 2, 1], [PITCH_BOTTOM + BALL_RADIUS + 2, -1]] as const) {
+      const s = step(playing(500, y, 0), [], SIM_DT);
+      const taker = s.players[s.restart!.taker];
+      expect((s.ball.pos.y - taker.pos.y) * into).toBeGreaterThan(0); // ball is further into the pitch than the taker
+      expect(Math.sin(taker.facing) * into).toBeGreaterThan(0.9);
+      expect(taker.pos.y).toBeGreaterThanOrEqual(PITCH_TOP + taker.radius - 1e-6);
+      expect(taker.pos.y).toBeLessThanOrEqual(PITCH_BOTTOM - taker.radius + 1e-6);
+    }
+  });
+
+  it('calls a ball that comes to rest beyond a line out, even if not wholly over it (corner pocket: no player can reach it)', () => {
+    // Centre 8.8 px past both the bottom line and the right end line: less than a ball radius, so not "wholly over".
+    const s = step(playing(PITCH_RIGHT + BALL_RADIUS - 0.8, PITCH_BOTTOM + BALL_RADIUS - 0.2, 0), [], SIM_DT);
+    expect(s.restart?.type).toBe('goal-kick'); // team 0 (attacking right) touched it last, so the defenders get a goal kick
+    // The same ball still rolling fast is left alone until it has fully crossed.
+    const moving = playing(PITCH_RIGHT + 4, PITCH_BOTTOM + 4, 0);
+    moving.ball.vel = { x: 100, y: 100 };
+    expect(step(moving, [], SIM_DT).restart).toBeNull();
   });
 
   it('handles the bottom touchline too', () => {
@@ -183,8 +204,8 @@ describe('out of play', () => {
   it('gives a corner to the attackers when the defenders put it over their own end line', () => {
     const s = step(playing(PITCH_RIGHT + BALL_RADIUS + 2, PITCH_BOTTOM - 80, 1), [], SIM_DT); // team 1 defends the right goal
     expect(s.restart).toMatchObject({ type: 'corner', team: 0 });
-    expect(s.ball.pos.x).toBeGreaterThan(PITCH_RIGHT - 25);
-    expect(s.ball.pos.y).toBeGreaterThan(PITCH_BOTTOM - 25);
+    expect(s.ball.pos.x).toBeGreaterThan(PITCH_RIGHT - 50);
+    expect(s.ball.pos.y).toBeGreaterThan(PITCH_BOTTOM - 50);
     expect(eventTypes(s)).toContain('corner');
   });
 

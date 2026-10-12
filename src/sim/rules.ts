@@ -7,6 +7,7 @@ import {
   HALVES,
   KICKOFF_DELAY,
   MAX_EVENTS,
+  OUT_REST_SPEED,
   PITCH_BOTTOM,
   PITCH_LEFT,
   PITCH_RIGHT,
@@ -100,8 +101,8 @@ function chooseTaker(state: GameState, team: TeamId, spot: Vec2, type: RestartTy
   return best;
 }
 
-/** Puts the ball on `pos` and a taker next to it (on the side of `inward`, a unit vector), and opens the restart. */
-function setRestart(state: GameState, type: RestartType, team: TeamId, pos: Vec2, inward: Vec2): void {
+/** Puts the ball on `pos` and a taker next to it (on the side of `side`, a unit vector; the taker faces the ball), and opens the restart. */
+function setRestart(state: GameState, type: RestartType, team: TeamId, pos: Vec2, side: Vec2): void {
   const taker = chooseTaker(state, team, pos, type);
   state.ball.pos = { ...pos };
   state.ball.vel = { x: 0, y: 0 };
@@ -112,13 +113,13 @@ function setRestart(state: GameState, type: RestartType, team: TeamId, pos: Vec2
     return;
   }
   const gap = taker.radius + state.ball.radius + RESTART_TAKER_GAP;
-  taker.pos = { x: pos.x + inward.x * gap, y: pos.y + inward.y * gap };
+  taker.pos = { x: pos.x + side.x * gap, y: pos.y + side.y * gap };
   taker.vel = { x: 0, y: 0 };
   taker.charge = 0;
   taker.tackleTimer = 0;
   taker.touchTimer = 0;
   // Faces the ball, so a tap of pass sends it back out into play.
-  taker.facing = Math.atan2(-inward.y, -inward.x);
+  taker.facing = Math.atan2(-side.y, -side.x);
   if (state.controlled[team] >= 0 && taker.role !== 'keeper') state.controlled[team] = taker.id;
   state.lastTouch = { team, player: taker.id };
   state.restart = { type, team, pos: { ...pos }, taker: taker.id, timer: RESTART_AUTO_DELAY };
@@ -167,7 +168,8 @@ function throwIn(state: GameState): void {
   const top = ball.pos.y < MID_Y;
   const x = Math.min(PITCH_RIGHT - THROW_IN_MIN_END_DISTANCE, Math.max(PITCH_LEFT + THROW_IN_MIN_END_DISTANCE, ball.pos.x));
   const y = top ? PITCH_TOP + RESTART_INSET : PITCH_BOTTOM - RESTART_INSET;
-  setRestart(state, 'throw-in', (1 - last) as TeamId, { x, y }, { x: 0, y: top ? 1 : -1 });
+  // The taker stands on the touchline side of the ball, facing into the pitch.
+  setRestart(state, 'throw-in', (1 - last) as TeamId, { x, y }, { x: 0, y: top ? -1 : 1 });
 }
 
 /** The ball is out over an end line (outside the goal mouth): corner if the defenders touched it last, else goal kick. */
@@ -181,7 +183,7 @@ function goalLineOut(state: GameState, side: -1 | 1): void {
     const top = ball.pos.y < MID_Y;
     const pos = { x: side < 0 ? PITCH_LEFT + RESTART_INSET : PITCH_RIGHT - RESTART_INSET, y: top ? PITCH_TOP + RESTART_INSET : PITCH_BOTTOM - RESTART_INSET };
     const k = Math.SQRT1_2;
-    setRestart(state, 'corner', attacker, pos, { x: sx * k, y: top ? k : -k });
+    setRestart(state, 'corner', attacker, pos, { x: -sx * k, y: top ? -k : k });
   } else {
     const sx = side < 0 ? 1 : -1;
     const pos = { x: (side < 0 ? PITCH_LEFT : PITCH_RIGHT) + sx * GOAL_KICK_DISTANCE, y: MID_Y };
@@ -222,11 +224,17 @@ function checkBall(state: GameState): void {
   const { ball } = state;
   const r = ball.radius;
   const halfGoal = GOAL_WIDTH / 2;
-  if (ball.pos.x < PITCH_LEFT - r || ball.pos.x > PITCH_RIGHT + r) {
+  // The whole ball over a line is out. A ball that has come to rest with its centre beyond a line is out too: in a
+  // corner pocket it can sit just short of "whole ball" where no player can reach it (players stay inside the lines).
+  const resting = Math.hypot(ball.vel.x, ball.vel.y) < OUT_REST_SPEED;
+  const inGoalMouth = Math.abs(ball.pos.y - MID_Y) <= halfGoal;
+  const wholeX = ball.pos.x < PITCH_LEFT - r || ball.pos.x > PITCH_RIGHT + r;
+  const restX = resting && !inGoalMouth && (ball.pos.x < PITCH_LEFT || ball.pos.x > PITCH_RIGHT);
+  if (wholeX || restX) {
     const side = ball.pos.x < PITCH_LEFT ? -1 : 1;
-    if (Math.abs(ball.pos.y - MID_Y) <= halfGoal) scoreGoal(state, side);
+    if (inGoalMouth) scoreGoal(state, side);
     else goalLineOut(state, side);
-  } else if (ball.pos.y < PITCH_TOP - r || ball.pos.y > PITCH_BOTTOM + r) {
+  } else if (ball.pos.y < PITCH_TOP - r || ball.pos.y > PITCH_BOTTOM + r || (resting && (ball.pos.y < PITCH_TOP || ball.pos.y > PITCH_BOTTOM))) {
     throwIn(state);
   }
 }

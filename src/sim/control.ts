@@ -1,5 +1,5 @@
 // Which player each human controls: switching and auto-switch on pass reception. Pure.
-import { KICK_REACH, SWITCH_GOALSIDE_BIAS } from '../config';
+import { KICK_REACH, SWITCH_GOALSIDE_BIAS, TOUCH_MAX_RELATIVE_SPEED } from '../config';
 import type { BallState, GameState, InputFrame, PlayerState, TeamId } from './types';
 
 /** True if the player is close enough to the ball to kick or dribble it. */
@@ -64,11 +64,13 @@ export function updateTouches(state: GameState): void {
     }
     if (receiver >= 0) state.controlled[team] = receiver;
   }
-  // Whoever is closest within reach now owns the last touch.
+  // Whoever is closest within reach owns the last touch -- but only if the ball is (nearly) at rest relative to them.
+  // A ball flying past within reach has not been touched; real contacts and kicks set lastTouch in step().
   let toucher: PlayerState | null = null;
   let bestD = Infinity;
   for (const p of state.players) {
     if (!hasBall(p, ball)) continue;
+    if (Math.hypot(ball.vel.x - p.vel.x, ball.vel.y - p.vel.y) > TOUCH_MAX_RELATIVE_SPEED) continue;
     const d = Math.hypot(ball.pos.x - p.pos.x, ball.pos.y - p.pos.y);
     if (d < bestD) {
       bestD = d;

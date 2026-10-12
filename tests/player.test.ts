@@ -11,6 +11,7 @@ import {
   SHOT_MIN_SPEED,
   SIM_DT,
   TACKLE_COOLDOWN,
+  TACKLE_HIT_COOLDOWN,
 } from '../src/config';
 import { buildInputFrame } from '../src/input/keyboard';
 import { createSoloState, NEUTRAL_INPUT, shotSpeed, step } from '../src/sim/simulation';
@@ -193,6 +194,24 @@ describe('tackle', () => {
     s = run(s, 4, () => input({ moveX: 1 })); // face the ball, still short of it
     s = run(s, 20, (n) => input({ tackle: n === 0 }));
     expect(s.ball.vel.x).toBeGreaterThan(300);
+  });
+
+  it('punishes a missed slide with a long cooldown, but forgives one that wins the ball (no tackle spam)', () => {
+    // Miss: nothing in reach. Another slide is possible only after TACKLE_COOLDOWN (minus the slide itself).
+    let miss = setup(400, midY);
+    miss = run(miss, 4, () => input({ moveX: 1 }));
+    miss = run(miss, 1, () => input({ tackle: true }));
+    miss = run(miss, 40, () => input()); // 0.67 s later: still cooling down
+    expect(miss.players[0].tackleCooldown).toBeGreaterThan(0.3);
+    miss = run(miss, 2, (n) => input({ tackle: n === 0 }));
+    expect(miss.players[0].tackleTimer).toBe(0);
+    // Hit: the cooldown is cut to TACKLE_HIT_COOLDOWN.
+    let hit = setup(400, midY, 470, midY);
+    hit = run(hit, 4, () => input({ moveX: 1 }));
+    hit = run(hit, 20, (n) => input({ tackle: n === 0 }));
+    expect(hit.ball.vel.x).toBeGreaterThan(300);
+    expect(hit.players[0].tackleCooldown).toBeLessThanOrEqual(TACKLE_HIT_COOLDOWN);
+    expect(TACKLE_HIT_COOLDOWN).toBeLessThan(TACKLE_COOLDOWN);
   });
 
   it('does nothing when the player already has the ball', () => {

@@ -252,10 +252,13 @@ describe('goalkeeper', () => {
     let s = scenario([PITCH_LEFT + 130, midY + 30], {});
     s.ball.vel = { x: -20, y: 0 };
     const intents = new Set<string>();
-    s = run(s, 45, (st) => intents.add(st.ai.players[0].intent));
+    let closest = Infinity;
+    s = run(s, 45, (st) => {
+      intents.add(st.ai.players[0].intent);
+      closest = Math.min(closest, Math.hypot(st.players[0].pos.x - st.ball.pos.x, st.players[0].pos.y - st.ball.pos.y));
+    });
     expect(intents.has('rush')).toBe(true);
-    const k = s.players[0];
-    expect(Math.hypot(k.pos.x - s.ball.pos.x, k.pos.y - s.ball.pos.y)).toBeLessThan(60);
+    expect(closest).toBeLessThan(40); // got to it (it then plays it out, so the final gap says nothing)
   });
 
   it('after a save, distributes the ball to a teammate', () => {
@@ -267,6 +270,28 @@ describe('goalkeeper', () => {
     });
     expect(distributed).toBe(true);
     expect(s.ai.teams[0].passes).toBeGreaterThan(0);
+  });
+});
+
+describe('own-goal avoidance', () => {
+  it('leaves a ball in its own goal mouth to the keeper: an upfield defender does not chase it', () => {
+    // Home defends the left goal. The ball is just in front of it; defender 1 is upfield of the ball.
+    const s = scenario([PITCH_LEFT + 60, midY], { 1: [PITCH_LEFT + 160, midY + 20] });
+    const ctx = analyse(s, [false, false]);
+    expect(ctx.chaser[0]).not.toBe(1);
+    const k = computeAiInputs(s, [false, false]); // the keeper goes for it
+    expect(s.ai.players[0].intent).toBe('rush');
+    expect(k[0]).toBeDefined();
+  });
+
+  it('a chasing defender upfield of a ball near its own goal swings round to the goal side, not straight at it', () => {
+    const s = scenario([PITCH_LEFT + 200, midY], { 1: [PITCH_LEFT + 300, midY + 40] });
+    s.ball.vel = { x: 0, y: 0 };
+    s.ai.players[1].intent = 'chase';
+    s.ai.players[1].thinkTimer = 5;
+    computeAiInputs(s, [false, false]);
+    const target = s.ai.players[1].target;
+    expect(target.x).toBeLessThan(s.ball.pos.x); // aims for the goal side of the ball
   });
 });
 

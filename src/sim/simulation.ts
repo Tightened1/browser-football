@@ -36,6 +36,8 @@ import {
   STAT_SHOT_MIN_FORWARD,
   STAT_SHOT_RANGE,
   TACKLE_COOLDOWN,
+  TACKLE_HIT_COOLDOWN,
+  KEEPER_DIVE_COOLDOWN,
   TACKLE_DURATION,
   TACKLE_KNOCK_SPEED,
   TACKLE_SPEED,
@@ -226,7 +228,7 @@ function maybeStartTackle(p: PlayerState, input: InputFrame, ball: BallState): v
   if (distance(p, ball) <= p.radius + ball.radius + KICK_REACH) return; // has the ball: shoot/pass instead
   if (Math.hypot(input.moveX, input.moveY) > 1e-6) p.facing = Math.atan2(input.moveY, input.moveX); // slide where steered
   p.tackleTimer = TACKLE_DURATION;
-  p.tackleCooldown = TACKLE_COOLDOWN;
+  p.tackleCooldown = p.role === 'keeper' ? KEEPER_DIVE_COOLDOWN : TACKLE_COOLDOWN;
 }
 
 /**
@@ -295,6 +297,7 @@ function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt
       ball.vel.x = kx * TACKLE_KNOCK_SPEED;
       ball.vel.y = ky * TACKLE_KNOCK_SPEED;
       p.touchTimer = KICK_TOUCH_LOCKOUT;
+      p.tackleCooldown = Math.min(p.tackleCooldown, TACKLE_HIT_COOLDOWN); // a slide that wins the ball is forgiven
       touched = true;
     }
     return touched;
@@ -407,8 +410,8 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
           if (ball.vel.x * dir < KEEPER_CLEAR_SPEED) ball.vel.x = dir * KEEPER_CLEAR_SPEED;
           next.lastTouch = { team: p.team, player: p.id };
         }
-      } else {
-        collideCircles(p, ball, PLAYER_BALL_RESTITUTION, 1, 1);
+      } else if (collideCircles(p, ball, PLAYER_BALL_RESTITUTION, 1, 1)) {
+        next.lastTouch = { team: p.team, player: p.id };
       }
     }
     collideWithBoundary(ball, BALL_BOUNDARY, WALL_TANGENT_KEEP);

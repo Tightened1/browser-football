@@ -82,6 +82,9 @@ export const DRIBBLE_TOUCH_INTERVAL = 0.15;
 /** The ball must be within this angle (radians) of the running direction to be nudged. */
 export const DRIBBLE_CONE = 1.1;
 
+/** A ball that is merely within reach of a player only counts as touched by them if it moves slower than this relative to them (px/s). */
+export const TOUCH_MAX_RELATIVE_SPEED = 90;
+
 /** Kicks (ball launch speed, px/s). */
 export const PASS_SPEED = 450;
 /** A tap of shoot, or a minimal charge. */
@@ -97,7 +100,12 @@ export const KICK_TOUCH_LOCKOUT = 0.25;
 /** Tackle / slide. */
 export const TACKLE_SPEED = 520;
 export const TACKLE_DURATION = 0.32;
-export const TACKLE_COOLDOWN = 0.9;
+/** Cooldown after starting an outfield slide. A slide that misses is punished: it can't be spammed. */
+export const TACKLE_COOLDOWN = 1.3;
+/** A slide that connects with the ball is forgiven: the cooldown drops to at most this (s, counted from the slide's start). */
+export const TACKLE_HIT_COOLDOWN = 0.5;
+/** A keeper's dive uses its own, shorter cooldown. */
+export const KEEPER_DIVE_COOLDOWN = 0.9;
 export const TACKLE_KNOCK_SPEED = 650;
 
 /** Teams: 5-a-side (1 keeper + 4 outfield). Team 0 defends the left goal, team 1 the right. */
@@ -142,7 +150,7 @@ export const KEEPER_BALL_RESTITUTION = 0.15;
 /** Inverse mass of the keeper vs the ball (small = a hard shot barely moves the keeper). */
 export const KEEPER_INV_MASS = 0.1;
 /** After touching a keeper the ball always leaves at least this fast, away from the goal (px/s). */
-export const KEEPER_CLEAR_SPEED = 140;
+export const KEEPER_CLEAR_SPEED = 240;
 
 export const TEAMS = [
   { name: 'Home', kit: 0x2a6fdb, keeper: 0xf2c94c, outline: 0x0b2a5e },
@@ -190,8 +198,8 @@ export interface AiProfile {
 
 export const AI_PROFILES: Record<Difficulty, AiProfile> = {
   easy: { reactionTime: 0.38, aimError: 0.14, speed: 0.82, keeperReaction: 0.22, keeperError: 30, keeperSpeed: 0.55, tackleChance: 0.25, decisionNoise: 0.35, pressers: 1 },
-  normal: { reactionTime: 0.24, aimError: 0.08, speed: 0.92, keeperReaction: 0.15, keeperError: 20, keeperSpeed: 0.65, tackleChance: 0.4, decisionNoise: 0.2, pressers: 1 },
-  hard: { reactionTime: 0.14, aimError: 0.04, speed: 1, keeperReaction: 0.1, keeperError: 12, keeperSpeed: 0.75, tackleChance: 0.55, decisionNoise: 0.1, pressers: 2 },
+  normal: { reactionTime: 0.24, aimError: 0.08, speed: 0.92, keeperReaction: 0.1, keeperError: 28, keeperSpeed: 0.65, tackleChance: 0.4, decisionNoise: 0.2, pressers: 1 },
+  hard: { reactionTime: 0.14, aimError: 0.04, speed: 1, keeperReaction: 0.07, keeperError: 12, keeperSpeed: 0.75, tackleChance: 0.55, decisionNoise: 0.1, pressers: 2 },
 };
 /** Difficulty of a team with no human (the opponents, or both teams in AI vs AI). */
 export const AI_DIFFICULTY: Difficulty = 'normal';
@@ -228,6 +236,13 @@ export const AI_MARK_DISTANCE_DEF = 32;
 export const AI_MARK_DISTANCE_ATT = 70;
 /** Fraction of the profile speed used for calm positional moves (pressing/chasing use full speed). */
 export const AI_SHAPE_SPEED = 0.85;
+
+/** A loose ball this close to our own goal (fraction of the pitch length) is approached from the goal side, so it is never nudged into our net. */
+export const AI_OWN_GOAL_DANGER = 0.3;
+
+/** The "goal mouth" the keeper owns: this far from our own goal line (px) and this far beyond the posts sideways (px). */
+export const AI_GOAL_MOUTH_DEPTH = 110;
+export const AI_GOAL_MOUTH_MARGIN = 30;
 
 /** Pressing: the presser aims for a spot this far goal-side of the carrier (px). */
 export const AI_PRESS_OFFSET = 34;
@@ -278,8 +293,11 @@ export const HALF_TIME_PAUSE = 4;
 export const RESTART_AUTO_DELAY = 1;
 /** The team not taking a restart is kept this far from the ball until it is released (px). */
 export const RESTART_CLEAR_RADIUS = 90;
-/** The ball is placed this far inside the pitch lines (px), so it is not immediately out again. */
-export const RESTART_INSET = BALL_RADIUS + 3;
+/**
+ * Throw-ins and corners: the ball is placed this far inside the pitch lines (px) and the taker stands on the line side of
+ * it, facing into the pitch (so a touch sends the ball into play, never back out). Room for the taker's whole body.
+ */
+export const RESTART_INSET = 2 * PLAYER_RADIUS + BALL_RADIUS + 3;
 /** Throw-ins are taken at least this far from the end lines (px). */
 export const THROW_IN_MIN_END_DISTANCE = 60;
 /** Goal-kick spot: distance from the goal line (px). */
@@ -288,6 +306,8 @@ export const GOAL_KICK_DISTANCE = 70;
 export const RESTART_TAKER_GAP = 2;
 /** The ball moving this far from its spot means the restart has been played (px). */
 export const RESTART_PLAYED_DISTANCE = 3;
+/** A ball moving slower than this (px/s) with its centre beyond a line is out of play, even if not wholly over it. */
+export const OUT_REST_SPEED = 30;
 /** How many recent events the state keeps. */
 export const MAX_EVENTS = 40;
 
@@ -322,7 +342,7 @@ export const STUN_SERVERS: RTCIceServer[] = [
  *        VITE_TURN_USERNAME=...   VITE_TURN_CREDENTIAL=...
  * Nothing set = no relay: players on strict networks can't connect (the diagnostics screen says so).
  * ============================================================================================= */
-const env = import.meta.env;
+const env = import.meta.env ?? {};
 export const TURN_SERVERS: RTCIceServer[] = turnServersFromEnv(env.VITE_TURN_URLS, env.VITE_TURN_USERNAME, env.VITE_TURN_CREDENTIAL);
 export const TURN_CREDENTIALS_URL: string = env.VITE_TURN_CREDENTIALS_URL ?? '';
 /** Give up fetching TURN credentials after this long and carry on without the relay (ms). */

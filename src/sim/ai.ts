@@ -16,6 +16,9 @@ import {
   AI_DEADZONE,
   AI_DIFFICULTY,
   AI_EDGE_MARGIN,
+  AI_GOAL_MOUTH_DEPTH,
+  AI_GOAL_MOUTH_MARGIN,
+  AI_OWN_GOAL_DANGER,
   AI_KEEPER_MAX_OUT,
   AI_KEEPER_RUSH_RANGE,
   AI_KICK_TIMEOUT,
@@ -81,6 +84,7 @@ import type {
   AiState,
   AiTeamMemory,
   Difficulty,
+  BallState,
   GameState,
   InputFrame,
   PlayerState,
@@ -338,6 +342,15 @@ function interceptFor(p: PlayerState, path: Vec2[], speed: number): { time: numb
   return { time: AI_PREDICT_HORIZON + (dist(p.pos, last) - reach) / speed, point: last };
 }
 
+/**
+ * The ball is in or right in front of `team`'s own goal mouth: the keeper's ball. An outfield player upfield of it
+ * can only hit it towards the net (players can't get behind it), so they leave it to the keeper.
+ */
+export function ballInOwnGoalMouth(state: GameState, team: TeamId): boolean {
+  const dir = state.attackDir[team];
+  return along(state.ball.pos.x, dir) < AI_GOAL_MOUTH_DEPTH && Math.abs(state.ball.pos.y - MID_Y) < GOAL_WIDTH / 2 + AI_GOAL_MOUTH_MARGIN;
+}
+
 export function analyse(state: GameState, human: [boolean, boolean]): AiContext {
   const { ball, players, lastTouch } = state;
   let owner = -1;
@@ -359,6 +372,7 @@ export function analyse(state: GameState, human: [boolean, boolean]): AiContext 
   const chaser: [number, number] = [-1, -1];
   for (const p of players) {
     if (p.role === 'keeper') continue;
+    if (ballInOwnGoalMouth(state, p.team) && along(p.pos.x, state.attackDir[p.team]) > along(ball.pos.x, state.attackDir[p.team])) continue;
     const c = chaser[p.team];
     if (c < 0 || intercept[p.id].time < intercept[c].time) chaser[p.team] = p.id;
   }
@@ -416,6 +430,19 @@ export function moveToward(p: PlayerState, target: Vec2, arriveRadius: number, m
   if (d < AI_DEADZONE) return { ...IDLE };
   const k = (Math.min(1, d / arriveRadius) * maxMove) / d;
   return { ...IDLE, moveX: dx * k, moveY: dy * k };
+}
+
+/**
+ * Where to head to reach `goal` (a spot on the far side of the ball, e.g. to get behind it) without running into the
+ * ball on the way: if the straight path would clip it, go round via a waypoint to one side. Otherwise `goal` itself.
+ */
+function routeAroundBall(p: PlayerState, ball: BallState, goal: Vec2): Vec2 {
+  if (dist(p.pos, goal) < 1e-6 || segmentDistance(ball.pos, p.pos, goal) > p.radius + ball.radius + 2) return goal;
+  const v = unit(goal.x - p.pos.x, goal.y - p.pos.y);
+  const c = v.x * (ball.pos.y - p.pos.y) - v.y * (ball.pos.x - p.pos.x);
+  const sign = c >= 0 ? -1 : 1; // pass on the side away from the ball's offset
+  const clear = p.radius + ball.radius + 8;
+  return { x: ball.pos.x - v.y * sign * clear, y: ball.pos.y + v.x * sign * clear };
 }
 
 /** Push a target away from teammates who are already close to it, so players spread out. */
@@ -651,6 +678,12 @@ function actOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlaye
     default:
       // chase, receive (and stale on-ball intents right after losing the ball): get to the ball first.
       target = ctx.intercept[p.id].point;
+      if (along(ball.pos.x, dir) < AI_OWN_GOAL_DANGER * PITCH_WIDTH && along(p.pos.x, dir) > along(ball.pos.x, dir) - 6) {
+        // Upfield of a ball near our own goal: running straight at it would nudge it towards our net. Swing round
+        // to the goal side of it first.
+        const side = p.pos.y >= target.y ? 1 : -1;
+        target = clampToPitch({ x: target.x - dir * 34, y: target.y + side * 34 });
+      }
       input = moveToward(p, target, 8, full);
   }
   m.target = target;
@@ -850,7 +883,7 @@ function dribbleInput(state: GameState, p: PlayerState, d: Vec2, speed: number):
     return { ...IDLE, moveX: m.x * speed, moveY: m.y * speed };
   }
   const behind = clampToPitch({ x: ball.x - d.x * (p.radius + BALL_RADIUS), y: ball.y - d.y * (p.radius + BALL_RADIUS) }, p.radius);
-  return moveToward(p, behind, 10, speed);
+  return moveToward(p, routeAroundBall(p, state.ball, behind), 10, speed);
 }
 
 /**
@@ -939,7 +972,7 @@ function executeKick(state: GameState, p: PlayerState, m: AiPlayerMemory, speed:
 
   if (!inReach || !inFront) {
     // Line up behind the ball, still holding a charge if one has started.
-    const input = moveToward(p, behind, 10, speed);
+    const input = moveToward(p, routeAroundBall(p, ball, behind), 10, speed);
     input.shoot = p.charge > 0;
     m.target = behind;
     return input;
@@ -1085,7 +1118,9 @@ function keeperInput(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlay
     if (m.kickSpeed === 0 && m.thinkTimer <= 0) chooseDistribution(state, p, m, prof);
     if (m.kickSpeed === 0) {
       m.target = { ...ball.pos };
-      return moveToward(p, ball.pos, 20, speed * 0.5); // stay with the ball while deciding
+      // Stay with the ball while deciding -- but don't walk into it (a keeper's touch punches it away).
+      if (dist(p.pos, ball.pos) <= p.radius + ball.radius + 3) return { ...IDLE };
+      return moveToward(p, ball.pos, 20, speed * 0.5);
     }
     m.kickTimer += dt;
     if (m.kickTimer > AI_KICK_TIMEOUT) m.kickSpeed = 0;
@@ -1135,6 +1170,7 @@ function keeperInput(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlay
       else oppBest = Math.min(oppBest, ctx.intercept[q.id].time);
     }
     if (!carrier && inZone(ip.point) && ip.time < oppBest + 0.1 && ip.time < mateBest - 0.1) rush = true;
+    if (!carrier && ballInOwnGoalMouth(state, p.team)) rush = true; // nobody else can safely play it
     if (carrier && inZone(carrier.pos) && Math.abs(carrier.pos.x - goalX) < 110) rush = true; // smother a 1-on-1
   }
   if (rush && !shot) {

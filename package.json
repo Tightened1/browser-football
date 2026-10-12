@@ -1,13 +1,15 @@
 {
   "name": "browser-football",
   "private": true,
-  "version": "0.10.0",
+  "version": "0.11.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "simulate": "rolldown scripts/simulate.ts --format esm --platform node --file .sim/simulate.mjs && node .sim/simulate.mjs",
+    "probe": "rolldown scripts/shotprobe.ts --format esm --platform node --file .sim/shotprobe.mjs && node .sim/shotprobe.mjs"
   },
   "dependencies": {
     "peerjs": "^1.5.5",

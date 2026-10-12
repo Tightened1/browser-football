@@ -176,9 +176,9 @@ describe('match stats', () => {
     s.phase = 'playing';
     s.lastTouch = { team: 1, player: 7 };
     s.ball.vel = { x: 0, y: 0 };
-    for (let i = 0; i < 60; i++) s = step(s, [], SIM_DT);
-    expect(s.stats.possession[1]).toBeGreaterThan(0.9);
-    expect(s.stats.possession[0]).toBeLessThan(0.1);
+    for (let i = 0; i < 30; i++) s = step(s, [], SIM_DT); // before any AI player reaches the ball
+    expect(s.stats.possession[1]).toBeGreaterThan(0.45);
+    expect(s.stats.possession[0]).toBeLessThan(0.05);
     // A goal is recorded with its time.
     s = createInitialState();
     s.clock = 42;

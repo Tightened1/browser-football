@@ -11,7 +11,7 @@ import {
   SWITCH_GOALSIDE_BIAS,
 } from '../src/config';
 import { formationPosition } from '../src/sim/ai';
-import { chooseSwitchTarget } from '../src/sim/control';
+import { chooseSwitchTarget, updateTouches } from '../src/sim/control';
 import { createInitialState, NEUTRAL_INPUT, step } from '../src/sim/simulation';
 import type { GameState, InputFrame } from '../src/sim/types';
 
@@ -154,6 +154,26 @@ describe('player collisions', () => {
     s.controlled = [3, -1];
     s = run(s, 60, () => [input({ moveY: -1 })]);
     for (const p of s.players) expect(p.pos.y).toBeGreaterThanOrEqual(PITCH_TOP + p.radius - 1e-6);
+  });
+});
+
+describe('last touch', () => {
+  it('a ball merely flying past a player within reach is not touched by them; a resting or colliding one is', () => {
+    const s = place([626, midY], { 6: [600, midY], 1: [200, PITCH_TOP + 20], 2: [200, PITCH_BOTTOM - 20] });
+    s.lastTouch = { team: 0, player: 1 };
+    // 26 px from player 6's centre: inside reach (14 + 9 + 8 = 31) but not touching (23), moving fast across it.
+    s.ball.vel = { x: 0, y: 500 };
+    updateTouches(s);
+    expect(s.lastTouch).toEqual({ team: 0, player: 1 });
+    // The same spot with the ball at rest next to the player: they have it.
+    s.ball.vel = { x: 0, y: 0 };
+    updateTouches(s);
+    expect(s.lastTouch).toEqual({ team: 1, player: 6 });
+    // A fast ball that really hits a player (step runs the collision) is theirs.
+    const hit = place([600, midY - 40], { 6: [600, midY], 1: [200, PITCH_TOP + 20], 2: [200, PITCH_BOTTOM - 20] });
+    hit.ball.vel = { x: 0, y: 400 };
+    hit.lastTouch = { team: 0, player: 1 };
+    expect(step(run(hit, 6), [], SIM_DT).lastTouch).toEqual({ team: 1, player: 6 });
   });
 });
 
