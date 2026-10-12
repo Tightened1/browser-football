@@ -32,6 +32,8 @@ Both players must be running the same version of the game. If you see a "differe
 | Network overlay (ping, route, rates) | `F3` or `N` |
 | AI debug overlay | `F2` or `` ` `` |
 
+**Running with the ball:** run into a loose ball to take it; it then stays at your feet (you run a little slower). A slide tackle, an opponent in your way, or turning straight back at full speed loses it. Passes and shots go where the move keys point when you kick, so you can run one way and shoot another. Press pass or let go of shoot a moment *before* the ball reaches you and the kick fires as it arrives (an amber ring shows it is waiting; a white flash when it fires).
+
 Move, pass, shoot, tackle and switch can all be rebound under **Settings** (two keys per action). `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved. **How to play** on the title screen shows the same table.
 
 In menus, use the arrow keys or the mouse. `Enter` or `Space` selects.

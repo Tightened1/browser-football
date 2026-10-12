@@ -19,7 +19,7 @@ export class HowToPlayScene extends Phaser.Scene {
     const move = (['up', 'down', 'left', 'right'] as const).map((a) => keysText(b, a)).join('   ');
     const rows: [string, string][] = [
       ['Move', `${move}`],
-      ['Pass (tap) / Shoot (hold to charge, release)', `${keysText(b, 'pass')}   /   ${keysText(b, 'shoot')}`],
+      ['Pass (tap) / Shoot (hold to charge, release), aimed with the move keys', `${keysText(b, 'pass')}   /   ${keysText(b, 'shoot')}`],
       ['Tackle / slide (when you have no ball)', keysText(b, 'tackle')],
       ['Switch player (when you have no ball)', keysText(b, 'switch')],
       ['AI debug overlay (roles, intents, team modes)', 'F2  /  `'],
@@ -37,9 +37,9 @@ export class HowToPlayScene extends Phaser.Scene {
     });
 
     const notes = [
-      'You control one player of your 5-a-side team (the ringed one); the AI plays the rest.',
-      'Press Switch to take over the teammate best placed to reach the ball. Control also moves to a player who receives your pass.',
-      'Two halves, teams swap ends at half-time. Out-of-play restarts are quick: just play the ball when you are ready.',
+      'You control the ringed player; the AI plays the rest. Run into a loose ball to take it.',
+      'The ball stays at your feet. A slide, a player in your way or a U-turn at full speed loses it.',
+      'Kick just before the ball reaches you and it fires when it arrives (amber ring = waiting).',
       'Online: one player hosts and shares the room code or invite link; the other joins. You pick your own team and kit.',
       'Change any key under Settings. The pause menu does not stop an online match, since your friend is still playing.',
     ];

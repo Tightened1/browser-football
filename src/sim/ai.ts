@@ -34,8 +34,10 @@ import {
   AI_POSSESSION_SLACK,
   AI_PREDICT_HORIZON,
   AI_PREDICT_STEP,
+  AI_PRESS_ENGAGE,
   AI_PRESS_OFFSET,
   AI_PRESSURE_RADIUS,
+  AI_QUICK_SHOT_CHARGE,
   AI_PROFILES,
   AI_RUN_CHANCE,
   AI_RUN_TIME,
@@ -53,12 +55,13 @@ import {
   BALL_FRICTION,
   BALL_RADIUS,
   BALL_STOP_SPEED,
+  DRIBBLE_SHARP_TURN_ANGLE,
   FORMATION,
   GOAL_WIDTH,
   KEEPER_LINE_OFFSET,
   KICK_PLAYER_VEL_FACTOR,
   KICK_REACH,
-  KICK_TOUCH_LOCKOUT,
+  KICK_FLASH_TIME,
   PASS_SPEED,
   PENALTY_BOX_HEIGHT,
   PITCH_BOTTOM,
@@ -77,6 +80,7 @@ import {
   WALL_RESTITUTION,
   type AiProfile,
 } from '../config';
+import { angleDiff, CARRY_SPEED } from './dribble';
 import type {
   AiIntent,
   AiPlayerMemory,
@@ -354,7 +358,8 @@ export function ballInOwnGoalMouth(state: GameState, team: TeamId): boolean {
 export function analyse(state: GameState, human: [boolean, boolean]): AiContext {
   const { ball, players, lastTouch } = state;
   let owner = -1;
-  if (lastTouch) {
+  if (state.possession) owner = state.possession.player;
+  else if (lastTouch) {
     const p = players[lastTouch.player];
     if (p && dist(p.pos, ball.pos) <= p.radius + ball.radius + AI_POSSESSION_SLACK) owner = p.id;
   }
@@ -618,11 +623,17 @@ function actOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlaye
       const lead = { x: ball.pos.x + ball.vel.x * 0.12, y: ball.pos.y + ball.vel.y * 0.12 };
       const dBall = dist(p.pos, lead);
       if (m.tackleArmed && dBall < AI_TACKLE_RANGE * 1.8) target = lead;
+      // Goal-side and close to a carrier: step in to the ball and win it with the body (a body check from the front).
+      const goalSide = carrier && along(p.pos.x, dir) < along(carrier.pos.x, dir) + 6;
+      const keeperBall = !!state.possession && !!carrier && carrier.role === 'keeper'; // can't be challenged
+      if (state.possession && carrier && carrier.team !== p.team && !keeperBall && goalSide && dist(p.pos, carrier.pos) < AI_PRESS_ENGAGE) target = lead;
+      if (keeperBall) m.tackleArmed = false;
       input = moveToward(p, target, 8, full);
       const d = unit(lead.x - p.pos.x, lead.y - p.pos.y);
       // Only slide in from goal-side in our own half: a tackle from the wrong side knocks it towards our goal.
       const safeAngle = d.x * dir > -0.2 || along(ball.pos.x, dir) > 0.5 * PITCH_WIDTH;
-      const canPoke = m.tackleArmed && carrier && carrier.team !== p.team && !p.prevPass && canKickNow(state, p);
+      // A carried ball can't be poked away (only tackled or body-checked); a loose one at the carrier's feet can.
+      const canPoke = m.tackleArmed && carrier && carrier.team !== p.team && !state.possession && !p.prevPass && canKickNow(state, p);
       const poke = canPoke ? strikeDirection(state, p, { x: dir, y: 0 }) : null;
       if (poke) {
         // Close enough to touch it: poke it away rather than wrestle for it.
@@ -750,7 +761,7 @@ function chargeFor(speed: number): number {
  * Scores dribbling, each possible pass, shooting and clearing for the player on the ball, and picks the best.
  * `noise()` returns [0, 1); pass () => 0.5 for no randomness.
  */
-export function evaluateOnBall(state: GameState, p: PlayerState, noise: () => number, noiseAmount = 0): OnBallDecision {
+export function evaluateOnBall(state: GameState, p: PlayerState, noise: () => number, noiseAmount = 0, allowDribble = true): OnBallDecision {
   const dir = state.attackDir[p.team];
   const goalX = ownGoalX(-dir);
   const goal = { x: goalX, y: MID_Y };
@@ -818,7 +829,7 @@ export function evaluateOnBall(state: GameState, p: PlayerState, noise: () => nu
     const side = Math.abs(ox * toGoal.y - oy * toGoal.x);
     if (ahead > 0 && ahead < 160 && side < 60) blocked = Math.max(blocked, (1 - ahead / 160) * (1 - side / 60));
   }
-  const dribble = 0.6 + 0.3 * (1 - blocked) - 0.9 * pressureAmount + n();
+  const dribble = allowDribble ? 0.6 + 0.3 * (1 - blocked) - 0.9 * pressureAmount + n() : -Infinity;
 
   // Clear: a defender in trouble near its own goal just boots it upfield.
   let clear = -Infinity;
@@ -827,6 +838,7 @@ export function evaluateOnBall(state: GameState, p: PlayerState, noise: () => nu
   const scores: Record<OnBallAction, number> = { dribble, pass, shoot, clear };
   let action: OnBallAction = 'dribble';
   for (const a of ['pass', 'shoot', 'clear'] as const) if (scores[a] > scores[action]) action = a;
+  if (action === 'dribble' && !allowDribble) action = 'clear';
 
   if (action === 'shoot') return { action, target: shotTarget, speed: shotSpeed, receiver: -1, scores };
   if (action === 'pass') return { action, target: passTarget, speed: passSpeed, receiver, scores };
@@ -850,7 +862,10 @@ function dribbleDirection(state: GameState, p: PlayerState): Vec2 {
   const toBall = unit(state.ball.pos.x - p.pos.x, state.ball.pos.y - p.pos.y);
   let best = { x: Math.cos(base), y: Math.sin(base) };
   let bestScore = -Infinity;
-  for (const off of [0, -0.4, 0.4, -0.8, 0.8, -1.2, 1.2]) {
+  // Under pressure a carrier may also turn away from goal, to shield the ball (it is held on the far side of the body).
+  const pressured = nearestOpponentDist(state, p.team, p.pos) < AI_PRESSURE_RADIUS;
+  const offsets = pressured && state.possession?.player === p.id ? [0, -0.4, 0.4, -0.8, 0.8, -1.2, 1.2, -1.8, 1.8] : [0, -0.4, 0.4, -0.8, 0.8, -1.2, 1.2];
+  for (const off of offsets) {
     const d = { x: Math.cos(base + off * dir), y: Math.sin(base + off * dir) }; // mirrored per team, like findSpace
     // Prefer the way the ball already lies from us: turning round a ball (e.g. pinned on a wall) is slow.
     let score = Math.cos(off) + 0.3 * (toBall.x * d.x + toBall.y * d.y);
@@ -861,6 +876,9 @@ function dribbleDirection(state: GameState, p: PlayerState): Vec2 {
       const ahead = ox * d.x + oy * d.y;
       const side = Math.abs(ox * d.y - oy * d.x);
       if (ahead > 0 && ahead < 150 && side < 50) score -= 2 * (1 - side / 50) * (1 - ahead / 150);
+      // Shielding: the held ball sits in front, so don't carry it into someone's reach.
+      const spot = Math.hypot(o.pos.x - (p.pos.x + d.x * 26), o.pos.y - (p.pos.y + d.y * 26));
+      if (spot < 55) score -= 1.5 * (1 - spot / 55);
     }
     // Keep off the walls: the closer the spot 70 px ahead is to a touchline or goal line, the worse.
     const probe = { x: p.pos.x + d.x * 70, y: p.pos.y + d.y * 70 };
@@ -874,8 +892,27 @@ function dribbleDirection(state: GameState, p: PlayerState): Vec2 {
   return best;
 }
 
-/** Run with the ball in direction `d`: get behind it, then keep it in front so the dribble touches push it on. */
+/**
+ * A carrier's turn towards `d`, limited so it never turns sharply enough at speed to lose the ball
+ * (see DRIBBLE_SHARP_TURN_ANGLE): a big turn is taken in stages.
+ */
+function carryTurn(p: PlayerState, d: Vec2): Vec2 {
+  const sp = Math.hypot(p.vel.x, p.vel.y);
+  if (sp < 0.5 * CARRY_SPEED) return d;
+  const va = Math.atan2(p.vel.y, p.vel.x);
+  const diff = angleDiff(Math.atan2(d.y, d.x), va);
+  const max = DRIBBLE_SHARP_TURN_ANGLE - 0.6;
+  if (Math.abs(diff) <= max) return d;
+  const a = va + Math.sign(diff) * max;
+  return { x: Math.cos(a), y: Math.sin(a) };
+}
+
+/** Run with the ball in direction `d`: carrying it, just run; else get behind it and keep it in front so the dribble touches push it on. */
 function dribbleInput(state: GameState, p: PlayerState, d: Vec2, speed: number): InputFrame {
+  if (state.possession?.player === p.id) {
+    const t = carryTurn(p, d);
+    return { ...IDLE, moveX: t.x * speed, moveY: t.y * speed };
+  }
   const ball = state.ball.pos;
   const toBall = unit(ball.x - p.pos.x, ball.y - p.pos.y);
   if (toBall.x * d.x + toBall.y * d.y > 0.55) {
@@ -949,6 +986,23 @@ function executeKick(state: GameState, p: PlayerState, m: AiPlayerMemory, speed:
   const ang = Math.atan2(m.kickTarget.y - ball.pos.y, m.kickTarget.x - ball.pos.x) + m.kickError;
   // The kick adds some of the player's own velocity: aim off to cancel it.
   const face = unit(Math.cos(ang) * m.kickSpeed - p.vel.x * KICK_PLAYER_VEL_FACTOR, Math.sin(ang) * m.kickSpeed - p.vel.y * KICK_PLAYER_VEL_FACTOR);
+  if (state.possession?.player === p.id) {
+    // Carrying it: a kick goes where the move keys point, so no lining up. Tap pass, or charge a shot while carrying
+    // the ball on towards the target, then release.
+    m.target = m.kickTarget;
+    const kickInput = { ...IDLE, moveX: face.x * 0.3, moveY: face.y * 0.3 };
+    if (m.kickSpeed <= PASS_SPEED * 1.15) {
+      if (p.prevPass) return kickInput;
+      m.kickPending = true;
+      return { ...kickInput, pass: true };
+    }
+    // Under pressure, strike quickly rather than wait for the full charge (and risk the tackle).
+    const pressured = nearestOpponentDist(state, p.team, p.pos) < AI_PRESSURE_RADIUS;
+    const need = pressured ? Math.min(chargeFor(m.kickSpeed), AI_QUICK_SHOT_CHARGE) : chargeFor(m.kickSpeed);
+    if (p.charge + SIM_DT * 0.5 < need) return { ...dribbleInput(state, p, face, speed), shoot: true };
+    m.kickPending = true;
+    return kickInput;
+  }
   const toBall = unit(ball.pos.x - p.pos.x, ball.pos.y - p.pos.y);
   const inReach = canKickNow(state, p);
   let inFront = toBall.x * face.x + toBall.y * face.y > 0.05;
@@ -996,9 +1050,14 @@ function executeKick(state: GameState, p: PlayerState, m: AiPlayerMemory, speed:
   return { ...IDLE, moveX: face.x * 0.3, moveY: face.y * 0.3, shoot: false };
 }
 
+/** A set piece (throw-in, corner, goal kick, kickoff) is played with a kick, not carried. */
+function takingRestart(state: GameState, p: PlayerState): boolean {
+  return state.restart?.taker === p.id;
+}
+
 function decideOnBall(state: GameState, p: PlayerState, m: AiPlayerMemory, prof: AiProfile): void {
   const { ai } = state;
-  const dec = evaluateOnBall(state, p, () => nextRandom(ai), prof.decisionNoise);
+  const dec = evaluateOnBall(state, p, () => nextRandom(ai), prof.decisionNoise, !takingRestart(state, p));
   m.intent = dec.action;
   m.kickTarget = dec.target;
   m.kickSpeed = dec.speed;
@@ -1029,6 +1088,7 @@ function onBallInput(state: GameState, p: PlayerState, m: AiPlayerMemory, prof: 
     m.thinkTimer = jitter(state.ai, prof.reactionTime);
   }
   if (m.intent === 'dribble') {
+    if (takingRestart(state, p)) return { ...IDLE }; // stand over the set piece until deciding how to play it
     const d = dribbleDirection(state, p);
     m.target = { x: p.pos.x + d.x * 80, y: p.pos.y + d.y * 80 };
     return dribbleInput(state, p, d, prof.speed);
@@ -1240,9 +1300,12 @@ export function computeAiInputs(
     m.cooldown = Math.max(0, m.cooldown - dt);
     m.runTimer = Math.max(0, m.runTimer - dt);
     if (m.kickPending) {
-      // Last tick's kick input: a kick sets the player's touch lockout, so this confirms the ball was struck.
-      m.kickPending = false;
-      if (p.touchTimer >= KICK_TOUCH_LOCKOUT - 1e-9) registerKick(state, p, m);
+      // Last tick's kick input: a kick starts the player's kick flash, so this confirms the ball was struck. A kick
+      // still waiting in the kick buffer stays pending.
+      if (p.kickFlash >= KICK_FLASH_TIME - 1e-9) {
+        m.kickPending = false;
+        registerKick(state, p, m);
+      } else if (p.kickQueue <= 1e-9) m.kickPending = false;
     }
     if (human[p.team] && state.controlled[p.team] === p.id) {
       m.intent = 'human';

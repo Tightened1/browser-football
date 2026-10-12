@@ -43,6 +43,8 @@ export function interpolateSnapshots(a: Snapshot, b: Snapshot, t: number): Snaps
       facing: lerpAngle(pa.facing, pb.facing, t),
       charge: pb.charge >= pa.charge ? lerp(pa.charge, pb.charge, t) : base === a ? pa.charge : pb.charge,
       tackling: base.players[i]?.tackling ?? pa.tackling,
+      queued: base.players[i]?.queued ?? pa.queued,
+      kicked: base.players[i]?.kicked ?? pa.kicked,
     };
   });
   const samePhase = a.phase === b.phase && a.half === b.half;

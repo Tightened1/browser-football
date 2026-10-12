@@ -18,6 +18,8 @@ import {
   DEBUG_KICK_SPEED,
   POST_RADIUS,
   SHOT_MAX_CHARGE_TIME,
+  KICK_BUFFER_TIME,
+  KICK_FLASH_TIME,
   GAME_WIDTH,
   CAMERA_AUTO_MIN_SCALE,
   CAMERA_FOLLOW_ZOOM,
@@ -31,7 +33,7 @@ import {
   PITCH_LEFT,
   PITCH_RIGHT,
 } from '../config';
-import { crowdExcitement, eventSound, scanEvents, BallCueDetector, type BallCue } from '../audio/cues';
+import { crowdExcitement, eventSound, kickPower, scanEvents, BallCueDetector, KickCueWatcher, type BallCue } from '../audio/cues';
 import { sound } from '../audio/sound';
 import { approach, ballLift, cameraTarget, netBox, netGrid, Effects } from './effects';
 import { KeyboardInput } from '../input/keyboard';
@@ -92,6 +94,7 @@ export class MatchScene extends Phaser.Scene {
   /** Juice (render/audio only): particles, net ripples, ball cues, camera. All driven by the drawn state and its events. */
   private effects = new Effects();
   private detector = new BallCueDetector();
+  private kickCues = new KickCueWatcher();
   private lastEventId = 0;
   private lastTick = 0;
   private netsDirty = true;
@@ -146,6 +149,7 @@ export class MatchScene extends Phaser.Scene {
     this.driver = this.createDriver(opts.difficulty);
     this.effects = new Effects();
     this.detector = new BallCueDetector();
+    this.kickCues = new KickCueWatcher();
     this.lastEventId = 0;
     this.lastTick = 0;
     this.netsDirty = true;
@@ -375,6 +379,15 @@ export class MatchScene extends Phaser.Scene {
     const scan = scanEvents(state.events, this.lastEventId, restarted);
     this.lastEventId = scan.lastId;
     for (const e of scan.fresh) this.onEvent(e, state);
+    // Your own kicks always make a sound: queued (waiting for the ball), fired, or expired (it never got there).
+    const mine = this.aiVsAi ? -1 : state.controlled[this.humanTeam];
+    const me = mine >= 0 ? state.players[mine] : undefined;
+    const kickCue = me ? this.kickCues.update(me.id, me.kickQueue > 0, me.kickFlash > 0) : null;
+    if (kickCue === 'fired') {
+      sound.kick(kickPower(Math.hypot(state.ball.vel.x, state.ball.vel.y)));
+      this.detector.heard();
+    } else if (kickCue === 'queued') sound.queued();
+    else if (kickCue === 'expired') sound.whiff();
     const cue = this.detector.update(state.ball, dt, POST_POSITIONS);
     if (cue) this.onBallCue(cue);
     this.excitementTimer -= dt;
@@ -578,7 +591,26 @@ export class MatchScene extends Phaser.Scene {
     g.lineBetween(x, y, x + fx * p.radius, y + fy * p.radius);
     g.fillStyle(COLORS.playerFacing, 1);
     g.fillCircle(x + fx * p.radius * 0.75, y + fy * p.radius * 0.75, 3);
-    // Shot power bar under the player while charging.
+    // Kick queued (waiting for the ball): an amber ring closing in and an arrow where it will go.
+    // Kick fired: a white ring bursting outwards.
+    if (p.kickQueue > 0) {
+      const f = Math.min(1, p.kickQueue / KICK_BUFFER_TIME);
+      g.lineStyle(2, 0xffb020, 0.9);
+      g.strokeCircle(x, y, p.radius + 4 + 8 * f);
+      g.fillStyle(0xffb020, 0.9);
+      const tip = p.radius + 16;
+      g.fillTriangle(
+        x + fx * tip, y + fy * tip,
+        x + fx * (tip - 7) - fy * 5, y + fy * (tip - 7) + fx * 5,
+        x + fx * (tip - 7) + fy * 5, y + fy * (tip - 7) - fx * 5,
+      );
+    }
+    if (p.kickFlash > 0) {
+      const f = 1 - p.kickFlash / KICK_FLASH_TIME;
+      g.lineStyle(3, 0xffffff, 1 - f);
+      g.strokeCircle(x, y, p.radius + 3 + 14 * f);
+    }
+    // Shot power bar under the player while charging (on the ball or not).
     if (p.charge > 0) {
       const w = 36;
       const h = 6;

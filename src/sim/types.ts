@@ -37,6 +37,13 @@ export interface PlayerState extends CircleBody {
   tackleCooldown: number;
   /** Seconds until the dribble touch may nudge the ball again. */
   touchTimer: number;
+  /** Kick buffer: seconds left on a queued kick (0 = none), its ball speed, aim (radians) and whether it is a shot. */
+  kickQueue: number;
+  queuedSpeed: number;
+  queuedAim: number;
+  queuedShot: boolean;
+  /** Seconds left of the "kick fired" window (0 = none): the cue shows and the ball passes through the kicker. */
+  kickFlash: number;
   /** Previous-tick button states, for press/release edge detection. */
   prevPass: boolean;
   prevShoot: boolean;
@@ -178,6 +185,8 @@ export interface GameState {
   controlled: [number, number];
   /** Direction (+1 right / -1 left along x) each team attacks. */
   attackDir: [number, number];
+  /** Sticky dribbling: who is carrying the ball (null = loose, and always null in 'classic' DRIBBLE_MODE). */
+  possession: Possession | null;
   /** Last team/player to touch the ball (null before the first touch). */
   lastTouch: { team: TeamId; player: number } | null;
   /** Previous-tick switch button per team, for press edge detection. */
@@ -207,7 +216,17 @@ export interface GameState {
   stats: MatchStats;
 }
 
-export type MatchPhase = 'pre-kickoff' | 'playing' | 'goal-scored' | 'half-time' | 'full-time';
+/** A player carrying the ball (sticky dribbling). */
+export interface Possession {
+  /** Carrier's player id. */
+  player: number;
+  /** Where the ball sits around the carrier (radians); swings towards their facing at DRIBBLE_TURN_RATE. */
+  angle: number;
+  /** Distance run with the ball (px, wraps at DRIBBLE_ROLL_PERIOD): drives the ball's little roll out and back. */
+  roll: number;
+}
+
+export type MatchPhase ='pre-kickoff' | 'playing' | 'goal-scored' | 'half-time' | 'full-time';
 
 export type RestartType = 'kickoff' | 'throw-in' | 'goal-kick' | 'corner';
 

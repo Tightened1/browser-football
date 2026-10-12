@@ -4,7 +4,9 @@ import {
   BALL_RADIUS,
   DRIBBLE_BOOST,
   DRIBBLE_CONE,
+  DRIBBLE_MODE,
   DRIBBLE_REACH,
+  DRIBBLE_SPEED_FACTOR,
   COLLISION_ITERATIONS,
   DRIBBLE_TOUCH_INTERVAL,
   KEEPER_BALL_RESTITUTION,
@@ -15,6 +17,8 @@ import {
   KICKOFF_DELAY,
   PLAYERS_PER_TEAM,
   PLAYER_PLAYER_RESTITUTION,
+  KICK_BUFFER_TIME,
+  KICK_FLASH_TIME,
   KICK_PLAYER_VEL_FACTOR,
   KICK_REACH,
   KICK_TOUCH_LOCKOUT,
@@ -54,8 +58,9 @@ import {
 } from './physics';
 import { cloneAiState, computeAiInputs, createAiState, formationPosition } from './ai';
 import { applySwitching, updateTouches } from './control';
+import { advanceHold, canControl, controlSpeed, keeperHoldAngle, loseBall, relativeSpeed, sharpTurnLosesBall, stickyDribbling, takePossession, updatePossession } from './dribble';
 import { isFrozen, updateRules } from './rules';
-import type { BallState, Difficulty, GameState, InputFrame, MatchPhase, PlayerRole, PlayerState, TeamId } from './types';
+import type { Difficulty, GameState, InputFrame, MatchPhase, PlayerRole, PlayerState, TeamId } from './types';
 
 export const NEUTRAL_INPUT: InputFrame = {
   seq: 0,
@@ -89,6 +94,11 @@ export function createPlayer(
     tackleTimer: 0,
     tackleCooldown: 0,
     touchTimer: 0,
+    kickQueue: 0,
+    queuedSpeed: 0,
+    queuedAim: 0,
+    queuedShot: false,
+    kickFlash: 0,
     prevPass: false,
     prevShoot: false,
     prevTackle: false,
@@ -145,6 +155,7 @@ export function createInitialState(options: MatchOptions = {}): GameState {
     players,
     controlled,
     attackDir,
+    possession: null,
     lastTouch: null,
     prevSwitch: [false, false],
     ai: createAiState(players, controlled, options.difficulty, options.seed),
@@ -179,6 +190,7 @@ export function cloneState(s: GameState): GameState {
     players: s.players.map((p) => ({ ...p, pos: { ...p.pos }, vel: { ...p.vel } })),
     controlled: [s.controlled[0], s.controlled[1]],
     attackDir: [s.attackDir[0], s.attackDir[1]],
+    possession: s.possession ? { ...s.possession } : null,
     lastTouch: s.lastTouch ? { ...s.lastTouch } : null,
     prevSwitch: [s.prevSwitch[0], s.prevSwitch[1]],
     ai: cloneAiState(s.ai),
@@ -221,23 +233,34 @@ function distance(a: { pos: { x: number; y: number } }, b: { pos: { x: number; y
   return Math.hypot(b.pos.x - a.pos.x, b.pos.y - a.pos.y);
 }
 
+/** True if `p` may kick the ball now: it carries it (sticky), or the ball is loose and within KICK_REACH. */
+export function canKick(state: GameState, p: PlayerState): boolean {
+  if (p.tackleTimer > 0) return false;
+  const poss = state.possession;
+  if (poss) return poss.player === p.id;
+  return distance(p, state.ball) <= p.radius + state.ball.radius + KICK_REACH;
+}
+
 /** Start a tackle if requested, off cooldown, and the player is not already on the ball. */
-function maybeStartTackle(p: PlayerState, input: InputFrame, ball: BallState): void {
+function maybeStartTackle(state: GameState, p: PlayerState, input: InputFrame): void {
   const pressed = input.tackle && !p.prevTackle;
   if (!pressed || p.tackleTimer > 0 || p.tackleCooldown > 0) return;
-  if (distance(p, ball) <= p.radius + ball.radius + KICK_REACH) return; // has the ball: shoot/pass instead
+  if (canKick(state, p)) return; // has the ball: shoot/pass instead
   if (Math.hypot(input.moveX, input.moveY) > 1e-6) p.facing = Math.atan2(input.moveY, input.moveX); // slide where steered
   p.tackleTimer = TACKLE_DURATION;
   p.tackleCooldown = p.role === 'keeper' ? KEEPER_DIVE_COOLDOWN : TACKLE_COOLDOWN;
+  p.kickQueue = 0; // a slide replaces any queued kick
 }
 
 /**
- * Movement, facing and timers for one player. Does not touch the ball or other players.
+ * Movement, facing and timers for one player. Does not touch the ball or other players. `speedFactor` scales the
+ * top speed (a player carrying the ball runs at DRIBBLE_SPEED_FACTOR).
  * Exported for the online guest's prediction of its own player (net/client.ts).
  */
-export function updatePlayer(p: PlayerState, input: InputFrame, dt: number): void {
+export function updatePlayer(p: PlayerState, input: InputFrame, dt: number, speedFactor = 1): void {
   p.tackleCooldown = Math.max(0, p.tackleCooldown - dt);
   p.touchTimer = Math.max(0, p.touchTimer - dt);
+  p.kickFlash = Math.max(0, p.kickFlash - dt);
 
   let mx = input.moveX;
   let my = input.moveY;
@@ -256,37 +279,46 @@ export function updatePlayer(p: PlayerState, input: InputFrame, dt: number): voi
     p.vel.y = Math.sin(p.facing) * TACKLE_SPEED * k;
   } else {
     if (hasMove) p.facing = Math.atan2(my, mx);
-    approachVelocity(
-      p.vel,
-      mx * PLAYER_MAX_SPEED,
-      my * PLAYER_MAX_SPEED,
-      (hasMove ? PLAYER_ACCEL : PLAYER_DECEL) * dt,
-    );
+    const top = PLAYER_MAX_SPEED * speedFactor;
+    approachVelocity(p.vel, mx * top, my * top, (hasMove ? PLAYER_ACCEL : PLAYER_DECEL) * dt);
   }
 
   moveCircle(p, dt);
   collideWithBoundary(p, undefined, 1, 0);
 }
 
-function kickBall(p: PlayerState, ball: BallState, speed: number): void {
-  ball.vel.x = Math.cos(p.facing) * speed + p.vel.x * KICK_PLAYER_VEL_FACTOR;
-  ball.vel.y = Math.sin(p.facing) * speed + p.vel.y * KICK_PLAYER_VEL_FACTOR;
+/** Strike the ball at `speed` towards `aim` (radians), plus some of the kicker's own velocity. */
+function kickBall(state: GameState, p: PlayerState, speed: number, aim: number): void {
+  const { ball } = state;
+  if (state.possession?.player === p.id) state.possession = null;
+  p.facing = aim;
+  ball.vel.x = Math.cos(aim) * speed + p.vel.x * KICK_PLAYER_VEL_FACTOR;
+  ball.vel.y = Math.sin(aim) * speed + p.vel.y * KICK_PLAYER_VEL_FACTOR;
   p.touchTimer = KICK_TOUCH_LOCKOUT;
+  p.kickFlash = KICK_FLASH_TIME;
+  p.kickQueue = 0;
 }
 
-/** Charging, kicks, tackle knocks and dribble touches for one player. */
-/** Returns true if the player touched the ball (kick, knock or dribble nudge). */
-function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt: number, shot?: { taken: boolean }): boolean {
-  let touched = false;
+/**
+ * Charging, kicks (through the kick buffer), tackle knocks and classic dribble touches for one player.
+ * Returns whether the player touched the ball, and whether that touch was a shoot-button kick.
+ */
+function interactWithBall(state: GameState, p: PlayerState, input: InputFrame, dt: number): { touched: boolean; shot: boolean } {
+  const { ball } = state;
+  const result = { touched: false, shot: false };
   const d = distance(p, ball);
   const contact = p.radius + ball.radius;
   const sliding = p.tackleTimer > 0;
 
   if (sliding) {
     p.charge = 0;
+    p.kickQueue = 0;
     // A keeper's slide is a dive: it blocks the ball with its body (see step) rather than knocking it on.
     if (p.role !== 'keeper' && d <= contact + DRIBBLE_REACH && p.touchTimer === 0) {
-      // Slide hits the ball: knock it away, mostly along the slide, partly towards where it sits.
+      // Slide hits the ball: knock it away (winning it off a carrier), mostly along the slide, partly towards where it sits.
+      const held = state.possession;
+      if (held && state.players[held.player].role === 'keeper') return result; // a keeper's ball can't be tackled
+      if (held && held.player !== p.id) loseBall(state);
       const tx = d > 1e-9 ? (ball.pos.x - p.pos.x) / d : Math.cos(p.facing);
       const ty = d > 1e-9 ? (ball.pos.y - p.pos.y) / d : Math.sin(p.facing);
       let kx = Math.cos(p.facing) * 0.6 + tx * 0.4;
@@ -298,28 +330,35 @@ function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt
       ball.vel.y = ky * TACKLE_KNOCK_SPEED;
       p.touchTimer = KICK_TOUCH_LOCKOUT;
       p.tackleCooldown = Math.min(p.tackleCooldown, TACKLE_HIT_COOLDOWN); // a slide that wins the ball is forgiven
-      touched = true;
+      result.touched = true;
     }
-    return touched;
+    return result;
   }
 
-  // Shoot: hold to charge (capped), release to kick. Pass: press to kick at medium power.
+  // Shoot: hold to charge (capped), release to kick. Pass: press to kick at medium power. Either goes into the kick
+  // buffer, aimed where the move keys point (else the facing), and fires the moment the player can kick the ball:
+  // straight away if they have it, or when it arrives within KICK_BUFFER_TIME.
+  p.kickQueue = Math.max(0, p.kickQueue - dt);
   if (input.shoot) p.charge = Math.min(SHOT_MAX_CHARGE_TIME, p.charge + dt);
   const shootReleased = !input.shoot && p.prevShoot;
   const passPressed = input.pass && !p.prevPass;
-  if (d <= contact + KICK_REACH) {
-    if (passPressed) {
-      kickBall(p, ball, PASS_SPEED);
-      touched = true;
-    } else if (shootReleased) {
-      kickBall(p, ball, shotSpeed(p.charge));
-      touched = true;
-      if (shot) shot.taken = true;
-    }
+  if (passPressed || shootReleased) {
+    const moving = Math.hypot(input.moveX, input.moveY) > 1e-6;
+    p.kickQueue = KICK_BUFFER_TIME;
+    p.queuedSpeed = passPressed ? PASS_SPEED : shotSpeed(p.charge);
+    p.queuedShot = !passPressed;
+    p.queuedAim = moving ? Math.atan2(input.moveY, input.moveX) : p.facing;
   }
   if (!input.shoot) p.charge = 0;
+  if (p.kickQueue > 1e-9 && canKick(state, p)) {
+    result.shot = p.queuedShot;
+    kickBall(state, p, p.queuedSpeed, p.queuedAim);
+    result.touched = true;
+    return result;
+  }
 
-  // Dribble: a touch while running nudges the ball ahead; it then runs free until the next touch.
+  // Classic dribble: a touch while running nudges the ball ahead; it then runs free until the next touch.
+  if (DRIBBLE_MODE !== 'classic') return result;
   const speed = speedOf(p.vel);
   if (p.role !== 'keeper' && p.touchTimer === 0 && speed > 20 && d <= contact + DRIBBLE_REACH && d > 1e-9) {
     const dirX = p.vel.x / speed;
@@ -332,12 +371,11 @@ function interactWithBall(p: PlayerState, input: InputFrame, ball: BallState, dt
       ball.vel.x = dirX * out;
       ball.vel.y = dirY * out;
       p.touchTimer = DRIBBLE_TOUCH_INTERVAL;
-      touched = true;
+      result.touched = true;
     }
   }
-  return touched;
+  return result;
 }
-
 /** A shoot-button kick counts as a shot from the attacking end of the pitch, aimed roughly at goal (keepers never shoot). */
 function countsAsShot(p: PlayerState, attackDir: number): boolean {
   if (p.role === 'keeper') return false;
@@ -382,36 +420,63 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   for (const i of order) {
     const p = next.players[i];
     const input = used[i];
-    maybeStartTackle(p, input, ball);
-    updatePlayer(p, input, dt);
-    const shot = { taken: false };
-    if (interactWithBall(p, input, ball, dt, shot)) next.lastTouch = { team: p.team, player: p.id };
-    if (shot.taken && countsAsShot(p, next.attackDir[p.team])) next.stats.shots[p.team] += 1;
+    const kicking = (input.pass && !p.prevPass) || (!input.shoot && p.prevShoot);
+    // Turning almost straight back at full speed loses the ball (unless the turn comes with a kick, which wins).
+    if (next.possession?.player === p.id && !kicking && sharpTurnLosesBall(p, input)) loseBall(next);
+    maybeStartTackle(next, p, input);
+    const carrying = next.possession?.player === p.id;
+    updatePlayer(p, input, dt, carrying ? DRIBBLE_SPEED_FACTOR : 1);
+    if (carrying) advanceHold(next.possession!, p, dt, p.role === 'keeper' ? keeperHoldAngle(next, p) : p.facing);
+    const touch = interactWithBall(next, p, input, dt);
+    if (touch.touched) next.lastTouch = { team: p.team, player: p.id };
+    if (touch.shot && countsAsShot(p, next.attackDir[p.team])) next.stats.shots[p.team] += 1;
     p.prevPass = input.pass;
     p.prevShoot = input.shoot;
     p.prevTackle = input.tackle;
   }
   resolvePlayerCollisions(next.players);
+  // Sticky dribbling: body checks, taking control of a loose ball, and steering the held ball to its spot.
+  updatePossession(next);
 
-  applyRollingFriction(ball, dt);
+  if (!next.possession) applyRollingFriction(ball, dt);
   capSpeed(ball, BALL_MAX_SPEED);
 
   // Substep so a fast ball can never skip through a wall, post or player.
+  const sticky = stickyDribbling();
   const maxMove = ball.radius * MAX_STEP_FRACTION;
   const substeps = Math.min(MAX_SUBSTEPS, Math.max(1, Math.ceil((speedOf(ball.vel) * dt) / maxMove)));
   const subDt = dt / substeps;
   for (let i = 0; i < substeps; i++) {
     moveCircle(ball, subDt);
     for (const p of next.players) {
+      // The carrier's own body doesn't push the ball it holds, and a ball just kicked passes through the kicker.
+      if (next.possession?.player === p.id || p.kickFlash > 0) continue;
       if (p.role === 'keeper') {
         // Keepers block: nearly dead bounce, barely moved by the ball, and the ball always leaves the goal.
-        if (collideCircles(p, ball, KEEPER_BALL_RESTITUTION, KEEPER_INV_MASS, 1)) {
+        // Sticky: in the box a keeper catches what it can hold instead.
+        const caught = sticky && !next.possession && canControl(next, p);
+        if (caught && collideCircles(p, ball, 0, 0, 1)) {
+          takePossession(next, p);
+          ball.vel.x = p.vel.x;
+          ball.vel.y = p.vel.y;
+        } else if (collideCircles(p, ball, KEEPER_BALL_RESTITUTION, KEEPER_INV_MASS, 1)) {
           const dir = next.attackDir[p.team];
           if (ball.vel.x * dir < KEEPER_CLEAR_SPEED) ball.vel.x = dir * KEEPER_CLEAR_SPEED;
           next.lastTouch = { team: p.team, player: p.id };
         }
-      } else if (collideCircles(p, ball, PLAYER_BALL_RESTITUTION, 1, 1)) {
+        continue;
+      }
+      // Sticky: a loose ball arriving slowly enough is controlled on contact; a faster one bounces off (and can't be
+      // trapped straight after the bounce).
+      const control = sticky && !next.possession && canControl(next, p);
+      const tooFast = sticky && !control && relativeSpeed(p, ball) > controlSpeed(next, p);
+      if (collideCircles(p, ball, PLAYER_BALL_RESTITUTION, 1, 1)) {
         next.lastTouch = { team: p.team, player: p.id };
+        if (control) {
+          takePossession(next, p);
+          ball.vel.x = p.vel.x;
+          ball.vel.y = p.vel.y;
+        } else if (tooFast) p.touchTimer = Math.max(p.touchTimer, KICK_TOUCH_LOCKOUT);
       }
     }
     collideWithBoundary(ball, BALL_BOUNDARY, WALL_TANGENT_KEEP);

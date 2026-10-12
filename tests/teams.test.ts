@@ -113,12 +113,25 @@ describe('switching choice', () => {
     expect(s.controlled[0]).toBe(4);
   });
 
-  it('does not auto-switch when an opponent touched the ball last', () => {
-    let s = place([700, 300], { 3: [200, 300], 4: [700, 300] });
+  it('does not auto-switch when an opponent touched the ball last (and it is too fast to control)', () => {
+    // An opponent's hard shot bounces off a teammate: nobody has the ball, so control stays put.
+    let s = place([700, 300], { 3: [200, 300], 4: [735, 300] });
+    s.ball.vel = { x: 900, y: 0 };
+    s.controlled = [3, -1];
+    s.lastTouch = { team: 1, player: 6 };
+    s = run(s, 3, () => [input()]);
+    expect(s.possession).toBeNull();
+    expect(s.controlled[0]).toBe(3);
+  });
+
+  it('control follows a teammate who takes the ball (sticky dribbling)', () => {
+    let s = place([700, 300], { 3: [200, 300], 4: [700 - 14 - 9 - 2, 300] });
+    for (const id of [5, 6, 7, 8, 9]) s.players[id].pos = { x: 1000, y: 100 + id * 40 };
     s.controlled = [3, -1];
     s.lastTouch = { team: 1, player: 6 };
     s = step(s, [input()], SIM_DT);
-    expect(s.controlled[0]).toBe(3);
+    expect(s.possession?.player).toBe(4);
+    expect(s.controlled[0]).toBe(4);
   });
 });
 

@@ -1,4 +1,4 @@
-# Playtest notes (T11, game 0.11.0)
+# Playtest notes (T11, game 0.11.0; T13, game 1.1.0 at the end)
 
 How the match was measured, what was wrong, what changed, and what to feel-test by hand.
 
@@ -150,3 +150,91 @@ Each is something the simulation can't judge. Rough pass/fail in brackets.
 14. Is there too much stop-start? ~90 throw-ins per 6 minutes in AI-vs-AI.
 15. Online: is the host's tackle / shot response the same as offline? (Nothing netcode-side changed; the sim is the
     host's, so rules, AI and cooldowns reach the guest automatically, but the guest's slide feels one round trip late.)
+
+---
+
+# T13: sticky dribbling and shooting (game 1.1.0)
+
+## 1. Why shots "did nothing"
+
+Checked before changing anything. In order of how much they mattered:
+
+1. **The dribbled ball was out of reach on release (the main cause).** A shot fired only on the frame shoot was
+   released and only if the ball was within `KICK_REACH` (8 px) right then. The classic dribble pushes the ball up to
+   ~50 px ahead between touches, so most releases mid-run found it out of reach: the shot was silently dropped and the
+   charge reset.
+2. **Online: a quick shoot tap could vanish on the host.** When guest inputs back up, the host merges queued frames
+   (`mergeInputs`). Pass, tackle and switch were kept from either frame, but shoot came from the newer frame only, so a
+   one-frame tap lost its press *and* its release. Fixed: shoot is merged too (the release then comes one frame later).
+   On top of that the guest's inputs reach the host ~RTT/2 late, by which time the free-running ball had usually moved.
+3. **A Space held over from a menu.** `Focus` presses a button on keydown; if Space was still held when the match
+   started, its auto-repeat was taken as a new press, so letting go was a stray kick attempt. Auto-repeats of a key the
+   match never saw go down are now ignored (`input/keyboard.ts`).
+4. Checked and fine: set pieces put the taker in reach (2 px gap); the charge bar already showed off the ball (it still
+   does); the pause and results screens blank the input on purpose.
+
+## 2. What changed
+
+* **Sticky dribbling** (`sim/dribble.ts`, `DRIBBLE_MODE = 'sticky'`; `'classic'` restores T02). A player who touches a
+  loose ball slowly enough (`DRIBBLE_CONTROL_SPEED` 280 px/s relative, `DRIBBLE_PASS_CONTROL_SPEED` 900 for a
+  teammate's pass) takes it: `GameState.possession` = carrier, angle, roll. The ball sits `DRIBBLE_HOLD_GAP` in front,
+  swings round with the facing at `DRIBBLE_TURN_RATE` (no teleport) and rolls `DRIBBLE_ROLL_AMPLITUDE` out and back
+  every `DRIBBLE_ROLL_PERIOD` px run. Carriers run at `DRIBBLE_SPEED_FACTOR` (90%). It is lost to a slide that reaches
+  it, an opponent touching it from the front (`DRIBBLE_CHECK_REACH` / `DRIBBLE_CHECK_CONE`; from behind the body
+  shields it), any kick, and a U-turn at full speed (`DRIBBLE_SHARP_TURN_*`, can be switched off). Control follows the
+  ball to whichever teammate carries it.
+* **Kick buffer** (`KICK_BUFFER_TIME` 0.25 s): a pass press or shot release that can't kick yet is queued and fires the
+  moment the player can. From possession a kick always fires. Kicks go where the move keys point at release (else the
+  facing), and the ball passes through the kicker's own body for `KICK_FLASH_TIME`, so a kick behind you works.
+* **Cues:** amber ring + arrow and a soft tick while a kick is queued, a white burst and the kick sound when it fires,
+  a dull swish if it expires (`audio/cues.ts KickCueWatcher`).
+* **Keepers catch** in their box (`KEEPER_CATCH_SPEED` 850): they hold catchable shots, can't be tackled while holding,
+  and distribute; harder shots are still parried. Without this, attackers trapped every rebound and a third of all shots
+  came within a second of a save.
+* **AI** (`sim/ai.ts`): carriers just run (turns are staged so they never lose the ball on a U-turn), shield by steering
+  the ball away from opponents, kick from possession without lining up, strike quickly under pressure
+  (`AI_QUICK_SHOT_CHARGE`), and kick set pieces rather than carry them. Pressers step in to the ball when goal-side and
+  close (`AI_PRESS_ENGAGE`); a ball held by a keeper is left alone.
+* **Online:** the snapshot carries possession and the queued/kicked flags (146 bytes, protocol 4). The guest predicts the
+  ball its own player carries (same rules as the host, replayed from the host's possession), launches its own kicks at
+  once and hands them over to the host's ball by winding the prediction lead down at half speed (never backwards).
+  Whatever the host says wins: the drawn ball eases to the host's (`NET_BALL_CORRECTION_SNAP`). Tested headlessly in
+  `tests/guestPrediction.test.ts` with 100 ms one way and 3% snapshot loss.
+
+## 3. Before and after (AI vs AI, 40 matches each, seed 1, 2 x 3 min)
+
+| | Before (1.0.0) | Sticky, old tuning (20 matches) | **After (1.1.0)** | Target |
+|---|---|---|---|---|
+| Normal: goals per match | 3.55 | 11.35 | **5.08** | 3-6 |
+| Normal: matches with 3-6 goals | 75% | 5% | **65%** | |
+| Normal: shots / saves / save rate | 22.6 / 6.5 / 65% | 51 / 22 / 66% | 35 / 18.6 / 79% | |
+| Easy goals | 2.83 | | 4.67 | |
+| Hard goals | 3.73 | | 5.63 | |
+| Stuck or dead ball, any level | 0 | 0 | **0** | none |
+
+Holdout (seed 7, not used while tuning): Normal 4.97 goals, 70% of matches in 3-6, 0 stuck.
+
+Tuning that got there, biggest effect first: keepers catch; two pressers on every level (Easy/Normal were one) with
+higher tackle chances (Easy 0.55, Normal 0.7, Hard 0.8); lower loose-ball control speed (430 -> 280, so rebounds and
+deflections aren't trapped); keepers move a little faster to a shot (Easy 0.6, Normal 0.75, Hard 0.85). Easy now scores
+more than before: its attackers can finally keep the ball. Normal sits at the top half of the target range; if hand
+tests say it's too open, `AI_PROFILES.normal.keeperSpeed` and `tackleChance` are the levers.
+
+The shot probe (`npm run probe`) is unchanged from the box edge (full-power corner shots always score, half-charge
+about half); from the centre spot full-power shots now score 15-20% (40-45% with the old keeper speed), because keepers get across faster.
+
+## 4. Please feel-test these by hand (T13)
+
+1. Run the length of the pitch with the ball, weave and do 90° turns: does it feel in control, and does the ball look
+   like it rolls rather than being glued? [`DRIBBLE_HOLD_GAP`, `DRIBBLE_ROLL_*`, `DRIBBLE_TURN_RATE`]
+2. Every shoot release and pass press should do something: a kick, the amber "waiting" ring then a kick, or the swish.
+   Is there ever a silent press?
+3. Run right, hold up, release shoot: does the ball go up as you expect? [aim from the move keys]
+4. Is 90% running speed with the ball noticeable but fair? [`DRIBBLE_SPEED_FACTOR`]
+5. Does losing the ball on a full-speed U-turn feel fair, or annoying? Turn it off with `DRIBBLE_SHARP_TURN_LOSS`.
+6. Can you win the ball by running into the carrier from the front, and does it feel unfair when the AI does it to
+   you? Can you shield it by turning your back? [`DRIBBLE_CHECK_REACH`, `DRIBBLE_CHECK_CONE`]
+7. Receiving: do teammates' passes stick, and do hard shots bounce off you? [`DRIBBLE_CONTROL_SPEED`, `DRIBBLE_PASS_CONTROL_SPEED`]
+8. Keepers now catch most shots below ~850 px/s: still possible to score with placed half-power shots? [`KEEPER_CATCH_SPEED`]
+9. Online, as the guest with `?lag=50` (100 ms ping) and `?lag=100&loss=0.03`: does dribbling feel like offline, does a
+   shot leave your foot immediately, and when you're tackled does the ball move to the host's version smoothly?

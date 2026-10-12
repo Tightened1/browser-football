@@ -53,6 +53,11 @@ export class BallCueDetector {
     this.lastCue = -Infinity;
   }
 
+  /** A kick was already heard some other way (the kicker's "kick fired" cue): don't report it again. */
+  heard(): void {
+    this.lastCue = this.t;
+  }
+
   /** `dt` is the real time since the last call (s); `posts` the goal post centres. */
   update(ball: { pos: Vec2; vel: Vec2; radius: number }, dt: number, posts: readonly Vec2[]): BallCue | null {
     this.t += dt;
@@ -125,4 +130,33 @@ export function crowdExcitement(ballX: number, ballSpeed: number, pitchLeft: num
   const near = Math.min(1, Math.max(0, 1 - toGoal / 320));
   const fast = Math.min(1, ballSpeed / 900);
   return Math.min(1, near * 0.8 + fast * 0.2);
+}
+
+export type KickCue = 'queued' | 'fired' | 'expired';
+
+/**
+ * The local player's kick feedback, from their drawn kick flags: a kick went into the kick buffer ("queued"), was
+ * struck ("fired"), or ran out of time without reaching the ball ("expired"). So a press is never silent.
+ */
+export class KickCueWatcher {
+  private player = -1;
+  private queued = false;
+  private kicked = false;
+
+  update(player: number, queued: boolean, kicked: boolean): KickCue | null {
+    if (player !== this.player) {
+      // A new controlled player: take its flags as they are, without a cue.
+      this.player = player;
+      this.queued = queued;
+      this.kicked = kicked;
+      return null;
+    }
+    let cue: KickCue | null = null;
+    if (kicked && !this.kicked) cue = 'fired';
+    else if (queued && !this.queued) cue = 'queued';
+    else if (!queued && this.queued && !kicked) cue = 'expired';
+    this.queued = queued;
+    this.kicked = kicked;
+    return cue;
+  }
 }

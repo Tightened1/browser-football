@@ -17,7 +17,7 @@ import {
 } from '../src/config';
 import { formationPosition } from '../src/sim/ai';
 import { matchClock, pushEvent } from '../src/sim/rules';
-import { cloneState, createInitialState, createMatchState, step } from '../src/sim/simulation';
+import { cloneState, createInitialState, createMatchState, NEUTRAL_INPUT, step } from '../src/sim/simulation';
 import type { GameState, MatchEvent, MatchEventType, TeamId } from '../src/sim/types';
 
 const midX = (PITCH_LEFT + PITCH_RIGHT) / 2;
@@ -210,13 +210,17 @@ describe('out of play', () => {
   });
 
   it('keeps the other team away until the restart is released, then lets go after about a second', () => {
-    let s = step(playing(400, PITCH_TOP - BALL_RADIUS - 2, 0), [], SIM_DT);
+    // The taking team has an idle human, so its taker (who is given the ball) just stands there.
+    const start = playing(400, PITCH_TOP - BALL_RADIUS - 2, 0);
+    start.controlled = [-1, 9];
+    const idle = [undefined, { ...NEUTRAL_INPUT }];
+    let s = step(start, idle, SIM_DT);
     const spot = { ...s.restart!.pos };
     let checked = 0;
     for (let i = 0; i < 20 && s.restart; i++) {
       s.ball.pos = { ...spot }; // nobody plays it
       s.ball.vel = { x: 0, y: 0 };
-      s = step(s, [], SIM_DT);
+      s = step(s, idle, SIM_DT);
       checked++;
       for (const p of s.players.filter((q) => q.team === 0)) {
         expect(Math.hypot(p.pos.x - spot.x, p.pos.y - spot.y)).toBeGreaterThanOrEqual(RESTART_CLEAR_RADIUS - 1);
@@ -226,7 +230,7 @@ describe('out of play', () => {
     for (let i = 0; i < Math.round(RESTART_AUTO_DELAY / SIM_DT) + 2; i++) {
       s.ball.pos = { ...spot };
       s.ball.vel = { x: 0, y: 0 };
-      s = step(s, [], SIM_DT);
+      s = step(s, idle, SIM_DT);
     }
     expect(s.restart).toBeNull();
     expect(s.phase).toBe('playing');

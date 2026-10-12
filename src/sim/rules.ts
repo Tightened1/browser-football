@@ -68,9 +68,12 @@ export function resetForKickoff(state: GameState): void {
     p.tackleTimer = 0;
     p.tackleCooldown = 0;
     p.touchTimer = 0;
+    p.kickQueue = 0;
+    p.kickFlash = 0;
   }
   state.ball.pos = { x: MID_X, y: MID_Y };
   state.ball.vel = { x: 0, y: 0 };
+  state.possession = null;
   state.lastTouch = null;
   state.restart = null;
   resetAiPlans(state.ai);
@@ -104,6 +107,7 @@ function chooseTaker(state: GameState, team: TeamId, spot: Vec2, type: RestartTy
 /** Puts the ball on `pos` and a taker next to it (on the side of `side`, a unit vector; the taker faces the ball), and opens the restart. */
 function setRestart(state: GameState, type: RestartType, team: TeamId, pos: Vec2, side: Vec2): void {
   const taker = chooseTaker(state, team, pos, type);
+  state.possession = null;
   state.ball.pos = { ...pos };
   state.ball.vel = { x: 0, y: 0 };
   if (!taker) {
@@ -118,6 +122,7 @@ function setRestart(state: GameState, type: RestartType, team: TeamId, pos: Vec2
   taker.charge = 0;
   taker.tackleTimer = 0;
   taker.touchTimer = 0;
+  taker.kickQueue = 0;
   // Faces the ball, so a tap of pass sends it back out into play.
   taker.facing = Math.atan2(-side.y, -side.x);
   if (state.controlled[team] >= 0 && taker.role !== 'keeper') state.controlled[team] = taker.id;
@@ -199,6 +204,7 @@ function scoreGoal(state: GameState, side: -1 | 1): void {
   const last = state.lastTouch;
   state.phase = 'goal-scored';
   state.phaseTimer = GOAL_PAUSE;
+  state.possession = null;
   state.restart = null;
   state.kickoffTeam = conceding;
   const ownGoal = !!last && last.team === conceding;
@@ -208,6 +214,7 @@ function scoreGoal(state: GameState, side: -1 | 1): void {
 
 function endHalf(state: GameState): void {
   state.restart = null;
+  state.possession = null;
   if (state.half < HALVES) {
     state.phase = 'half-time';
     state.phaseTimer = HALF_TIME_PAUSE;

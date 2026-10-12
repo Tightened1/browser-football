@@ -37,6 +37,9 @@ export class KeyboardInput {
     const code = normKey(e.code);
     if (!this.allKeys.has(code)) return;
     e.preventDefault(); // stop arrows/space scrolling the page
+    // An auto-repeat of a key we never saw go down was pressed before the match (e.g. the Space that clicked a menu
+    // button): it isn't a press, so it can't start a charge whose release would kick.
+    if (e.repeat && !this.held.has(code)) return;
     this.held.add(code);
     this.latched.add(code);
   };

@@ -147,8 +147,21 @@ describe('on the ball: execution through InputFrames', () => {
   });
 });
 
+/** Runs `f` with the normal profile pressing with one player (as Easy/Normal did before T13). */
+function onePresser(f: () => void): () => void {
+  return () => {
+    const keep = AI_PROFILES.normal.pressers;
+    AI_PROFILES.normal.pressers = 1;
+    try {
+      f();
+    } finally {
+      AI_PROFILES.normal.pressers = keep;
+    }
+  };
+}
+
 describe('off the ball', () => {
-  it('only one or two players press the carrier; the quickest presses', () => {
+  it('only one or two players press the carrier; the quickest presses', onePresser(() => {
     let s = scenario([600, midY], { 8: [576, midY], 1: [300, 300], 2: [300, 520], 3: [450, 330], 4: [470, 500] }, { owner: 8 });
     s = run(s, 30);
     const home = s.players.filter((p) => p.team === 0 && p.role !== 'keeper');
@@ -159,9 +172,9 @@ describe('off the ball', () => {
     const presser = home.find((p) => s.ai.players[p.id].intent === 'press');
     expect(presser).toBeDefined();
     expect(pressers).toContain(presser!.id);
-  });
+  }));
 
-  it('defenders mark goal-side of the attackers they pick up', () => {
+  it('defenders mark goal-side of the attackers they pick up', onePresser(() => {
     let s = scenario([700, midY], { 8: [680, midY], 6: [330, 260], 7: [330, 560], 1: [250, 300], 2: [250, 520] }, { owner: 8 });
     s = run(s, 60);
     for (const id of [1, 2]) {
@@ -171,7 +184,7 @@ describe('off the ball', () => {
       expect(m.target.x).toBeLessThan(marked.pos.x); // home defends the left goal
     }
     expect([s.ai.players[1].intent, s.ai.players[2].intent]).toContain('mark');
-  });
+  }));
 
   it('does not bunch: rarely more than two players of a team crowd the ball', () => {
     let crowded = 0;

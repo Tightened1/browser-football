@@ -216,6 +216,18 @@ class SoundEngine {
     }
   }
 
+  /** A kick went into the kick buffer (it fires when you reach the ball): a soft, short tick. */
+  queued(): void {
+    if (!this.can()) return;
+    this.tone(this.ctx!.currentTime, 'sine', 1350, 1150, 0.05, 0.22);
+  }
+
+  /** A queued kick ran out of time without reaching the ball: a dull swish at the air. */
+  whiff(): void {
+    if (!this.can()) return;
+    this.noiseBurst(this.ctx!.currentTime, 0.12, 0.25, 'bandpass', 600, 0.9);
+  }
+
   /** A short blip to hear the volume while changing it in the settings. */
   blip(): void {
     if (!this.can()) return;

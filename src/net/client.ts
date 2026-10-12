@@ -1,6 +1,6 @@
 // Guest side of an online game: joins a room by code and follows the host's lobby (GuestLobby), then sends its
 // inputs, buffers and interpolates the host's snapshots and receives events (GuestMatch). It never runs the sim
-// itself, apart from predicting its own controlled player's movement.
+// itself, apart from predicting its own controlled player (and the ball, while that player carries or has just kicked it).
 import type Peer from 'peerjs';
 import type { DataConnection } from 'peerjs';
 import {
@@ -11,10 +11,12 @@ import {
   NET_CORRECTION_HALF_LIFE,
   NET_DIRECT_ATTEMPT_TIMEOUT_MS,
   NET_CORRECTION_SNAP,
+  NET_BALL_CORRECTION_SNAP,
   NET_HANDSHAKE_TIMEOUT_MS,
   NET_INPUT_REDUNDANCY,
   NET_INTERP_DELAY_MS,
   NET_PREDICT_BLEND_FAR,
+  NET_PREDICT_BLEND_RATE,
   NET_PREDICT_BLEND_NEAR,
   NET_PREDICTION,
   NET_RECONNECT_RETRY_MS,
@@ -24,10 +26,19 @@ import {
   NET_STALL_MS,
   SIM_DT,
   SIM_HZ,
+  DRIBBLE_SPEED_FACTOR,
+  KICK_BUFFER_TIME,
+  KICK_FLASH_TIME,
+  KICK_PLAYER_VEL_FACTOR,
+  NET_KICK_CONFIRM_MS,
+  NET_KICK_LEAD_DECAY,
+  PASS_SPEED,
+  SHOT_MAX_CHARGE_TIME,
 } from '../config';
-import { createMatchState, updatePlayer } from '../sim/simulation';
+import { createMatchState, shotSpeed, updatePlayer } from '../sim/simulation';
+import { advanceHold, holdOffset, rollFreeBall, sharpTurnLosesBall } from '../sim/dribble';
 import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
-import type { GameState, InputFrame, MatchEvent, MatchStats, PlayerState, TeamId } from '../sim/types';
+import type { BallState, GameState, InputFrame, MatchEvent, MatchStats, PlayerState, Possession, TeamId } from '../sim/types';
 import { kindForPeerError, netError, type NetErrorKind } from './errors';
 import { PlaybackClock, SnapshotBuffer } from './interpolation';
 import { seconds, type MatchDriver, type NetOverlay } from './match';
@@ -343,6 +354,24 @@ function predictionEnabled(): boolean {
   return v === null ? NET_PREDICTION : v !== '0';
 }
 
+/** Did this frame strike the ball (a pass press or a shot release), given the frame before? */
+const kickEdge = (prev: InputFrame | undefined, f: InputFrame): boolean => (f.pass && !prev?.pass) || (!f.shoot && !!prev?.shoot);
+
+/** The guest's own kick from its predicted dribble: drawn ahead of the host's ball until the host's version catches up. */
+interface LocalKick {
+  /** Seq of the input frame that struck it. */
+  seq: number;
+  /** The locally rolled ball (before the handover). */
+  ball: BallState;
+  /** Seconds since the kick. */
+  age: number;
+  /** The host's kick has reached the drawn match: the host's ball is drawn `lead` seconds ahead, winding down to 0. */
+  handover: boolean;
+  lead: number;
+}
+
+type BallMode = 'host' | 'carry' | 'kick' | 'handover';
+
 const smoothstep = (lo: number, hi: number, x: number): number => {
   const t = Math.min(1, Math.max(0, (x - lo) / (hi - lo)));
   return t * t * (3 - 2 * t);
@@ -380,6 +409,18 @@ export class GuestMatch implements MatchDriver {
   // Prediction.
   private readonly predict = predictionEnabled();
   private predicted: PlayerState | null = null;
+  /** The ball held by the predicted player (sticky dribbling), predicted with it. */
+  private predictedPoss: Possession | null = null;
+  private kick: LocalKick | null = null;
+  /** Hides jumps when the drawn ball switches between the host's and a predicted one (fades like `offset`). */
+  private ballOffset = { x: 0, y: 0 };
+  private ballMode: BallMode = 'host';
+  private lastBall = { x: 0, y: 0 };
+  /** performance.now() of our last predicted kick / queued kick, so the host's later copy of the cue isn't repeated. */
+  private localKickAt = -Infinity;
+  private localQueueAt = -Infinity;
+  /** The drawn (interpolated) snapshot, for its ack. */
+  private renderSnap: Snapshot | null = null;
   private offset = { x: 0, y: 0 };
   private predictedShown = false;
   private lastCorrection = 0;
@@ -428,6 +469,11 @@ export class GuestMatch implements MatchDriver {
     this.renderTick = -1;
     this.history.length = 0;
     this.predicted = null;
+    this.predictedPoss = null;
+    this.kick = null;
+    this.ballMode = 'host';
+    this.ballOffset = { x: 0, y: 0 };
+    this.renderSnap = null;
     this.predictedShown = false;
     this.offset = { x: 0, y: 0 };
   }
@@ -438,10 +484,15 @@ export class GuestMatch implements MatchDriver {
     while (this.acc >= SIM_DT) {
       this.acc -= SIM_DT;
       const frame = quantizeInput(sample());
+      const prev = this.history[this.history.length - 1];
       this.history.push(frame);
       if (this.history.length > SIM_HZ * 2) this.history.shift();
       this.link?.sendFast(encodeInputs(this.history.slice(-NET_INPUT_REDUNDANCY)));
-      if (this.predicted) updatePlayer(this.predicted, frame, SIM_DT);
+      if (this.predicted) this.predictFrame(this.predicted, prev, frame, nowMs);
+      if (this.kick && !this.kick.handover) {
+        rollFreeBall(this.kick.ball, 1);
+        this.kick.age += SIM_DT;
+      }
     }
     this.render(dt, nowMs);
   }
@@ -503,13 +554,23 @@ export class GuestMatch implements MatchDriver {
   private reconcile(snap: Snapshot): void {
     if (!this.predictable(snap)) {
       this.predicted = null;
+      this.predictedPoss = null;
       return;
     }
     const id = snap.controlled[this.localTeam];
     const ps = snap.players[id];
     const base = this.state.players[id];
     const p: PlayerState = { ...base, pos: { x: ps.x, y: ps.y }, vel: { x: ps.vx, y: ps.vy }, facing: ps.facing, tackleTimer: 0 };
-    for (const f of this.history) if (f.seq > snap.ack) updatePlayer(p, f, SIM_DT);
+    let poss: Possession | null = snap.possession?.player === id ? { ...snap.possession } : null;
+    // The host applied our kick but still says we carry the ball: the kick didn't happen there. The host wins.
+    if (this.kick && !this.kick.handover && snap.ack >= this.kick.seq && poss) this.kick = null;
+    let prev = this.history.find((f) => f.seq === snap.ack);
+    for (const f of this.history) {
+      if (f.seq <= snap.ack) continue;
+      poss = this.replayFrame(p, poss, prev, f);
+      prev = f;
+    }
+    this.predictedPoss = poss;
     const old = this.predicted;
     if (old && old.id === id) {
       const dx = old.pos.x - p.pos.x;
@@ -520,6 +581,132 @@ export class GuestMatch implements MatchDriver {
       else this.offset = { x: this.offset.x + dx, y: this.offset.y + dy };
     }
     this.predicted = p;
+  }
+
+  /** One frame of our own player, carrying the ball if it has it (the same rules as the host's sim, see sim/dribble.ts). */
+  private replayFrame(p: PlayerState, poss: Possession | null, prev: InputFrame | undefined, f: InputFrame): Possession | null {
+    const kicked = kickEdge(prev, f);
+    if (poss && !kicked && sharpTurnLosesBall(p, f)) poss = null;
+    updatePlayer(p, f, SIM_DT, poss ? DRIBBLE_SPEED_FACTOR : 1);
+    if (poss) advanceHold(poss, p, SIM_DT);
+    // A kick from the dribble always fires (there is no kick buffer delay with the ball at your feet), ending it.
+    return poss && kicked ? null : poss;
+  }
+
+  /** A new local frame: predict our player and, if it strikes the ball it carries, the kick. */
+  private predictFrame(p: PlayerState, prev: InputFrame | undefined, f: InputFrame, nowMs: number): void {
+    const poss = this.predictedPoss;
+    const kicked = kickEdge(prev, f);
+    this.predictedPoss = this.replayFrame(p, poss, prev, f);
+    if (!kicked) return;
+    if (!poss) {
+      this.localQueueAt = nowMs; // not on the ball, as far as we can tell: the host queues the kick
+      return;
+    }
+    // Kick from our dribble: launch the ball here and now, as the host will (aimed by the move keys, else the facing).
+    let charge = 0;
+    if (!f.pass) {
+      for (let i = this.history.length - 2; i >= 0 && this.history[i].shoot; i--) charge += SIM_DT;
+      charge = Math.min(SHOT_MAX_CHARGE_TIME, charge);
+    }
+    const speed = f.pass ? PASS_SPEED : shotSpeed(charge);
+    const aim = Math.hypot(f.moveX, f.moveY) > 1e-6 ? Math.atan2(f.moveY, f.moveX) : p.facing;
+    const off = holdOffset(poss, p, this.state.ball.radius);
+    this.kick = {
+      seq: f.seq,
+      ball: {
+        pos: { x: p.pos.x + off.x, y: p.pos.y + off.y },
+        vel: { x: Math.cos(aim) * speed + p.vel.x * KICK_PLAYER_VEL_FACTOR, y: Math.sin(aim) * speed + p.vel.y * KICK_PLAYER_VEL_FACTOR },
+        radius: this.state.ball.radius,
+      },
+      age: 0,
+      handover: false,
+      lead: 0,
+    };
+    p.facing = aim;
+    this.localKickAt = nowMs;
+  }
+
+  /** Seconds our prediction runs ahead of the drawn (interpolated) match: the inputs the drawn state doesn't include yet. */
+  private lead(): number {
+    const newest = this.history[this.history.length - 1];
+    return this.renderSnap && newest ? Math.max(0, (newest.seq - this.renderSnap.ack) * SIM_DT) : 0;
+  }
+
+  /**
+   * Where to draw the ball: held by our predicted player, our own kick rolled locally, the host's ball drawn ahead
+   * while our kick hands over to it, or simply the host's. A switch hides its jump behind a fading offset.
+   */
+  private applyBallPrediction(dt: number, carrying: boolean): void {
+    const s = this.state;
+    const ball = s.ball;
+    const id = s.controlled[this.localTeam];
+    const kick = this.kick;
+    const drawn = this.renderSnap;
+    if (kick && !kick.handover && drawn) {
+      if (drawn.ack >= kick.seq) {
+        // The drawn match has reached our kick: hand over to the host's ball, unless the host says it never happened.
+        if (drawn.possession?.player === id) this.kick = null;
+        else {
+          kick.handover = true;
+          kick.lead = this.lead();
+        }
+      } else if (kick.age > this.lead() + NET_KICK_CONFIRM_MS / 1000) this.kick = null; // never confirmed: the host wins
+    }
+    let mode: BallMode = 'host';
+    let pos = { ...ball.pos };
+    let vel = { ...ball.vel };
+    if (carrying && this.predictedPoss) {
+      mode = 'carry';
+      const p = s.players[id];
+      const off = holdOffset(this.predictedPoss, p, ball.radius);
+      pos = { x: p.pos.x + off.x, y: p.pos.y + off.y };
+      vel = { ...p.vel };
+      s.possession = { ...this.predictedPoss, player: id };
+    } else if (this.kick && !this.kick.handover) {
+      mode = 'kick';
+      pos = { ...this.kick.ball.pos };
+      vel = { ...this.kick.ball.vel };
+      s.possession = null;
+    } else if (this.kick) {
+      // The host's ball, rolled on by a lead that winds down slower than time passes, so the ball never goes backwards.
+      mode = 'handover';
+      const k = this.kick;
+      k.lead = Math.max(0, k.lead - dt * NET_KICK_LEAD_DECAY);
+      const ahead: BallState = { pos: { ...ball.pos }, vel: { ...ball.vel }, radius: ball.radius };
+      const whole = Math.floor(k.lead / SIM_DT);
+      rollFreeBall(ahead, whole);
+      rollFreeBall(ahead, 1, k.lead - whole * SIM_DT); // and the part tick, so the ball glides rather than steps
+      pos = ahead.pos;
+      vel = ahead.vel;
+      if (k.lead === 0) this.kick = null;
+    }
+    if (mode !== this.ballMode) {
+      // (Our kick starts from the ball at our feet, so it needs no smoothing: that would only hold it back.)
+      this.ballOffset = mode === 'kick' ? { x: 0, y: 0 } : { x: this.lastBall.x - pos.x, y: this.lastBall.y - pos.y };
+      if (Math.hypot(this.ballOffset.x, this.ballOffset.y) > NET_BALL_CORRECTION_SNAP) this.ballOffset = { x: 0, y: 0 };
+      this.ballMode = mode;
+    }
+    const fade = Math.pow(0.5, dt / NET_CORRECTION_HALF_LIFE);
+    this.ballOffset.x *= fade;
+    this.ballOffset.y *= fade;
+    ball.pos = { x: pos.x + this.ballOffset.x, y: pos.y + this.ballOffset.y };
+    ball.vel = vel;
+    this.lastBall = { ...ball.pos };
+  }
+
+  /** Kick cues for our own player: ours show the moment we kick; the host's copy, arriving later, isn't shown again. */
+  private applyKickCues(nowMs: number): void {
+    const id = this.state.controlled[this.localTeam];
+    const p = id >= 0 ? this.state.players[id] : undefined;
+    if (!p) return;
+    const sinceKick = (nowMs - this.localKickAt) / 1000;
+    const sinceQueue = (nowMs - this.localQueueAt) / 1000;
+    if (sinceKick < KICK_FLASH_TIME) p.kickFlash = KICK_FLASH_TIME - sinceKick;
+    else if (sinceKick < 0.6) p.kickFlash = 0;
+    if (sinceKick < 0.6) p.kickQueue = 0;
+    else if (sinceQueue < KICK_BUFFER_TIME) p.kickQueue = Math.max(p.kickQueue, KICK_BUFFER_TIME - sinceQueue);
+    else if (sinceQueue < 0.6) p.kickQueue = 0;
   }
 
   /** Draws the predicted own player, blended with the host's (interpolated) one by distance from the ball. */
@@ -534,6 +721,8 @@ export class GuestMatch implements MatchDriver {
     if (!shown || !pred) {
       this.predictedShown = false;
       this.blend = 0;
+      this.predictedPoss = null;
+      this.applyBallPrediction(dt, false);
       return;
     }
     const p = s.players[id];
@@ -546,11 +735,16 @@ export class GuestMatch implements MatchDriver {
     const py = pred.pos.y + this.offset.y;
     const ball = s.ball;
     const gap = (x: number, y: number): number => Math.hypot(x - ball.pos.x, y - ball.pos.y) - p.radius - ball.radius;
-    const w = smoothstep(NET_PREDICT_BLEND_NEAR, NET_PREDICT_BLEND_FAR, Math.min(gap(p.pos.x, p.pos.y), gap(px, py)));
+    // Carrying the ball, or having just kicked it, the ball is predicted with us: draw our player fully predicted.
+    // Otherwise, near the (older) host ball, blend back towards the host's position. Changes of blend are eased.
+    const ballPredicted = !!this.predictedPoss || !!this.kick;
+    const target = ballPredicted ? 1 : smoothstep(NET_PREDICT_BLEND_NEAR, NET_PREDICT_BLEND_FAR, Math.min(gap(p.pos.x, p.pos.y), gap(px, py)));
+    const w = this.predictedShown && this.blend > 0 ? this.blend + (target - this.blend) * Math.min(1, dt * NET_PREDICT_BLEND_RATE) : target;
     this.blend = w;
     p.pos = { x: p.pos.x + (px - p.pos.x) * w, y: p.pos.y + (py - p.pos.y) * w };
     p.vel = { x: p.vel.x + (pred.vel.x - p.vel.x) * w, y: p.vel.y + (pred.vel.y - p.vel.y) * w };
     if (w > 0.5) p.facing = pred.facing;
+    this.applyBallPrediction(dt, !!this.predictedPoss);
   }
 
   /* ---- Drawing --------------------------------------------------------------------------------------- */
@@ -566,7 +760,9 @@ export class GuestMatch implements MatchDriver {
     this.extrapolating = sample.extrapolating;
     applySnapshot(this.state, sample.snap);
     this.state.tick = Math.floor(sample.snap.tick);
+    this.renderSnap = sample.snap;
     this.applyPrediction(dt);
+    this.applyKickCues(nowMs);
     this.releaseEvents(tick);
   }
 
@@ -609,7 +805,7 @@ export class GuestMatch implements MatchDriver {
       `ping          ${ping == null ? '…' : `${Math.round(ping)} ms`}`,
       `snapshots in  ${this.snapRate.rate(nowMs).toFixed(0)}/s · ${this.snapBytes} bytes · loss ${(this.snapLoss.loss() * 100).toFixed(1)}%`,
       `buffer        ${ahead} ahead · ${aheadMs.toFixed(0)} ms (delay ${NET_INTERP_DELAY_MS} ms)${this.extrapolating ? ' · EXTRAPOLATING' : ''}`,
-      `prediction    ${this.predict ? `on · blend ${this.blend.toFixed(2)} · last fix ${this.lastCorrection.toFixed(1)} px` : 'off'}`,
+      `prediction    ${this.predict ? `on · blend ${this.blend.toFixed(2)} · last fix ${this.lastCorrection.toFixed(1)} px · ball ${this.ballMode}` : 'off'}`,
       `events        ${this.lastEventId} received · ${this.pending.length} waiting`,
       `channel       ${link ? (link.hasFastChannel ? 'unreliable' : 'reliable fallback') : 'none'}`,
       `route         ${link?.route ? describeRoute(link.route) : '…'}`,

@@ -82,6 +82,50 @@ export const DRIBBLE_TOUCH_INTERVAL = 0.15;
 /** The ball must be within this angle (radians) of the running direction to be nudged. */
 export const DRIBBLE_CONE = 1.1;
 
+/**
+ * Dribbling style (T13). 'sticky': a player who controls the ball carries it a short, fixed distance in front of them
+ * (GameState.possession) until it is kicked, tackled away or lost. 'classic': the old T02 dribble, where each touch
+ * nudges the ball ahead and it runs free in between (DRIBBLE_BOOST, DRIBBLE_TOUCH_INTERVAL, DRIBBLE_CONE).
+ */
+export type DribbleMode = 'sticky' | 'classic';
+export const DRIBBLE_MODE: DribbleMode = 'sticky';
+/** Sticky: gap between the carrier's body and the held ball (px), plus a small in-and-out roll so it doesn't look glued. Gap + roll must stay within KICK_REACH. */
+export const DRIBBLE_HOLD_GAP = 1.5;
+export const DRIBBLE_ROLL_AMPLITUDE = 5;
+/** Distance run (px) per roll of the ball out and back in. */
+export const DRIBBLE_ROLL_PERIOD = 46;
+/** How fast the ball swings round the carrier to follow their facing (rad/s): turning carries it round, never teleports it. */
+export const DRIBBLE_TURN_RATE = 9;
+/** How quickly the held ball closes on its spot (1/s): each tick it covers 1 - e^(-k*dt) of the gap (100 = 81%). */
+export const DRIBBLE_HOLD_STIFFNESS = 100;
+/** Running with the ball is a little slower than without it (fraction of PLAYER_MAX_SPEED). */
+export const DRIBBLE_SPEED_FACTOR = 0.9;
+/** Taking control of a loose ball: it must be within this gap of the body (px) and moving at most this fast relative to the player (px/s). */
+export const DRIBBLE_CONTROL_REACH = 4;
+export const DRIBBLE_CONTROL_SPEED = 280;
+/** A teammate's pass is controlled up to this relative speed (px/s); harder balls (shots) bounce off. */
+export const DRIBBLE_PASS_CONTROL_SPEED = 900;
+/** Body check: an opponent within this gap of the held ball (px), in front of the carrier (within this angle of where the ball sits, rad), knocks it loose. */
+export const DRIBBLE_CHECK_REACH = 5;
+export const DRIBBLE_CHECK_CONE = 1.6;
+/** Speed (px/s) a body check knocks the ball loose at, away from the opponent. */
+export const DRIBBLE_CHECK_KNOCK_SPEED = 160;
+/** Very sharp turns at full speed lose the ball (it runs on). Optional. */
+export const DRIBBLE_SHARP_TURN_LOSS = true;
+/** ...a turn of at least this angle (rad) between the move keys and the running direction, at this fraction of the carrying speed or more. */
+export const DRIBBLE_SHARP_TURN_ANGLE = 2.5;
+export const DRIBBLE_SHARP_TURN_SPEED = 0.95;
+/** After losing the ball (tackle, body check, sharp turn) the old carrier can't take it straight back for this long (s). */
+export const DRIBBLE_REGAIN_LOCKOUT = 0.4;
+
+/**
+ * Kick buffer (T13): a pass press or shot release while the ball is out of reach is kept for this long (s) and fires
+ * as soon as the player gets the ball, so no kick is ever silently dropped.
+ */
+export const KICK_BUFFER_TIME = 0.25;
+/** "Kick fired" flash (s). For this long after a kick the ball also passes through the kicker's own body (a kick behind you). */
+export const KICK_FLASH_TIME = 0.15;
+
 /** A ball that is merely within reach of a player only counts as touched by them if it moves slower than this relative to them (px/s). */
 export const TOUCH_MAX_RELATIVE_SPEED = 90;
 
@@ -151,6 +195,11 @@ export const KEEPER_BALL_RESTITUTION = 0.15;
 export const KEEPER_INV_MASS = 0.1;
 /** After touching a keeper the ball always leaves at least this fast, away from the goal (px/s). */
 export const KEEPER_CLEAR_SPEED = 240;
+/**
+ * Sticky dribbling: a keeper inside its own penalty box catches (holds) a ball arriving at up to this relative speed
+ * (px/s); harder shots are parried as before. A keeper holding the ball can't be tackled or body-checked.
+ */
+export const KEEPER_CATCH_SPEED = 850;
 
 export const TEAMS = [
   { name: 'Home', kit: 0x2a6fdb, keeper: 0xf2c94c, outline: 0x0b2a5e },
@@ -197,9 +246,9 @@ export interface AiProfile {
 }
 
 export const AI_PROFILES: Record<Difficulty, AiProfile> = {
-  easy: { reactionTime: 0.38, aimError: 0.14, speed: 0.82, keeperReaction: 0.22, keeperError: 30, keeperSpeed: 0.55, tackleChance: 0.25, decisionNoise: 0.35, pressers: 1 },
-  normal: { reactionTime: 0.24, aimError: 0.08, speed: 0.92, keeperReaction: 0.1, keeperError: 28, keeperSpeed: 0.65, tackleChance: 0.4, decisionNoise: 0.2, pressers: 1 },
-  hard: { reactionTime: 0.14, aimError: 0.04, speed: 1, keeperReaction: 0.07, keeperError: 12, keeperSpeed: 0.75, tackleChance: 0.55, decisionNoise: 0.1, pressers: 2 },
+  easy: { reactionTime: 0.38, aimError: 0.14, speed: 0.82, keeperReaction: 0.22, keeperError: 30, keeperSpeed: 0.6, tackleChance: 0.55, decisionNoise: 0.35, pressers: 2 },
+  normal: { reactionTime: 0.24, aimError: 0.08, speed: 0.92, keeperReaction: 0.1, keeperError: 28, keeperSpeed: 0.75, tackleChance: 0.7, decisionNoise: 0.2, pressers: 2 },
+  hard: { reactionTime: 0.14, aimError: 0.04, speed: 1, keeperReaction: 0.07, keeperError: 12, keeperSpeed: 0.85, tackleChance: 0.8, decisionNoise: 0.1, pressers: 2 },
 };
 /** Difficulty of a team with no human (the opponents, or both teams in AI vs AI). */
 export const AI_DIFFICULTY: Difficulty = 'normal';
@@ -246,6 +295,10 @@ export const AI_GOAL_MOUTH_MARGIN = 30;
 
 /** Pressing: the presser aims for a spot this far goal-side of the carrier (px). */
 export const AI_PRESS_OFFSET = 34;
+/** Sticky dribbling: a goal-side presser this close to the carrier (px) steps in to the ball to win it. */
+export const AI_PRESS_ENGAGE = 60;
+/** A carrier under pressure strikes after at most this much charge (s) instead of waiting for the full charge. */
+export const AI_QUICK_SHOT_CHARGE = 0.1;
 /** A second presser joins when the carrier is within this distance of our goal (px), even if pressers = 1. */
 export const AI_DANGER_ZONE = 330;
 /** Start a slide tackle when the ball is within this distance (px) and roughly in front. */
@@ -411,6 +464,14 @@ export const NET_CLOCK_RESET_TICKS = 30;
 export const NET_CLOCK_ADAPT_EARLY = 0.2;
 export const NET_CLOCK_ADAPT_LATE = 0.02;
 
+/**
+ * Guest kicks from its own (predicted) dribble leave the foot straight away on the guest's screen: the ball is drawn
+ * ahead of the host's (older) ball by the prediction lead, and that lead is wound down at this rate (seconds of lead per
+ * second), so the ball always moves forwards. Unconfirmed after NET_KICK_CONFIRM_MS beyond the lead: the host's ball wins.
+ */
+export const NET_KICK_LEAD_DECAY = 0.5;
+export const NET_KICK_CONFIRM_MS = 250;
+
 /** Every input packet repeats the guest's last few input frames, so a lost packet loses no key press. */
 export const NET_INPUT_REDUNDANCY = 4;
 /** The host buffers at most this many unplayed guest inputs; beyond that, the oldest are merged (keeps input lag low). */
@@ -424,10 +485,14 @@ export const NET_PREDICTION = true;
  */
 export const NET_PREDICT_BLEND_NEAR = 25;
 export const NET_PREDICT_BLEND_FAR = 110;
+/** The blend eases towards its new value at this rate (1/s), e.g. when the ball is won or lost (T13). */
+export const NET_PREDICT_BLEND_RATE = 4;
 /** Prediction corrections are smoothed out with this half-life (s) instead of snapping. */
 export const NET_CORRECTION_HALF_LIFE = 0.08;
 /** A correction bigger than this snaps straight away (px). */
 export const NET_CORRECTION_SNAP = 60;
+/** The same for the drawn ball when it switches between predicted and the host's: it runs further ahead (px). */
+export const NET_BALL_CORRECTION_SNAP = 150;
 
 /** Pause the match when nothing has arrived from the other player for this long (ms). */
 export const NET_STALL_MS = 1_500;

@@ -7,6 +7,11 @@ export function hasBall(p: PlayerState, ball: BallState): boolean {
   return Math.hypot(ball.pos.x - p.pos.x, ball.pos.y - p.pos.y) <= p.radius + ball.radius + KICK_REACH;
 }
 
+/** True if the player carries the ball (sticky dribbling) or, with nobody carrying it, has it within reach. */
+export function onBall(state: GameState, p: PlayerState): boolean {
+  return state.possession ? state.possession.player === p.id : hasBall(p, state.ball);
+}
+
 /**
  * The teammate best placed to reach the ball: closest outfield player (excluding the current one), where
  * players between the ball and their own goal count as SWITCH_GOALSIDE_BIAS closer. Returns -1 if none.
@@ -35,7 +40,7 @@ export function applySwitching(state: GameState, inputs: readonly (InputFrame | 
     const pressed = !!input?.switchPlayer && !state.prevSwitch[team];
     state.prevSwitch[team] = !!input?.switchPlayer;
     const cur = state.controlled[team];
-    if (!pressed || cur < 0 || hasBall(state.players[cur], state.ball)) continue;
+    if (!pressed || cur < 0 || onBall(state, state.players[cur])) continue;
     const target = chooseSwitchTarget(state, team);
     if (target >= 0) state.controlled[team] = target;
   }
@@ -43,10 +48,19 @@ export function applySwitching(state: GameState, inputs: readonly (InputFrame | 
 
 /**
  * Tracks the last toucher of the ball, and moves each human's control to a teammate who receives
- * a pass (ball in reach, last touched by a different player of the same team).
+ * a pass (ball in reach, last touched by a different player of the same team) or, with sticky dribbling,
+ * to whichever teammate is carrying the ball.
  */
 export function updateTouches(state: GameState): void {
   const { ball } = state;
+  const poss = state.possession;
+  if (poss) {
+    const carrier = state.players[poss.player];
+    const team = carrier.team;
+    if (state.controlled[team] >= 0 && carrier.role !== 'keeper') state.controlled[team] = carrier.id;
+    state.lastTouch = { team, player: carrier.id };
+    return;
+  }
   for (const team of [0, 1] as const) {
     const cur = state.controlled[team];
     const last = state.lastTouch;

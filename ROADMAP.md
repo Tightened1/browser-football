@@ -38,6 +38,7 @@ src/
     types.ts           GameState, PlayerState, BallState, InputFrame…
     physics.ts         Circle movement, friction, collisions, wall bounces
     simulation.ts      step(state, inputs, dt) -> state   (the whole game advances here)
+    dribble.ts         Sticky dribbling: taking, carrying and losing the ball (shared with the guest's prediction)
     rules.ts           Goals, kickoff, out of play, timer, halves
     ai.ts              AI decisions -> produces InputFrames for AI-controlled players
   render/              Phaser scenes that DRAW a GameState (never change it)
@@ -88,6 +89,8 @@ tests/                 Vitest tests for sim/
 | Network debug overlay (ping, snapshots, buffer, loss) | `F3` / `N` |
 | Pause menu (offline: pauses; online: the match keeps running) / back | `Esc` |
 
+With the ball (sticky dribbling) it stays at your feet; passes and shots go where the move keys point at release, and a kick pressed just before the ball arrives is held for 0.25 s and fires when it does.
+
 All of the movement and action keys can be rebound under **Settings** (two keys per action); the table shows the defaults. `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved.
 
 URL options: `?room=CODE` (invite link: joins that room), `?aivsai` (both teams AI, spectate), `?difficulty=easy|normal|hard`, and for testing online play on one machine `?lag=50&jitter=10&loss=0.03` (simulated network, per window) and `?predict=0|1` (guest prediction off/on).
@@ -126,6 +129,7 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T10 | Juice & audio: sounds, goal celebration, team colours, camera | T05 | Sonnet 5.5 | [x] |
 | T11 | Playtest & gameplay tuning | T04, T10 | Sonnet 5.5 | [x] |
 | T12 | Release: README, how-to-play, final deploy | T11, T08, T09 | Haiku 5.5 | [x] |
+| T13 | Sticky dribbling & fix shooting | T12 | **Opus 5.5** | [x] |
 
 ### Which model, and why
 
@@ -443,6 +447,40 @@ Finally, mark T12 as [x] in the ROADMAP.md task queue, commit, push and give me 
 
 ---
 
+### T13 — Sticky dribbling & fix shooting
+**Model:** Opus 5.5 (this change touches the core ball rules, the AI and the online guest's prediction all at once; Sonnet 5.5 would manage the offline part, but the online side needs Opus)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture and golden rules exactly (all game logic in pure TypeScript under src/sim/, tunables in src/config.ts). You are doing task T13, based on playtest feedback.
+
+Feedback from the player:
+- "Running with the ball is hard." Today, dribbling in src/sim/simulation.ts (interactWithBall) nudges the ball ahead every DRIBBLE_TOUCH_INTERVAL and lets it run free in between, so the ball keeps getting away.
+- "When I was shooting it wasn't doing anything." Shots fire only on the frame the shoot key is released, and only if the ball is within KICK_REACH at that exact moment. The likely cause is that the free-running dribbled ball is often out of reach on release, so the shot is silently dropped and the charge resets. Confirm the real cause(s) before fixing: also check the keyboard input (src/input/keyboard.ts), focus/Space-key handling in menus/scenes, set-piece restarts, and the online guest path (net/client.ts prediction, net/host.ts input handling).
+
+Do the following:
+1. Sticky dribbling: when a player has the ball and is moving, the ball stays held a short, fixed distance in front of them (in their facing direction) and turns with them smoothly (no teleporting). The ball should still visibly roll a little so it doesn't look glued.
+   - Possession is lost to: a successful tackle/slide, an opponent body-checking the ball carrier from the front, any kick (pass/shot), and very sharp turns at full speed (optional, configurable).
+   - Gaining possession: a loose ball the player runs into at a reasonable relative speed is controlled automatically; very fast balls (hard shots) still bounce off unless they're a pass to a teammate.
+   - Running with the ball is slightly slower than without it (configurable, e.g. 90%).
+   - Make it all configurable in config.ts, including a DRIBBLE_MODE = 'sticky' | 'classic' switch so the old behaviour can be restored.
+   - Store possession in GameState so it is serialisable (the network sends it).
+2. Fix shooting so it always responds:
+   - Show the charge bar while holding shoot even when not on the ball.
+   - Kick buffer: if shoot is released (or pass pressed) while the ball is just out of reach, keep the kick queued for ~0.25 s and fire it as soon as the player gets the ball.
+   - With sticky dribbling the ball is in reach while dribbling, so a shot from a dribble must always fire.
+   - Shot direction: use the movement keys held at release (fall back to facing), so you can run one way and shoot another.
+   - Add a short audio/visual cue for "kick queued" vs "kick fired", so it is never silent.
+3. AI: update src/sim/ai.ts so AI players use the new possession model correctly (dribbling, shielding, tackling the carrier, passing/shooting from possession). Re-run `npm run simulate` and keep the T11 targets (about 3–6 goals per 6-minute match at normal difficulty, no stalemates). Re-tune if needed and report before/after numbers.
+4. Online: make sure the guest sees the ball held by its own predicted player without lag or rubber-banding (the ball held by the guest's predicted player should be predicted with it), and the host's version always wins on disputes. Test with the simulated latency/loss settings from config.ts.
+5. Tests (Vitest): ball stays attached while running and turning; a tackle wins the ball; pass and shot always fire from possession; the kick buffer fires when the ball arrives within the window and expires after it; possession survives snapshot encode/decode.
+6. Update the How-to-play text if the controls change, and add a line to docs/PLAYTEST_NOTES.md listing what to feel-test by hand.
+
+Done when: offline, I can run the length of the pitch with the ball under control, turn with it, and every shoot press produces a shot; AI matches still meet the T11 targets; online play with ~100 ms simulated latency feels the same for the guest. `npm test` and `npm run build` pass.
+Finally, mark T13 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
 ## 6. Backlog (after v1)
 
 | # | Idea | Suggested model |
@@ -468,3 +506,4 @@ Finally, mark T12 as [x] in the ROADMAP.md task queue, commit, push and give me 
 - 2026-10-12 — T10 (game 0.10.0): juice and audio, all render/audio-side and driven only by the drawn state, so offline, host and online guest behave identically. **Audio** (`audio/`): every sound is synthesised with the Web Audio API (kick soft→hard, post ring, net thud, whistles, crowd murmur that swells near a goal, goal roar; `docs/CREDITS.md`). The context is created on the first click/key press (`sound.attachUnlock()` in `main.ts`) and the settings volume is applied (squared) to a master gain. Sounds come from `state.events` (whistles, goal roar; ids are tracked per match, reset when the tick counter goes backwards) and from `BallCueDetector`, which spots kicks, post hits and net thuds as sudden velocity changes of the drawn ball (works on the guest's interpolated snapshots too, since it looks ~50 ms back). **Visuals** (`render/effects.ts`, `MatchScene`): ball shadow that detaches and ball that grows on hard shots (drawing only; the sim stays 2D), kick/slide dust, goal nets as a mesh that ripples on a goal or net hit, confetti, a light camera shake and zoom punch plus a pop-in GOAL! banner, shirt numbers on every player, striped grass, penalty spots/arcs and corner arcs. No real slow-motion: slowing the host's clock would slow the guest too. **Camera**: new setting (Auto / Whole pitch / Follow the ball). Follow zooms to `CAMERA_FOLLOW_ZOOM` and tracks the ball with velocity look-ahead and smoothing; Auto follows only when the canvas is drawn at under `CAMERA_AUTO_MIN_SCALE` of the pitch's size. On-screen text in MatchScene lives on a second fixed camera; the HUD is a separate scene and is unaffected.
 - 2026-10-12 — T11 (game 0.11.0): `npm run simulate` (`scripts/simulate.ts`, bundled with rolldown, runs the pure sim headlessly) plays AI-vs-AI matches and reports goals, shots, saves, possession, restarts and stuck/dead-ball detection; `npm run probe` is a shot-vs-keeper exploit probe. Normal difficulty went from 3.07 to 3.88 goals a match (73% of matches in 3-6), saves ~64%, no stalemates. Mostly **bug fixes**: throw-in/corner takers stood on the pitch side facing the line, so every restart sent the ball straight out again (~630 throw-ins a match, now ~90; `setRestart` now puts the taker on the line side and the ball `RESTART_INSET` in); `lastTouch` was given to anyone within reach of a ball flying past (own goals, wrong-team restarts), now only real contacts or a near-rest ball count; a ball resting just outside a corner (not "wholly over" the line, unreachable) stalled play for 93 s, now a resting ball beyond a line is out (`OUT_REST_SPEED`); AI own goals (chasing from upfield, walking into the ball, goal-mouth scrambles) fixed with `routeAroundBall`, `AI_OWN_GOAL_DANGER` and a keeper-owned goal mouth. Exploits: missed slides now cost 1.3 s (`TACKLE_COOLDOWN`), connecting ones 0.5 s (`TACKLE_HIT_COOLDOWN`), keepers keep 0.9 s; Normal/Hard keepers react faster so placed half-charge corner shots no longer always score. Details, before/after tables and a hand-test list: `docs/PLAYTEST_NOTES.md`. Feel values in `config.ts` (speeds, friction, kick power) were deliberately not changed.
 - 2026-10-12 — T12 (game 1.0.0): release. `README.md` covers what the game is, the live link, playing with a friend (host → invite link → join), controls, connection troubleshooting and running locally. `index.html` has a meta description, an inline SVG favicon and Open Graph / Twitter title and description tags (no social image yet). Version bumped to 1.0.0; tag `v1.0.0`.
+- 2026-10-12 — T13 (game 1.1.0, protocol 4): **sticky dribbling and shots that always respond.** Causes found first: the free-running dribbled ball was usually out of `KICK_REACH` on the release frame, so the shot was dropped silently (main cause); the host's input merge kept `shoot` from the newer frame only, so a quick tap from a lagging guest vanished; a Space held over from a menu auto-repeated into a phantom press. New `sim/dribble.ts`: `GameState.possession` (carrier, hold angle, roll) — a slow enough loose ball is taken on contact (teammate passes up to 900 px/s), held in front, swung round with the facing, slightly slower running; lost to a slide, an opponent touching it from the front, any kick, or a full-speed U-turn. `DRIBBLE_MODE: 'classic'` restores T02. **Kick buffer** (`KICK_BUFFER_TIME` 0.25 s) for pass/shoot pressed out of reach; kicks are aimed by the move keys at release; queued/fired/expired cues (amber ring, white burst, tick/kick/swish). **Keepers catch** in the box (`KEEPER_CATCH_SPEED`) and can't be tackled while holding. AI uses possession (carry, staged turns, shielding, kick from possession, set pieces kicked, pressers step in goal-side). Re-tuned to the T11 targets: Normal 5.08 goals a match (65% in 3-6; seed 7: 4.97, 70%), no stalemates; all levels press with two and tackle more, keepers move faster. **Online:** snapshots carry possession and kick flags (146 bytes); the guest predicts the ball its own player carries, launches its own kicks at once and hands over to the host's ball without it ever going backwards; the host always wins (`tests/guestPrediction.test.ts`, 100 ms one way, 3% loss). Details and the hand-test list: `docs/PLAYTEST_NOTES.md` (T13 section).
