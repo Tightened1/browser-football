@@ -18,7 +18,7 @@ import type { NetError } from './errors';
 import { hasTurn, parseIceServersResponse, selectedRoute, type Route, type StatsEntry } from './ice';
 import { NetConditioner } from './netsim';
 import { decode, fromBase64, toBase64, type LobbyState, type Message } from './protocol';
-import type { TeamId } from '../sim/types';
+import type { MatchRules, TeamId } from '../sim/types';
 import type { Look } from '../teams';
 
 export { generateRoomCode, inviteLink, normalizeRoomCode, peerIdForRoom } from './roomCode';
@@ -300,7 +300,10 @@ export interface StartInfo {
   halfLength: number;
   /** Both teams' looks, indexed by team. */
   looks: [Look, Look];
+  /** The match rules (T15): the host's. */
+  rules: MatchRules;
 }
+
 
 export interface Lobby {
   readonly view: LobbyView;

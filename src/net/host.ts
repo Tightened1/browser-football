@@ -17,7 +17,7 @@ import {
 } from '../config';
 import { createMatchState, NEUTRAL_INPUT, step } from '../sim/simulation';
 import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
-import type { Difficulty, GameState, InputFrame, MatchStats, TeamId } from '../sim/types';
+import type { Difficulty, GameState, InputFrame, MatchRules, MatchStats, TeamId } from '../sim/types';
 import { kindForPeerError, netError, NETWORK_HINT } from './errors';
 import { seconds, type MatchDriver, type NetOverlay } from './match';
 import { describeRoute } from './ice';
@@ -41,6 +41,8 @@ import { LossMeter, RateMeter } from './stats';
 import {
   canStart,
   createLobbyState,
+  setLobbyRules,
+
   GAME_VERSION,
   GUEST_NAME,
   HOST_NAME,
@@ -58,6 +60,8 @@ export interface HostLobbyOptions {
   look: Look;
   /** Seconds per half for the match (the host's setting; the guest follows it). */
   halfLength: number;
+  /** The match rules (T15; the host's setting, shown to the guest in the lobby). */
+  rules: MatchRules;
 }
 
 export class HostLobby implements Lobby {
@@ -91,7 +95,7 @@ export class HostLobby implements Lobby {
       role: 'host',
       code: '',
       status: 'opening',
-      lobby: createLobbyState(HOST_NAME, GUEST_NAME, opts.look, resolveClash(DEFAULT_LOOK, opts.look)),
+      lobby: createLobbyState(HOST_NAME, GUEST_NAME, opts.look, resolveClash(DEFAULT_LOOK, opts.look), opts.rules),
       pingMs: null,
       route: null,
       notice: null,
@@ -299,7 +303,7 @@ export class HostLobby implements Lobby {
     this.view.reconnectUntil = null;
     this.view.notice = null;
     link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: HOST_NAME, lobby: this.lobby });
-    link.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed: 0, token: this.token, half: this.opts.halfLength });
+    link.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed: 0, token: this.token, half: this.opts.halfLength, rules: this.lobby.rules });
     // It lost whatever rematch messages were in flight: start that conversation again.
     link.send({ t: 'rematch', want: this.view.rematch.mine });
     this.onRejoin(lastEvent);
@@ -371,6 +375,12 @@ export class HostLobby implements Lobby {
     this.update(swapTeams(this.lobby));
   }
 
+  /** Host only, in the lobby: change the match rules (both players must confirm ready again). */
+  setRules(rules: MatchRules): void {
+    if (this.inMatch) return;
+    this.update(setLobbyRules(this.lobby, rules));
+  }
+
   requestRematch(want: boolean): void {
     if (!this.inMatch || !this.accepted) return;
     this.view.rematch = { ...this.view.rematch, mine: want };
@@ -393,8 +403,8 @@ export class HostLobby implements Lobby {
     const seed = Math.floor(Math.random() * 0x7fffffff);
     this.inMatch = true;
     this.token = Math.random().toString(36).slice(2, 12);
-    this.guest?.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed, token: this.token, half: this.opts.halfLength });
-    this.onStart({ localTeam: teamOf(this.lobby, 'host'), seed, halfLength: this.opts.halfLength, looks: looksByTeam(this.lobby) });
+    this.guest?.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed, token: this.token, half: this.opts.halfLength, rules: this.lobby.rules });
+    this.onStart({ localTeam: teamOf(this.lobby, 'host'), seed, halfLength: this.opts.halfLength, looks: looksByTeam(this.lobby), rules: this.lobby.rules });
   }
 
   leave(): void {
@@ -432,6 +442,8 @@ export interface HostMatchOptions {
   halfLength?: number;
   /** Online: the lobby whose guest controls the other team. Offline when absent. */
   lobby?: HostLobby;
+  /** Match rules (T15; default classic). */
+  rules?: MatchRules;
 }
 
 /**
@@ -472,9 +484,9 @@ export class HostMatch implements MatchDriver {
   }
 
   private newState(seed: number | undefined): GameState {
-    const { localTeam, difficulty, halfLength } = this.opts;
+    const { localTeam, difficulty, halfLength, rules } = this.opts;
     const humans: [boolean, boolean] = this.online ? [true, true] : [localTeam === 0, localTeam === 1];
-    return createMatchState({ aiVsAi: !this.online && localTeam === null, humans, seed, halfLength, difficulty: difficulty && [difficulty, difficulty] });
+    return createMatchState({ aiVsAi: !this.online && localTeam === null, humans, seed, halfLength, difficulty: difficulty && [difficulty, difficulty], rules });
   }
 
   /** A brand-new match (offline "play again", or an agreed online rematch). */

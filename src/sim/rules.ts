@@ -2,7 +2,6 @@
 import {
   GOAL_KICK_DISTANCE,
   GOAL_PAUSE,
-  GOAL_WIDTH,
   HALF_TIME_PAUSE,
   HALVES,
   KICKOFF_DELAY,
@@ -264,7 +263,7 @@ function endHalf(state: GameState): void {
 function checkBall(state: GameState): void {
   const { ball } = state;
   const r = ball.radius;
-  const halfGoal = GOAL_WIDTH / 2;
+  const halfGoal = state.rules.goalWidth / 2;
   // The whole ball over a line is out. A ball that has come to rest with its centre beyond a line is out too: in a
   // corner pocket it can sit just short of "whole ball" where no player can reach it (players stay inside the lines).
   const resting = Math.hypot(ball.vel.x, ball.vel.y) < OUT_REST_SPEED;

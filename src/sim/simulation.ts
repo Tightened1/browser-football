@@ -34,10 +34,9 @@ import {
   PLAYER_DECEL,
   PLAYER_MAX_SPEED,
   PLAYER_RADIUS,
-  SHOT_MAX_CHARGE_TIME,
-  SHOT_MAX_SPEED,
-  SHOT_MIN_SPEED,
+  FINESSE_SPEED,
   STAT_SHOT_MIN_FORWARD,
+
   STAT_SHOT_RANGE,
   TACKLE_COOLDOWN,
   TACKLE_HIT_COOLDOWN,
@@ -51,7 +50,7 @@ import {
   applyRollingFriction,
   capSpeed,
   collideCircles,
-  BALL_BOUNDARY,
+  boundaryFor,
   collideWithBoundary,
   moveCircle,
   speedOf,
@@ -61,7 +60,12 @@ import { applySwitching, updateTouches } from './control';
 import { advanceHold, canControl, controlSpeed, keeperHoldAngle, loseBall, relativeSpeed, sharpTurnLosesBall, stickyDribbling, takePossession, updatePossession } from './dribble';
 import { isFrozen, updateRules } from './rules';
 import { pendingThrowIn, restartAim, takeThrowIn } from './setpiece';
-import type { Difficulty, GameState, InputFrame, MatchPhase, PlayerRole, PlayerState, TeamId } from './types';
+import { CLASSIC_RULES, copyRules } from './matchRules';
+import { assistAim, curlBall, finesseShot, shotSpeed } from './shooting';
+import type { Boundary } from './physics';
+import type { Difficulty, GameState, InputFrame, MatchPhase, MatchRules, PlayerRole, PlayerState, TeamId } from './types';
+
+export { shotSpeed };
 
 export const NEUTRAL_INPUT: InputFrame = {
   seq: 0,
@@ -99,6 +103,8 @@ export function createPlayer(
     queuedSpeed: 0,
     queuedAim: 0,
     queuedShot: false,
+    queuedFinesse: false,
+    shootSpent: false,
     kickFlash: 0,
     prevPass: false,
     prevShoot: false,
@@ -119,6 +125,8 @@ export interface MatchOptions {
   kickoffTeam?: TeamId;
   /** Seconds per half (default HALF_LENGTH_SECONDS). */
   halfLength?: number;
+  /** Match rules (T15). Default: classic (the game before T15). */
+  rules?: MatchRules;
 }
 
 /**
@@ -152,7 +160,8 @@ export function createInitialState(options: MatchOptions = {}): GameState {
   const controlled: [number, number] = [0, 1].map((t) => (humans[t] ? t * PLAYERS_PER_TEAM + PLAYERS_PER_TEAM - 1 : -1)) as [number, number];
   return {
     tick: 0,
-    ball: { pos: { x: midX, y: midY }, vel: { x: 0, y: 0 }, radius: BALL_RADIUS },
+    rules: copyRules(options.rules ?? CLASSIC_RULES),
+    ball: { pos: { x: midX, y: midY }, vel: { x: 0, y: 0 }, radius: BALL_RADIUS, spin: 0 },
     players,
     controlled,
     attackDir,
@@ -188,7 +197,8 @@ export function createSoloState(x: number, y: number): GameState {
 export function cloneState(s: GameState): GameState {
   return {
     tick: s.tick,
-    ball: { pos: { ...s.ball.pos }, vel: { ...s.ball.vel }, radius: s.ball.radius },
+    rules: s.rules, // fixed for the match, never changed
+    ball: { pos: { ...s.ball.pos }, vel: { ...s.ball.vel }, radius: s.ball.radius, spin: s.ball.spin ?? 0 },
     players: s.players.map((p) => ({ ...p, pos: { ...p.pos }, vel: { ...p.vel } })),
     controlled: [s.controlled[0], s.controlled[1]],
     attackDir: [s.attackDir[0], s.attackDir[1]],
@@ -226,11 +236,9 @@ function approachVelocity(vel: { x: number; y: number }, tx: number, ty: number,
   }
 }
 
-/** Charge (seconds) -> kick speed. A tap (tiny charge) is about SHOT_MIN_SPEED. */
-export function shotSpeed(charge: number): number {
-  const f = Math.min(1, Math.max(0, charge / SHOT_MAX_CHARGE_TIME));
-  return SHOT_MIN_SPEED + (SHOT_MAX_SPEED - SHOT_MIN_SPEED) * f;
-}
+/** What players bump into, and what the ball bounces off (no touchlines), for the match's goal width. */
+export const playerBoundary = (rules: MatchRules): Boundary => boundaryFor(rules.goalWidth, false);
+export const ballBoundary = (rules: MatchRules): Boundary => boundaryFor(rules.goalWidth, true);
 
 function distance(a: { pos: { x: number; y: number } }, b: { pos: { x: number; y: number } }): number {
   return Math.hypot(b.pos.x - a.pos.x, b.pos.y - a.pos.y);
@@ -260,7 +268,7 @@ function maybeStartTackle(state: GameState, p: PlayerState, input: InputFrame): 
  * top speed (a player carrying the ball runs at DRIBBLE_SPEED_FACTOR).
  * Exported for the online guest's prediction of its own player (net/client.ts).
  */
-export function updatePlayer(p: PlayerState, input: InputFrame, dt: number, speedFactor = 1): void {
+export function updatePlayer(p: PlayerState, input: InputFrame, dt: number, speedFactor = 1, boundary?: Boundary): void {
   p.tackleCooldown = Math.max(0, p.tackleCooldown - dt);
   p.touchTimer = Math.max(0, p.touchTimer - dt);
   p.kickFlash = Math.max(0, p.kickFlash - dt);
@@ -287,16 +295,17 @@ export function updatePlayer(p: PlayerState, input: InputFrame, dt: number, spee
   }
 
   moveCircle(p, dt);
-  collideWithBoundary(p, undefined, 1, 0);
+  collideWithBoundary(p, boundary, 1, 0);
 }
 
-/** Strike the ball at `speed` towards `aim` (radians), plus some of the kicker's own velocity. */
-function kickBall(state: GameState, p: PlayerState, speed: number, aim: number): void {
+/** Strike the ball at `speed` towards `aim` (radians), plus some of the kicker's own velocity, with optional curl. */
+function kickBall(state: GameState, p: PlayerState, speed: number, aim: number, spin = 0): void {
   const { ball } = state;
   if (state.possession?.player === p.id) state.possession = null;
   p.facing = aim;
   ball.vel.x = Math.cos(aim) * speed + p.vel.x * KICK_PLAYER_VEL_FACTOR;
   ball.vel.y = Math.sin(aim) * speed + p.vel.y * KICK_PLAYER_VEL_FACTOR;
+  ball.spin = spin;
   p.touchTimer = KICK_TOUCH_LOCKOUT;
   p.kickFlash = KICK_FLASH_TIME;
   p.kickQueue = 0;
@@ -340,25 +349,42 @@ function interactWithBall(state: GameState, p: PlayerState, input: InputFrame, d
 
   // Shoot: hold to charge (capped), release to kick. Pass: press to kick at medium power. Either goes into the kick
   // buffer, aimed where the move keys point (else the facing), and fires the moment the player can kick the ball:
-  // straight away if they have it, or when it arrives within KICK_BUFFER_TIME.
+  // straight away if they have it, or when it arrives within KICK_BUFFER_TIME. Shots get the aim assist (rules.aimAssist).
+  // Finesse (rules.finesse): tapping pass while holding shoot queues a curled, placed shot; releasing shoot then does nothing.
+  const rules = state.rules;
   p.kickQueue = Math.max(0, p.kickQueue - dt);
-  if (input.shoot) p.charge = Math.min(SHOT_MAX_CHARGE_TIME, p.charge + dt);
-  const shootReleased = !input.shoot && p.prevShoot;
+  if (input.shoot && !p.shootSpent) p.charge = Math.min(rules.shotChargeTime, p.charge + dt);
+  const shootReleased = !input.shoot && p.prevShoot && !p.shootSpent;
   const passPressed = input.pass && !p.prevPass;
+  const finesse = rules.finesse && passPressed && input.shoot && !p.shootSpent;
   if (passPressed || shootReleased) {
     const moving = Math.hypot(input.moveX, input.moveY) > 1e-6;
     p.kickQueue = KICK_BUFFER_TIME;
-    p.queuedSpeed = passPressed ? PASS_SPEED : shotSpeed(p.charge);
-    p.queuedShot = !passPressed;
+    p.queuedSpeed = finesse ? FINESSE_SPEED : passPressed ? PASS_SPEED : shotSpeed(p.charge, rules.shotChargeTime);
+    p.queuedShot = finesse || !passPressed;
+    p.queuedFinesse = finesse;
     p.queuedAim = moving ? Math.atan2(input.moveY, input.moveX) : p.facing;
+    if (finesse) {
+      p.shootSpent = true;
+      p.charge = 0;
+    }
   }
-  if (!input.shoot) p.charge = 0;
+  if (!input.shoot) {
+    p.charge = 0;
+    p.shootSpent = false;
+  }
   if (p.kickQueue > 1e-9 && canKick(state, p)) {
     result.shot = p.queuedShot;
-    // A set piece (corner, goal kick) always goes into the pitch.
     const r = state.restart;
-    const aim = r && r.taker === p.id ? restartAim(r, { moveX: Math.cos(p.queuedAim), moveY: Math.sin(p.queuedAim) }, p.facing) : p.queuedAim;
-    kickBall(state, p, p.queuedSpeed, aim);
+    if (r && r.taker === p.id) {
+      // A set piece (corner, goal kick) always goes into the pitch.
+      kickBall(state, p, p.queuedSpeed, restartAim(r, { moveX: Math.cos(p.queuedAim), moveY: Math.sin(p.queuedAim) }, p.facing));
+    } else if (p.queuedFinesse) {
+      const f = finesseShot(state, p.team, state.ball.pos, p.queuedAim);
+      kickBall(state, p, p.queuedSpeed, f.aim, f.spin);
+    } else {
+      kickBall(state, p, p.queuedSpeed, p.queuedShot ? assistAim(state, p.team, state.ball.pos, p.queuedAim) : p.queuedAim);
+    }
     result.touched = true;
     return result;
   }
@@ -390,14 +416,14 @@ function countsAsShot(p: PlayerState, attackDir: number): boolean {
 }
 
 /** Soft pushing: separate overlapping players (no overlap afterwards) and exchange a little momentum. */
-function resolvePlayerCollisions(players: PlayerState[]): void {
+function resolvePlayerCollisions(players: PlayerState[], boundary: Boundary): void {
   for (let iter = 0; iter < COLLISION_ITERATIONS; iter++) {
     for (let i = 0; i < players.length; i++) {
       for (let j = i + 1; j < players.length; j++) {
         collideCircles(players[i], players[j], PLAYER_PLAYER_RESTITUTION, 1, 1);
       }
     }
-    for (const p of players) collideWithBoundary(p, undefined, 1, 0);
+    for (const p of players) collideWithBoundary(p, boundary, 1, 0);
   }
 }
 
@@ -439,7 +465,7 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
     if (next.possession?.player === p.id && !kicking && sharpTurnLosesBall(p, input)) loseBall(next);
     maybeStartTackle(next, p, input);
     const carrying = next.possession?.player === p.id;
-    updatePlayer(p, input, dt, carrying ? DRIBBLE_SPEED_FACTOR : 1);
+    updatePlayer(p, input, dt, carrying ? DRIBBLE_SPEED_FACTOR : 1, playerBoundary(next.rules));
     if (carrying) advanceHold(next.possession!, p, dt, p.role === 'keeper' ? keeperHoldAngle(next, p) : p.facing);
     const touch = interactWithBall(next, p, input, dt);
     if (touch.touched) next.lastTouch = { team: p.team, player: p.id };
@@ -448,7 +474,7 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
     p.prevShoot = input.shoot;
     p.prevTackle = input.tackle;
   }
-  resolvePlayerCollisions(next.players);
+  resolvePlayerCollisions(next.players, playerBoundary(next.rules));
   // Sticky dribbling: body checks, taking control of a loose ball, and steering the held ball to its spot.
   updatePossession(next);
 
@@ -467,7 +493,10 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
     return next;
   }
 
-  // Substep so a fast ball can never skip through a wall, post or player.
+  // Substep so a fast ball can never skip through a wall, post or player. A curled ball turns first; any contact ends the curl.
+  if (!next.possession) curlBall(ball, dt);
+  else ball.spin = 0;
+  const bounds = ballBoundary(next.rules);
   const sticky = stickyDribbling();
   const maxMove = ball.radius * MAX_STEP_FRACTION;
   const substeps = Math.min(MAX_SUBSTEPS, Math.max(1, Math.ceil((speedOf(ball.vel) * dt) / maxMove)));
@@ -482,10 +511,12 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
         // Sticky: in the box a keeper catches what it can hold instead.
         const caught = sticky && !next.possession && canControl(next, p);
         if (caught && collideCircles(p, ball, 0, 0, 1)) {
+          ball.spin = 0;
           takePossession(next, p);
           ball.vel.x = p.vel.x;
           ball.vel.y = p.vel.y;
         } else if (collideCircles(p, ball, KEEPER_BALL_RESTITUTION, KEEPER_INV_MASS, 1)) {
+          ball.spin = 0;
           const dir = next.attackDir[p.team];
           if (ball.vel.x * dir < KEEPER_CLEAR_SPEED) ball.vel.x = dir * KEEPER_CLEAR_SPEED;
           next.lastTouch = { team: p.team, player: p.id };
@@ -497,6 +528,7 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
       const control = sticky && !next.possession && canControl(next, p);
       const tooFast = sticky && !control && relativeSpeed(p, ball) > controlSpeed(next, p);
       if (collideCircles(p, ball, PLAYER_BALL_RESTITUTION, 1, 1)) {
+        ball.spin = 0;
         next.lastTouch = { team: p.team, player: p.id };
         if (control) {
           takePossession(next, p);
@@ -505,7 +537,7 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
         } else if (tooFast) p.touchTimer = Math.max(p.touchTimer, KICK_TOUCH_LOCKOUT);
       }
     }
-    collideWithBoundary(ball, BALL_BOUNDARY, WALL_TANGENT_KEEP);
+    if (collideWithBoundary(ball, bounds, WALL_TANGENT_KEEP)) ball.spin = 0;
   }
 
   updateTouches(next);

@@ -19,7 +19,6 @@ import {
   DRIBBLE_SPEED_FACTOR,
   DRIBBLE_TURN_RATE,
   GOAL_WIDTH,
-  KEEPER_CATCH_SPEED,
   PENALTY_BOX_HEIGHT,
   PENALTY_BOX_WIDTH,
   PITCH_BOTTOM,
@@ -35,7 +34,8 @@ import {
   TOUCHLINE_HOLD_SPEED_FACTOR,
   WALL_TANGENT_KEEP,
 } from '../config';
-import { applyRollingFriction, BALL_BOUNDARY, capSpeed, collideWithBoundary, moveCircle } from './physics';
+import { applyRollingFriction, BALL_BOUNDARY, capSpeed, collideWithBoundary, moveCircle, type Boundary } from './physics';
+import { curlBall } from './shooting';
 import type { BallState, GameState, InputFrame, PlayerState, Possession, Vec2 } from './types';
 
 export const stickyDribbling = (): boolean => DRIBBLE_MODE === 'sticky';
@@ -72,11 +72,11 @@ const MID_Y = PITCH_TOP + PITCH_HEIGHT / 2;
  * How far (x, y) a held ball centred at (x, y) is over the limit of the lines it may not be carried across: the whole
  * ball stays inside the touchlines and the goal lines (except in the goal mouth, where it can be walked in to score).
  */
-function overLines(x: number, y: number, r: number): Vec2 {
+function overLines(x: number, y: number, r: number, goalWidth: number): Vec2 {
   const over = { x: 0, y: 0 };
   if (y < PITCH_TOP + r) over.y = y - (PITCH_TOP + r);
   else if (y > PITCH_BOTTOM - r) over.y = y - (PITCH_BOTTOM - r);
-  if (Math.abs(y - MID_Y) > GOAL_WIDTH / 2) {
+  if (Math.abs(y - MID_Y) > goalWidth / 2) {
     if (x < PITCH_LEFT + r) over.x = x - (PITCH_LEFT + r);
     else if (x > PITCH_RIGHT - r) over.x = x - (PITCH_RIGHT - r);
   }
@@ -88,10 +88,10 @@ function overLines(x: number, y: number, r: number): Vec2 {
  * the carrier is held back off the line (at most TOUCHLINE_HOLD_MAX_PUSH a tick), stops running into it and slides
  * along it, slower. Run after the carrier has moved, before the ball is steered. Returns whether it held them.
  */
-export function holdOffLines(poss: Possession, p: PlayerState, ballRadius: number): boolean {
+export function holdOffLines(poss: Possession, p: PlayerState, ballRadius: number, goalWidth = GOAL_WIDTH): boolean {
   if (!TOUCHLINE_HOLDS_DRIBBLE) return false;
   const off = holdOffset(poss, p, ballRadius);
-  const over = overLines(p.pos.x + off.x, p.pos.y + off.y, ballRadius);
+  const over = overLines(p.pos.x + off.x, p.pos.y + off.y, ballRadius, goalWidth);
   if (over.x === 0 && over.y === 0) return false;
   const clampPush = (v: number): number => Math.max(-TOUCHLINE_HOLD_MAX_PUSH, Math.min(TOUCHLINE_HOLD_MAX_PUSH, v));
   p.pos.x -= clampPush(over.x);
@@ -112,19 +112,19 @@ export function holdOffLines(poss: Possession, p: PlayerState, ballRadius: numbe
  * most of the gap during this tick, so it follows closely, never overshoots and never jumps. With the arcade touchline
  * the spot is kept inside the lines.
  */
-export function steerHeldBall(poss: Possession, p: PlayerState, ball: BallState, dt = SIM_DT): void {
-  const spot = heldBallSpot(poss, p, ball.radius);
+export function steerHeldBall(poss: Possession, p: PlayerState, ball: BallState, dt = SIM_DT, goalWidth = GOAL_WIDTH): void {
+  const spot = heldBallSpot(poss, p, ball.radius, goalWidth);
   const k = (1 - Math.exp(-DRIBBLE_HOLD_STIFFNESS * dt)) / dt;
   ball.vel.x = (spot.x - ball.pos.x) * k;
   ball.vel.y = (spot.y - ball.pos.y) * k;
 }
 
 /** Where the held ball belongs: in front of the carrier (holdOffset), kept inside the lines with the arcade touchline. */
-export function heldBallSpot(poss: Possession, p: PlayerState, ballRadius: number): Vec2 {
+export function heldBallSpot(poss: Possession, p: PlayerState, ballRadius: number, goalWidth = GOAL_WIDTH): Vec2 {
   const off = holdOffset(poss, p, ballRadius);
   const spot = { x: p.pos.x + off.x, y: p.pos.y + off.y };
   if (TOUCHLINE_HOLDS_DRIBBLE) {
-    const over = overLines(spot.x, spot.y, ballRadius);
+    const over = overLines(spot.x, spot.y, ballRadius, goalWidth);
     spot.x -= over.x;
     spot.y -= over.y;
   }
@@ -178,7 +178,7 @@ export function relativeSpeed(p: PlayerState, ball: BallState): number {
 
 /** Fastest ball (relative speed) `p` can control: higher for a teammate's pass. */
 export function controlSpeed(state: GameState, p: PlayerState): number {
-  if (p.role === 'keeper') return KEEPER_CATCH_SPEED;
+  if (p.role === 'keeper') return state.rules.keeperCatchSpeed;
   const last = state.lastTouch;
   return last && last.team === p.team && last.player !== p.id ? DRIBBLE_PASS_CONTROL_SPEED : DRIBBLE_CONTROL_SPEED;
 }
@@ -245,22 +245,23 @@ export function updatePossession(state: GameState): void {
   }
   if (poss) {
     state.lastTouch = { team: players[poss.player].team, player: poss.player };
-    holdOffLines(poss, players[poss.player], ball.radius);
-    steerHeldBall(poss, players[poss.player], ball);
+    holdOffLines(poss, players[poss.player], ball.radius, state.rules.goalWidth);
+    steerHeldBall(poss, players[poss.player], ball, SIM_DT, state.rules.goalWidth);
   }
 }
 
 /**
- * A loose ball rolling on its own for `ticks` fixed steps: friction, nets and posts, no players. Used to draw the
+ * A loose ball rolling on its own for `ticks` fixed steps: curl, friction, nets and posts, no players. Used to draw the
  * online guest's own kick before the host's version of it arrives (net/client.ts).
  */
-export function rollFreeBall(ball: BallState, ticks: number, dt = SIM_DT): void {
+export function rollFreeBall(ball: BallState, ticks: number, dt = SIM_DT, boundary: Boundary = BALL_BOUNDARY): void {
   for (let i = 0; i < ticks; i++) {
+    curlBall(ball, dt);
     applyRollingFriction(ball, dt);
     capSpeed(ball, BALL_MAX_SPEED);
     for (let k = 0; k < 4; k++) {
       moveCircle(ball, dt / 4);
-      collideWithBoundary(ball, BALL_BOUNDARY, WALL_TANGENT_KEEP);
+      if (collideWithBoundary(ball, boundary, WALL_TANGENT_KEEP)) ball.spin = 0;
     }
   }
 }

@@ -13,6 +13,7 @@ import {
   versionMismatch,
 } from '../src/net/protocol';
 import { generateRoomCode, inviteLink, normalizeRoomCode, peerIdForRoom } from '../src/net/roomCode';
+import { rulesFor } from '../src/sim/matchRules';
 
 describe('room codes', () => {
   it('generates WORD-#### codes with no ambiguous characters', () => {
@@ -68,7 +69,7 @@ describe('protocol', () => {
       { t: 'ready', ready: true },
       { t: 'swap' },
       { t: 'look', look: { name: 2, kit: 3 } },
-      { t: 'start', hostTeam: 1, seed: 42, token: 'abc', half: 120 },
+      { t: 'start', hostTeam: 1, seed: 42, token: 'abc', half: 120, rules: rulesFor('arcade') },
       { t: 'rematch', want: true },
       { t: 'restart', seed: 9 },
       { t: 'stats', stats: { shots: [3, 1], possession: [40.5, 20], goals: [{ team: 0, player: 4, ownGoal: false, half: 1, clock: 33.2 }] } },
@@ -93,9 +94,9 @@ describe('protocol', () => {
       { t: 'toString' },
       { t: 'hello', protocol: '1', game: GAME_VERSION, name: 'x' },
       { t: 'ready', ready: 'yes' },
-      { t: 'start', hostTeam: 2, seed: 1, token: 'x', half: 60 },
+      { t: 'start', hostTeam: 2, seed: 1, token: 'x', half: 60, rules: rulesFor('arcade') },
       { t: 'start', hostTeam: 0, seed: 1, token: 'x' },
-      { t: 'start', hostTeam: 0, seed: 1, token: 'x', half: 5 },
+      { t: 'start', hostTeam: 0, seed: 1, token: 'x', half: 5, rules: rulesFor('arcade') },
       { t: 'look', look: { name: 99, kit: 0 } },
       { t: 'rematch', want: 'yes' },
       { t: 'stats', stats: { shots: [1], possession: [1, 2], goals: [] } },

@@ -59,11 +59,11 @@ export function ballLift(speed: number): number {
   return smooth(clamp01((speed - FX_LIFT_MIN_SPEED) / (FX_LIFT_MAX_SPEED - FX_LIFT_MIN_SPEED)));
 }
 
-/** Where the goal frame is: the net's box, in world coordinates, for each side. */
-export function netBox(side: -1 | 1): { x0: number; x1: number; y0: number; y1: number } {
+/** Where the goal frame is: the net's box, in world coordinates, for each side (the match's goal width: T15 rules). */
+export function netBox(side: -1 | 1, goalWidth = GOAL_WIDTH): { x0: number; x1: number; y0: number; y1: number } {
   const midY = (PITCH_TOP + PITCH_BOTTOM) / 2;
-  const y0 = midY - GOAL_WIDTH / 2;
-  const y1 = midY + GOAL_WIDTH / 2;
+  const y0 = midY - goalWidth / 2;
+  const y1 = midY + goalWidth / 2;
   return side < 0 ? { x0: PITCH_LEFT - GOAL_DEPTH, x1: PITCH_LEFT, y0, y1 } : { x0: PITCH_RIGHT, x1: PITCH_RIGHT + GOAL_DEPTH, y0, y1 };
 }
 
@@ -71,13 +71,13 @@ export function netBox(side: -1 | 1): { x0: number; x1: number; y0: number; y1: 
  * How far a net point moves (px) while a ripple is running. The net is pinned along the goal line and the side edges;
  * the impact sends a wave outwards that fades. Returns zero once the ripple is over.
  */
-export function netOffset(ripple: NetRipple, px: number, py: number): Vec2 {
+export function netOffset(ripple: NetRipple, px: number, py: number, goalWidth = GOAL_WIDTH): Vec2 {
   const t = ripple.age;
   if (t >= FX_RIPPLE_SECONDS) return { x: 0, y: 0 };
-  const box = netBox(ripple.side);
+  const box = netBox(ripple.side, goalWidth);
   const depthFromLine = ripple.side < 0 ? box.x1 - px : px - box.x0;
   const u = clamp01(depthFromLine / GOAL_DEPTH); // 0 at the goal line .. 1 at the back
-  const v = clamp01((py - box.y0) / GOAL_WIDTH);
+  const v = clamp01((py - box.y0) / goalWidth);
   const pin = smooth(clamp01(u / 0.3)) * Math.sin(Math.PI * v) ** 0.5; // fixed on the goal line and side edges
   const d = Math.hypot(px - ripple.x, py - ripple.y);
   const fade = Math.exp(-t * 3.2) * Math.exp(-d / 85);
@@ -201,10 +201,10 @@ export class Effects {
 }
 
 /** The grid of points a net is drawn through, displaced by the running ripples. Row-major: `rows` x `cols` points. */
-export function netGrid(side: -1 | 1, ripples: readonly NetRipple[]): { cols: number; rows: number; pts: Vec2[] } {
-  const box = netBox(side);
+export function netGrid(side: -1 | 1, ripples: readonly NetRipple[], goalWidth = GOAL_WIDTH): { cols: number; rows: number; pts: Vec2[] } {
+  const box = netBox(side, goalWidth);
   const cols = Math.round(GOAL_DEPTH / NET_CELL) + 1;
-  const rows = Math.round(GOAL_WIDTH / NET_CELL) + 1;
+  const rows = Math.round(goalWidth / NET_CELL) + 1;
   const mine = ripples.filter((r) => r.side === side);
   const pts: Vec2[] = [];
   for (let r = 0; r < rows; r++) {
@@ -214,7 +214,8 @@ export function netGrid(side: -1 | 1, ripples: readonly NetRipple[]): { cols: nu
       let dx = 0;
       let dy = 0;
       for (const rp of mine) {
-        const o = netOffset(rp, px, py);
+        const o = netOffset(rp, px, py, goalWidth);
+
         dx += o.x;
         dy += o.y;
       }

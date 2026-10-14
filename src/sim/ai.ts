@@ -56,8 +56,15 @@ import {
   BALL_STOP_SPEED,
   DRIBBLE_SHARP_TURN_ANGLE,
   FORMATION,
-  GOAL_WIDTH,
+  AI_KEEPER_SMOTHER_RANGE,
+  KEEPER_CORNER_REACTION,
+  KEEPER_FLAW_SMOTHER_RANGE,
   KEEPER_LINE_OFFSET,
+  KEEPER_POST_SHORTFALL,
+  KEEPER_REACTION_SPREAD,
+
+  KEEPER_SLOW_REACTION,
+  PENALTY_BOX_WIDTH,
   KICK_PLAYER_VEL_FACTOR,
   KICK_REACH,
   KICK_FLASH_TIME,
@@ -72,7 +79,6 @@ import {
   PITCH_TOP,
   PITCH_WIDTH,
   PLAYER_MAX_SPEED,
-  SHOT_MAX_CHARGE_TIME,
   SHOT_MAX_SPEED,
   SHOT_MIN_SPEED,
   SIM_DT,
@@ -82,6 +88,9 @@ import {
   type AiProfile,
 } from '../config';
 import { angleDiff, CARRY_SPEED } from './dribble';
+import { keeperDifficulty, keeperProfile } from './matchRules';
+import { curledCrossing } from './shooting';
+
 import { kickSpeedForDistance } from './physics';
 import { inwardDirection, pendingThrowIn, restartTarget, throwChargeFor } from './setpiece';
 import type {
@@ -163,9 +172,9 @@ export function profileOf(state: GameState, team: TeamId): AiProfile {
 }
 
 /** Angle (radians) the goal mouth covers, seen from `pos`, for the goal at x = goalX. */
-export function goalAngle(pos: Vec2, goalX: number): number {
-  const a1 = Math.atan2(MID_Y - GOAL_WIDTH / 2 - pos.y, goalX - pos.x);
-  const a2 = Math.atan2(MID_Y + GOAL_WIDTH / 2 - pos.y, goalX - pos.x);
+export function goalAngle(pos: Vec2, goalX: number, goalWidth: number): number {
+  const a1 = Math.atan2(MID_Y - goalWidth / 2 - pos.y, goalX - pos.x);
+  const a2 = Math.atan2(MID_Y + goalWidth / 2 - pos.y, goalX - pos.x);
   let d = Math.abs(a1 - a2);
   if (d > Math.PI) d = 2 * Math.PI - d;
   return d;
@@ -355,7 +364,7 @@ function interceptFor(p: PlayerState, path: Vec2[], speed: number): { time: numb
  */
 export function ballInOwnGoalMouth(state: GameState, team: TeamId): boolean {
   const dir = state.attackDir[team];
-  return along(state.ball.pos.x, dir) < AI_GOAL_MOUTH_DEPTH && Math.abs(state.ball.pos.y - MID_Y) < GOAL_WIDTH / 2 + AI_GOAL_MOUTH_MARGIN;
+  return along(state.ball.pos.x, dir) < AI_GOAL_MOUTH_DEPTH && Math.abs(state.ball.pos.y - MID_Y) < state.rules.goalWidth / 2 + AI_GOAL_MOUTH_MARGIN;
 }
 
 export function analyse(state: GameState, human: [boolean, boolean]): AiContext {
@@ -513,7 +522,10 @@ function findSpace(state: GameState, p: PlayerState, base: Vec2): Vec2 {
   return best;
 }
 
-/** Who presses the carrier: the quickest to the ball, plus a second when it's dangerous (or on hard). */
+/**
+ * Who presses the carrier: the quickest to the ball, plus a second when it's dangerous (or on hard). With eased
+ * defending (rules.easedDefending, T15) a human on the ball is only ever pressed by one.
+ */
 export function choosePressers(state: GameState, ctx: AiContext, team: TeamId): number[] {
   const prof = profileOf(state, team);
   const order = state.players
@@ -521,7 +533,10 @@ export function choosePressers(state: GameState, ctx: AiContext, team: TeamId): 
     .sort((a, b) => ctx.intercept[a.id].time - ctx.intercept[b.id].time || a.id - b.id);
   const ball = state.ball.pos;
   const danger = Math.abs(ball.x - ownGoalX(state.attackDir[team])) < AI_DANGER_ZONE;
-  const count = Math.min(order.length, prof.pressers >= 2 || danger ? 2 : 1);
+  const opp = 1 - team;
+  const humanOnBall = ctx.owner >= 0 && ctx.human[opp] && state.controlled[opp] === ctx.owner;
+  const two = (prof.pressers >= 2 || danger) && !(state.rules.easedDefending && humanOnBall);
+  const count = Math.min(order.length, two ? 2 : 1);
   return order.slice(0, count).map((p) => p.id);
 }
 
@@ -643,7 +658,7 @@ function actOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlaye
         input = { ...IDLE, moveX: poke.x * 0.3, moveY: poke.y * 0.3, pass: true };
         m.kickPending = true;
         m.tackleArmed = false;
-      } else if (m.tackleArmed && safeAngle && dBall < AI_TACKLE_RANGE && p.tackleCooldown === 0 && p.tackleTimer === 0 && !p.prevTackle) {
+      } else if (m.tackleArmed && safeAngle && !slideFromBehindInBox(state, p, carrier) && dBall < AI_TACKLE_RANGE && p.tackleCooldown === 0 && p.tackleTimer === 0 && !p.prevTackle) {
         input = { ...IDLE, moveX: d.x * full, moveY: d.y * full, tackle: true };
         m.tackleArmed = false;
         state.ai.teams[p.team].tackles++;
@@ -727,7 +742,7 @@ export function bestShot(state: GameState, p: PlayerState): { target: Vec2; clea
   const goalX = ownGoalX(-state.attackDir[p.team]);
   let best = { target: { x: goalX, y: MID_Y }, clearance: -Infinity };
   for (const off of [-1, -0.55, 0, 0.55, 1]) {
-    const target = { x: goalX, y: MID_Y + off * (GOAL_WIDTH / 2 - 15) };
+    const target = { x: goalX, y: MID_Y + off * (state.rules.goalWidth / 2 - 15) };
     const from = state.ball.pos;
     const outfield = laneClearance(state, p.team, from, target, 0.05, true);
     let keeperGap = Infinity;
@@ -740,9 +755,9 @@ export function bestShot(state: GameState, p: PlayerState): { target: Vec2; clea
   return best;
 }
 
-/** Charge time needed to kick at `speed` with the shoot button. */
-function chargeFor(speed: number): number {
-  return clamp(((speed - SHOT_MIN_SPEED) / (SHOT_MAX_SPEED - SHOT_MIN_SPEED)) * SHOT_MAX_CHARGE_TIME, 0.02, SHOT_MAX_CHARGE_TIME);
+/** Charge time needed to kick at `speed` with the shoot button (`chargeTime` = the rules' full charge). */
+function chargeFor(speed: number, chargeTime: number): number {
+  return clamp(((speed - SHOT_MIN_SPEED) / (SHOT_MAX_SPEED - SHOT_MIN_SPEED)) * chargeTime, 0.02, chargeTime);
 }
 
 /**
@@ -774,7 +789,7 @@ export function evaluateOnBall(
   let shoot = -Infinity;
   let shotTarget = goal;
   let shotSpeed = SHOT_MAX_SPEED;
-  if (!throwIn && dGoal < AI_SHOOT_RANGE && goalAngle(p.pos, goalX) > AI_MIN_SHOT_ANGLE) {
+  if (!throwIn && dGoal < AI_SHOOT_RANGE && goalAngle(p.pos, goalX, state.rules.goalWidth) > AI_MIN_SHOT_ANGLE) {
     const s = bestShot(state, p);
     if (s.clearance > 2) {
       shoot = 0.25 + 1.6 * (1 - dGoal / AI_SHOOT_RANGE) + Math.min(s.clearance, 50) / 100 + (dGoal < 190 ? 0.4 : 0) + n();
@@ -1023,7 +1038,7 @@ function executeKick(state: GameState, p: PlayerState, m: AiPlayerMemory, speed:
     }
     // Under pressure, strike quickly rather than wait for the full charge (and risk the tackle).
     const pressured = nearestOpponentDist(state, p.team, p.pos) < AI_PRESSURE_RADIUS;
-    const need = pressured ? Math.min(chargeFor(m.kickSpeed), AI_QUICK_SHOT_CHARGE) : chargeFor(m.kickSpeed);
+    const need = pressured ? Math.min(chargeFor(m.kickSpeed, state.rules.shotChargeTime), AI_QUICK_SHOT_CHARGE) : chargeFor(m.kickSpeed, state.rules.shotChargeTime);
     if (p.charge + SIM_DT * 0.5 < need) return { ...dribbleInput(state, p, face, speed), shoot: true };
     m.kickPending = true;
     return kickInput;
@@ -1064,7 +1079,7 @@ function executeKick(state: GameState, p: PlayerState, m: AiPlayerMemory, speed:
   }
   // Strike as soon as the ball is at our feet with a little charge: waiting longer lets the next dribble
   // touch knock it out of reach again. A ball we're standing over gets the full charge.
-  const need = chargeFor(m.kickSpeed);
+  const need = chargeFor(m.kickSpeed, state.rules.shotChargeTime);
   const quick = Math.min(need, 0.1);
   const standing = Math.hypot(ball.vel.x, ball.vel.y) < 40;
   if (p.charge + SIM_DT * 0.5 < (standing ? need : quick)) {
@@ -1160,7 +1175,7 @@ export function keeperPosition(state: GameState, p: PlayerState): Vec2 {
   const out = clamp(dist(goal, ball) * 0.12, KEEPER_LINE_OFFSET, AI_KEEPER_MAX_OUT);
   return {
     x: goal.x + dir * Math.max(KEEPER_LINE_OFFSET * 0.8, Math.abs(toBall.x) * out),
-    y: clamp(goal.y + toBall.y * out, MID_Y - GOAL_WIDTH / 2 + 8, MID_Y + GOAL_WIDTH / 2 - 8),
+    y: clamp(goal.y + toBall.y * out, MID_Y - state.rules.goalWidth / 2 + 8, MID_Y + state.rules.goalWidth / 2 - 8),
   };
 }
 
@@ -1182,8 +1197,15 @@ export function predictShot(state: GameState, p: PlayerState): { y: number; time
   const tLine = ((pos.x - goalX) * dir) / towards;
   if (tLine < 0 || tLine > AI_SHOT_DETECT_TIME) return null;
   const yLine = pos.y + vel.y * tLine;
-  if (Math.abs(yLine - MID_Y) > GOAL_WIDTH / 2 + 25) return null;
+  if (!state.ball.spin && Math.abs(yLine - MID_Y) > state.rules.goalWidth / 2 + 25) return null;
   const tKeeper = Math.max(0, ((pos.x - p.pos.x) * dir) / towards);
+  if (state.ball.spin) {
+    // A curled shot (finesse, T15): the keeper reads the bend.
+    const line = curledCrossing(state.ball, goalX, AI_SHOT_DETECT_TIME);
+    if (!line || Math.abs(line.y - MID_Y) > state.rules.goalWidth / 2 + 25) return null;
+    const at = curledCrossing(state.ball, p.pos.x, AI_SHOT_DETECT_TIME);
+    return at ?? { y: line.y, time: 0 };
+  }
   return { y: pos.y + vel.y * tKeeper, time: tKeeper };
 }
 
@@ -1213,29 +1235,33 @@ function keeperInput(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlay
     return executeKick(state, p, m, speed);
   }
 
-  // 2. A shot is coming: after the reaction delay, step across or dive.
+  // 2. A shot is coming: after the reaction delay, step across or dive. Shot-stopping uses the keeper's own skill
+  // (rules.keeperDifficulty), and with rules.keeperFlaws it is a little human about it (see keeperSaveLine).
+  const kprof = keeperProfile(state, p.team);
+  const flaws = state.rules.keeperFlaws;
   const shot = predictShot(state, p);
   if (shot) {
     if (m.shotReact < 0) {
       // First sight of the shot: start the reaction delay and misjudge the line a little.
-      m.shotReact = prof.keeperReaction;
-      m.saveError = (nextRandom(ai) * 2 - 1) * prof.keeperError;
+      const spread = flaws ? 1 + (nextRandom(ai) * 2 - 1) * KEEPER_REACTION_SPREAD : 1;
+      m.shotReact = kprof.keeperReaction * spread + (flaws ? keeperExtraReaction(state, p, shot.y) : 0);
+      m.saveError = (nextRandom(ai) * 2 - 1) * kprof.keeperError;
     }
     m.shotReact = Math.max(0, m.shotReact - dt);
     if (m.shotReact === 0 && p.tackleTimer === 0) {
       m.intent = 'save';
-      const y = shot.y + m.saveError;
+      const y = keeperSaveLine(state, shot.y + m.saveError);
       const spot = { x: p.pos.x, y };
       m.target = spot;
       const gap = Math.abs(y - p.pos.y);
       const reach = p.radius + BALL_RADIUS;
-      const walk = PLAYER_MAX_SPEED * prof.keeperSpeed * Math.max(0, shot.time - 0.05) * 0.7;
+      const walk = PLAYER_MAX_SPEED * kprof.keeperSpeed * Math.max(0, shot.time - 0.05) * 0.7;
       // Dive only when the slide will have carried the keeper about to the ball's line as it arrives.
       const dive = diveDistance(shot.time);
       if (gap > walk + reach * 0.5 && dive + reach >= gap && dive - reach <= gap && p.tackleCooldown === 0 && !p.prevTackle) {
         return { ...IDLE, moveY: Math.sign(y - p.pos.y), tackle: true }; // dive: a short burst sideways
       }
-      return moveToward(p, spot, 6, prof.keeperSpeed);
+      return moveToward(p, spot, 6, kprof.keeperSpeed);
     }
     if (p.tackleTimer > 0) m.intent = 'save';
   } else {
@@ -1257,7 +1283,8 @@ function keeperInput(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlay
     }
     if (!carrier && inZone(ip.point) && ip.time < oppBest + 0.1 && ip.time < mateBest - 0.1) rush = true;
     if (!carrier && ballInOwnGoalMouth(state, p.team)) rush = true; // nobody else can safely play it
-    if (carrier && inZone(carrier.pos) && Math.abs(carrier.pos.x - goalX) < 110) rush = true; // smother a 1-on-1
+    const smother = flaws ? KEEPER_FLAW_SMOTHER_RANGE : AI_KEEPER_SMOTHER_RANGE;
+    if (carrier && inZone(carrier.pos) && Math.abs(carrier.pos.x - goalX) < smother) rush = true; // smother a 1-on-1
   }
   if (rush && !shot) {
     m.intent = 'rush';
@@ -1271,7 +1298,44 @@ function keeperInput(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlay
   return moveToward(p, m.target, 25, speed);
 }
 
+/**
+ * Keeper flaws (T15): extra time to react to a shot -- more for an easy/normal keeper, and more the further across the
+ * goal from the keeper the ball is heading (a far-corner shot is picked up late).
+ */
+function keeperExtraReaction(state: GameState, p: PlayerState, shotY: number): number {
+  const across = clamp(Math.abs(shotY - p.pos.y) / (state.rules.goalWidth / 2), 0, 1);
+  return KEEPER_SLOW_REACTION[keeperDifficulty(state, p.team)] + KEEPER_CORNER_REACTION * across;
+}
+
+/**
+ * Where the keeper goes to meet a shot heading for `y` on its line. With keeper flaws it falls short of a ball heading
+ * right by a post (by up to KEEPER_POST_SHORTFALL, most at the post), so a shot into the corner can beat it.
+ */
+function keeperSaveLine(state: GameState, y: number): number {
+  if (!state.rules.keeperFlaws) return y;
+  const half = state.rules.goalWidth / 2;
+  const off = y - MID_Y;
+  const f = clamp(Math.abs(off) / half, 0, 1);
+  return y - Math.sign(off) * KEEPER_POST_SHORTFALL * f * f;
+}
+
+/**
+ * Eased defending (rules.easedDefending, T15): no sliding in from behind a carrier inside our own penalty box (a
+ * clumsy foul, and too harsh on a shooter who has got there).
+ */
+function slideFromBehindInBox(state: GameState, p: PlayerState, carrier: PlayerState | null): boolean {
+  if (!state.rules.easedDefending || !carrier || carrier.team === p.team) return false;
+  const dir = state.attackDir[p.team];
+  const inBox = along(carrier.pos.x, dir) <= PENALTY_BOX_WIDTH && Math.abs(carrier.pos.y - MID_Y) <= PENALTY_BOX_HEIGHT / 2;
+  if (!inBox) return false;
+  const sp = Math.hypot(carrier.vel.x, carrier.vel.y);
+  const hx = sp > 20 ? carrier.vel.x / sp : Math.cos(carrier.facing);
+  const hy = sp > 20 ? carrier.vel.y / sp : Math.sin(carrier.facing);
+  return (p.pos.x - carrier.pos.x) * hx + (p.pos.y - carrier.pos.y) * hy < 0;
+}
+
 /** Keeper on the ball: pass to the most open teammate with a clear lane, or clear it long if no one is. */
+
 function chooseDistribution(state: GameState, p: PlayerState, m: AiPlayerMemory, prof: AiProfile): void {
   const { ai } = state;
   let best = -1;

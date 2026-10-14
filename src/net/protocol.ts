@@ -1,13 +1,14 @@
 // Network messages: typed, versioned, validated on receipt. Pure: no PeerJS, no DOM.
 import { version as packageVersion } from '../../package.json';
-import type { GoalRecord, MatchEvent, MatchEventType, MatchStats, TeamId } from '../sim/types';
+import { copyRules, isMatchRules, rulesFor } from '../sim/matchRules';
+import type { GoalRecord, MatchEvent, MatchEventType, MatchRules, MatchStats, TeamId } from '../sim/types';
 import { DEFAULT_LOOK, isLook, type Look } from '../teams';
 
 /**
  * Bump whenever any message below changes shape or meaning. The `hello` message itself must never change,
  * so that two different versions can always tell each other apart.
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 /** The game version (package.json). Both players must run the same one; bump it with each task that ships. */
 export const GAME_VERSION: string = packageVersion;
 
@@ -21,6 +22,8 @@ export interface LobbyState {
   names: [string, string];
   /** [host look, guest look]: team name and kit colour. The host keeps them from clashing. */
   looks: [Look, Look];
+  /** The match rules (T15): the host's choice, shown to the guest. */
+  rules: MatchRules;
 }
 
 /* ---- Handshake ---------------------------------------------------------------------------- */
@@ -47,7 +50,7 @@ export interface SwapMsg { t: 'swap' }
  * Host -> guest: the match is starting (or, after a reconnect, carrying on). `token` proves the guest is the
  * same player when it reconnects mid-match.
  */
-export interface StartMsg { t: 'start'; hostTeam: TeamId; seed: number; token: string; half: number }
+export interface StartMsg { t: 'start'; hostTeam: TeamId; seed: number; token: string; half: number; rules: MatchRules }
 
 /* ---- Connection upkeep (both directions) ---------------------------------------------------- */
 
@@ -93,7 +96,8 @@ const isStr = (v: unknown): v is string => typeof v === 'string' && v.length <= 
 const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 const isTeam = (v: unknown): v is TeamId => v === 0 || v === 1;
 const isPair = <T>(v: unknown, f: (x: unknown) => x is T): v is [T, T] => Array.isArray(v) && v.length === 2 && f(v[0]) && f(v[1]);
-const isLobby = (v: unknown): v is LobbyState => isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr) && isPair(v.looks, isLook);
+const isLobby = (v: unknown): v is LobbyState =>
+  isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr) && isPair(v.looks, isLook) && isMatchRules(v.rules);
 const isVersioned = (m: Obj): boolean => isNum(m.protocol) && isStr(m.game);
 const EVENT_TYPES: readonly MatchEventType[] = ['kickoff', 'goal', 'throw-in', 'goal-kick', 'corner', 'half-time', 'second-half', 'full-time'];
 const isOpt = <T>(v: unknown, f: (x: unknown) => x is T): boolean => v === undefined || f(v);
@@ -121,7 +125,7 @@ const VALIDATORS: Record<MessageType, (m: Obj) => boolean> = {
   ready: (m) => isBool(m.ready),
   look: (m) => isLook(m.look),
   swap: () => true,
-  start: (m) => isTeam(m.hostTeam) && isNum(m.seed) && isStr(m.token) && isNum(m.half) && m.half >= 10 && m.half <= 1800,
+  start: (m) => isTeam(m.hostTeam) && isNum(m.seed) && isStr(m.token) && isNum(m.half) && m.half >= 10 && m.half <= 1800 && isMatchRules(m.rules),
   ping: (m) => isNum(m.id) && isNum(m.sent),
   pong: (m) => isNum(m.id) && isNum(m.sent),
   bye: () => true,
@@ -157,9 +161,15 @@ export const GUEST_NAME = 'Guest';
 
 /* ---- Lobby rules ------------------------------------------------------------------------------ */
 
-export function createLobbyState(hostName: string, guestName: string, hostLook: Look = DEFAULT_LOOK, guestLook: Look = DEFAULT_LOOK): LobbyState {
-  return { hostTeam: 0, ready: [false, false], names: [hostName, guestName], looks: [{ ...hostLook }, { ...guestLook }] };
+export function createLobbyState(hostName: string, guestName: string, hostLook: Look = DEFAULT_LOOK, guestLook: Look = DEFAULT_LOOK, rules: MatchRules = rulesFor('arcade')): LobbyState {
+  return { hostTeam: 0, ready: [false, false], names: [hostName, guestName], looks: [{ ...hostLook }, { ...guestLook }], rules: copyRules(rules) };
 }
+
+/** The host changes the match rules: both players must confirm ready again. */
+export function setLobbyRules(lobby: LobbyState, rules: MatchRules): LobbyState {
+  return { ...lobby, rules: copyRules(rules), ready: [false, false] };
+}
+
 
 /** The two looks indexed by team (team 0 = home), whichever player is on which side. */
 export function looksByTeam(lobby: LobbyState): [Look, Look] {

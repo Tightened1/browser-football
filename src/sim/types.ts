@@ -11,8 +11,11 @@ export interface CircleBody {
   radius: number;
 }
 
-/** 2D for now; a `z` height for lofted balls can be added later. */
-export type BallState = CircleBody;
+/** 2D (no height: see docs/PLAYTEST_NOTES.md, T15, for how a chip could be added). */
+export interface BallState extends CircleBody {
+  /** Curl (T15 finesse shot): how fast the ball's direction of travel turns (rad/s, + = clockwise on screen). 0/absent = straight. */
+  spin?: number;
+}
 
 export type TeamId = 0 | 1;
 
@@ -29,7 +32,7 @@ export interface PlayerState extends CircleBody {
   number: number;
   /** Facing angle in radians. */
   facing: number;
-  /** Seconds the shoot button has been held (0 when not charging). Capped at SHOT_MAX_CHARGE_TIME. */
+  /** Seconds the shoot button has been held (0 when not charging). Capped at the rules' shotChargeTime. */
   charge: number;
   /** Seconds left in the current tackle slide (0 = not sliding). */
   tackleTimer: number;
@@ -42,6 +45,10 @@ export interface PlayerState extends CircleBody {
   queuedSpeed: number;
   queuedAim: number;
   queuedShot: boolean;
+  /** The queued kick is a finesse shot (T15). */
+  queuedFinesse: boolean;
+  /** Shoot is still held after a finesse shot fired: its release kicks nothing. */
+  shootSpent: boolean;
   /** Seconds left of the "kick fired" window (0 = none): the cue shows and the ball passes through the kicker. */
   kickFlash: number;
   /** Previous-tick button states, for press/release edge detection. */
@@ -64,6 +71,37 @@ export interface InputFrame {
 }
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
+
+/** Match-rules presets (T15): 'arcade' makes scoring easier, 'classic' is the game as it was before T15. */
+export type RulesPreset = 'arcade' | 'classic';
+/** Keeper skill: a fixed difficulty, or 'team' = the same as the rest of its team's AI. */
+export type KeeperLevel = Difficulty | 'team';
+
+/**
+ * The match rules in force (T15). Fixed for a match and part of the state, so the host's choice travels to the guest
+ * (in the lobby and the `start` message) and both run the same rules. Presets: MATCH_RULES in config.ts.
+ */
+export interface MatchRules {
+  preset: RulesPreset;
+  /** Goal mouth width (px): GOAL_WIDTH (normal) or GOAL_WIDTH_BIG. */
+  goalWidth: number;
+  /** Keepers' skill, independent of the outfield AI difficulty. */
+  keeperDifficulty: KeeperLevel;
+  /** A keeper catches (holds) balls up to this relative speed (px/s); faster ones are parried. */
+  keeperCatchSpeed: number;
+  /** Keepers are human about it: slower to react (more so on easy/normal and to far-corner shots), can't quite reach the post, and smother from closer in. */
+  keeperFlaws: boolean;
+  /** Charge time (s) for a full-power shot. */
+  shotChargeTime: number;
+  /** A shot aimed roughly at goal from shooting range bends a little towards the nearer open corner. */
+  aimAssist: boolean;
+  /** Hold shoot and tap pass: a slower, curled shot placed near a post. */
+  finesse: boolean;
+  /** Draw an aim line while charging a shot inside shooting range (render only). */
+  aimLine: boolean;
+  /** Against a human on the ball the AI presses with one player, and doesn't slide in from behind in its box. */
+  easedDefending: boolean;
+}
 
 /** What a whole team is doing: has the ball, hasn't, or it just changed hands / is loose. */
 export type TeamMode = 'attacking' | 'defending' | 'transitioning';
@@ -179,6 +217,8 @@ export interface MatchStats {
 export interface GameState {
   /** Number of fixed steps simulated so far. */
   tick: number;
+  /** The match rules (T15): fixed for the match. */
+  rules: MatchRules;
   ball: BallState;
   players: PlayerState[];
   /** Id of the player each team's human controls, or -1 if the team has no human. */

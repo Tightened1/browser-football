@@ -6,23 +6,28 @@ import {
   DEFAULT_BINDINGS,
   DIFFICULTY_OPTIONS,
   MATCH_LENGTH_OPTIONS,
+  KEEPERS_OPTIONS,
+  RULES_OPTIONS,
   keyLabel,
   normKey,
   rebind,
   settings,
   unbind,
   updateSettings,
+  matchRulesSetting,
   type ActionId,
   type Bindings,
 } from '../settings';
 import { sound } from '../audio/sound';
+import { rulesLabel, rulesSummary } from '../sim/matchRules';
+
 import { button, drawBackdrop, Focus, heading, label, UI_COLORS, type Button, type FocusItem } from './ui';
 
 const CX = GAME_WIDTH / 2;
-const VALUE_Y = 180;
-const VALUE_STEP = 46;
-const KEYS_Y = 450;
-const KEYS_STEP = 35;
+const VALUE_Y = 170;
+const VALUE_STEP = 43;
+const KEYS_Y = 497;
+const KEYS_STEP = 29;
 const CAMERA_LABEL = { auto: 'Auto (follow ball on small screens)', wide: 'Whole pitch', follow: 'Follow the ball' } as const;
 
 const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
@@ -32,12 +37,17 @@ function step<T>(list: readonly T[], current: T, dir: number): T {
   return list[(((i < 0 ? 0 : i) + dir) % list.length + list.length) % list.length];
 }
 
-/** Settings: match length, AI difficulty, volume, controls overlay and key rebinding. Saved on every change. */
+const KEEPERS_LABEL = { rules: 'As the match rules say', team: 'Same as the AI', easy: 'Easy', normal: 'Normal', hard: 'Hard' } as const;
+
+/** Settings: match length, AI difficulty, match rules, keepers, volume, controls overlay and key rebinding. Saved on every change. */
 export class SettingsScene extends Phaser.Scene {
   private focus!: Focus;
   private message!: Phaser.GameObjects.Text;
   private length!: Button;
   private difficulty!: Button;
+  private rules!: Button;
+  private keepers!: Button;
+  private rulesInfo!: Phaser.GameObjects.Text;
   private volume!: Button;
   private overlay!: Button;
   private camera!: Button;
@@ -54,22 +64,25 @@ export class SettingsScene extends Phaser.Scene {
 
     const items: FocusItem[] = [];
     const value = (y: number, change: (dir: number) => void): Button => {
-      const b = button(this, CX, y, '', () => change(1), { size: 22, width: 480 });
+      const b = button(this, CX, y, '', () => change(1), { size: 18, width: 480 });
       items.push({ button: b, onLeft: () => change(-1), onRight: () => change(1) });
       return b;
     };
-    label(this, CX, 135, 24, UI_COLORS.warn, true).setText('MATCH');
+    label(this, CX, 128, 22, UI_COLORS.warn, true).setText('MATCH');
     this.length = value(VALUE_Y, (d) => this.set({ halfMinutes: step(MATCH_LENGTH_OPTIONS, settings.halfMinutes, d) }));
     this.difficulty = value(VALUE_Y + VALUE_STEP, (d) => this.set({ difficulty: step(DIFFICULTY_OPTIONS, settings.difficulty, d) }));
-    this.volume = value(VALUE_Y + VALUE_STEP * 2, (d) => {
+    this.rules = value(VALUE_Y + VALUE_STEP * 2, (d) => this.set({ rules: step(RULES_OPTIONS, settings.rules, d) }));
+    this.keepers = value(VALUE_Y + VALUE_STEP * 3, (d) => this.set({ keepers: step(KEEPERS_OPTIONS, settings.keepers, d) }));
+    this.rulesInfo = label(this, CX + 250, VALUE_Y + VALUE_STEP * 2.5, 14, UI_COLORS.muted).setOrigin(0, 0.5).setWordWrapWidth(300);
+    this.volume = value(VALUE_Y + VALUE_STEP * 4, (d) => {
       this.set({ volume: Math.min(100, Math.max(0, settings.volume + d * 10)) });
       sound.applyVolume();
       sound.blip();
     });
-    this.camera = value(VALUE_Y + VALUE_STEP * 3, (d) => this.set({ camera: step(CAMERA_OPTIONS, settings.camera, d) }));
-    this.overlay = value(VALUE_Y + VALUE_STEP * 4, () => this.set({ showControls: !settings.showControls }));
+    this.camera = value(VALUE_Y + VALUE_STEP * 5, (d) => this.set({ camera: step(CAMERA_OPTIONS, settings.camera, d) }));
+    this.overlay = value(VALUE_Y + VALUE_STEP * 6, () => this.set({ showControls: !settings.showControls }));
 
-    label(this, CX, 412, 24, UI_COLORS.warn, true).setText('KEY BINDINGS');
+    label(this, CX, 466, 22, UI_COLORS.warn, true).setText('KEY BINDINGS');
     ACTIONS.forEach((a, i) => {
       const y = KEYS_Y + i * KEYS_STEP;
       const text = label(this, CX - 240, y, 21, UI_COLORS.text).setText(a.label);
@@ -102,6 +115,9 @@ export class SettingsScene extends Phaser.Scene {
   private redraw(): void {
     this.length.setLabel(`Match length:   ◀  ${settings.halfMinutes} min halves  ▶`);
     this.difficulty.setLabel(`AI difficulty:   ◀  ${cap(settings.difficulty)}  ▶`);
+    this.rules.setLabel(`Match rules:   ◀  ${rulesLabel(settings.rules)}  ▶`);
+    this.keepers.setLabel(`Keepers:   ◀  ${KEEPERS_LABEL[settings.keepers]}  ▶`);
+    this.rulesInfo.setText(`${rulesLabel(settings.rules)}: ${rulesSummary(matchRulesSetting())}. Online, the host's rules are used.`);
     this.volume.setLabel(`Sound volume:   ◀  ${settings.volume}%  ▶`);
     this.camera.setLabel(`Camera:   ◀  ${CAMERA_LABEL[settings.camera]}  ▶`);
     this.overlay.setLabel(`Controls overlay:   ◀  ${settings.showControls ? 'On' : 'Off'}  ▶`);

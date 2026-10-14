@@ -5,7 +5,8 @@ import { HostLobby } from '../net/host';
 import { describeRoute } from '../net/ice';
 import { inviteLink, type Lobby, type LobbyView } from '../net/peer';
 import { canStart, looksByTeam, teamOf } from '../net/protocol';
-import { settings } from '../settings';
+import { matchRulesSetting, settings, updateSettings } from '../settings';
+import { rulesFor, rulesLabel, rulesSummary } from '../sim/matchRules';
 import type { TeamId } from '../sim/types';
 import { cycleKit, cycleName, teamStyles, type Look } from '../teams';
 import type { MatchSceneData } from './MatchScene';
@@ -56,6 +57,8 @@ export class LobbyScene extends Phaser.Scene {
   private readyItem!: { button: Button };
   private focusedReady = false;
   private notice!: Phaser.GameObjects.Text;
+  private rulesText!: Phaser.GameObjects.Text;
+  private rulesBtn!: Button;
   private errorPanel!: Phaser.GameObjects.Container;
   private errorTitle!: Phaser.GameObjects.Text;
   private errorBody!: Phaser.GameObjects.Text;
@@ -73,10 +76,13 @@ export class LobbyScene extends Phaser.Scene {
 
   create(): void {
     this.cameras.main.setBackgroundColor('#14361c');
-    this.lobby = this.data_.mode === 'host' ? new HostLobby({ look: this.data_.look, halfLength: settings.halfMinutes * 60 }) : new GuestLobby(this.data_.code, this.data_.look);
+    this.lobby =
+      this.data_.mode === 'host'
+        ? new HostLobby({ look: this.data_.look, halfLength: settings.halfMinutes * 60, rules: matchRulesSetting() })
+        : new GuestLobby(this.data_.code, this.data_.look);
     this.lobby.onStart = (info) => {
       this.handedOver = true;
-      const data: MatchSceneData = { humanTeam: info.localTeam, seed: info.seed, online: this.lobby, halfLength: info.halfLength, looks: info.looks };
+      const data: MatchSceneData = { humanTeam: info.localTeam, seed: info.seed, online: this.lobby, halfLength: info.halfLength, looks: info.looks, rules: info.rules };
       this.scene.start('MatchScene', data);
     };
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -101,6 +107,9 @@ export class LobbyScene extends Phaser.Scene {
     this.ready = button(this, CX, 618, 'Ready', () => this.toggleReady(), { size: 22, width: 200 });
     this.start = button(this, CX + 240, 618, 'Start match', () => this.lobby.start(), { size: 22, width: 200 }).setVisible(host);
     this.notice = label(this, CX, 685, 19, UI_COLORS.warn).setWordWrapWidth(1000);
+    // Match rules (T15): the host's choice, shown to both; the host can change it here.
+    this.rulesText = label(this, CX, 722, 19, UI_COLORS.text).setWordWrapWidth(1050);
+    this.rulesBtn = button(this, CX - 230, GAME_HEIGHT - 60, 'Change rules', () => this.changeRules(), { size: 20, width: 200, secondary: true }).setVisible(host);
     const leave = button(this, CX, GAME_HEIGHT - 60, 'Leave', () => this.backToMenu(), { size: 20, width: 140, secondary: true });
     this.readyItem = { button: this.ready };
     this.focus = new Focus(
@@ -113,6 +122,7 @@ export class LobbyScene extends Phaser.Scene {
         { button: this.swap },
         this.readyItem,
         { button: this.start },
+        { button: this.rulesBtn },
         { button: leave },
       ],
       5,
@@ -163,6 +173,14 @@ export class LobbyScene extends Phaser.Scene {
     this.lobby.setLook(cycleKit(l.looks[this.myIndex], 1, l.looks[1 - this.myIndex]));
   }
 
+  /** Host: switch between the Arcade and Classic rules (remembered in the settings for next time). */
+  private changeRules(): void {
+    if (!(this.lobby instanceof HostLobby)) return;
+    const next = this.lobby.view.lobby.rules.preset === 'arcade' ? 'classic' : 'arcade';
+    updateSettings({ rules: next });
+    this.lobby.setRules(rulesFor(next, settings.keepers));
+  }
+
   private changeName(): void {
     const l = this.lobby.view.lobby;
     this.lobby.setLook(cycleName(l.looks[this.myIndex], 1, l.looks[1 - this.myIndex]));
@@ -208,6 +226,9 @@ export class LobbyScene extends Phaser.Scene {
     this.ready.setEnabled(connected).setLabel(v.lobby.ready[me] ? 'Not ready' : 'Ready');
     this.start.setEnabled(canStart(v.lobby, connected));
     this.notice.setText(v.notice ?? (connected && v.role === 'guest' && v.lobby.ready[1] ? 'Waiting for the host to start the match…' : ''));
+    const rules = v.lobby.rules;
+    this.rulesText.setText(`Match rules: ${rulesLabel(rules.preset)} (${rulesSummary(rules)})${v.role === 'guest' ? ' · chosen by the host' : ''}`);
+
 
     const failed = v.status === 'failed' && v.error;
     this.errorPanel.setVisible(!!failed);

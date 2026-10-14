@@ -1,4 +1,4 @@
-# Playtest notes (T11, game 0.11.0; T13, game 1.1.0; T14, game 1.2.0 at the end)
+# Playtest notes (T11, game 0.11.0; T13, game 1.1.0; T14, game 1.2.0; T15, game 1.3.0 at the end)
 
 How the match was measured, what was wrong, what changed, and what to feel-test by hand.
 
@@ -300,3 +300,126 @@ Holdout (seed 7, 100 matches): Normal 4.72 goals, 73% of matches in 3-6, 0 stuck
    player down the wing? [`TOUCHLINE_HOLD_SPEED_FACTOR`; `TOUCHLINE_HOLDS_DRIBBLE = false` restores the old rule]
 5. Kick the ball out on purpose: it must still go out and give the other team the throw.
 6. Kick a corner along the goal line: is the clamp (0.2 rad off the line) too restrictive? [`THROW_AIM_EDGE`]
+
+# T15: easier scoring, and the Arcade / Classic match rules (game 1.3.0, protocol 5)
+
+Feedback: "In multiplayer nobody can score — it's too difficult. Even against the AI it's hard to score."
+
+## 1. Measured first (`npm run shoottest`, new)
+
+`scripts/shoottest.ts` fires scripted shots at the AI keeper: 5 spots (penalty spot, edge of the box spread ±80 px
+along it, edge angled, box angled, long range) × 3 charge levels (15% / 50% / 100% of the rules' full charge, plus the
+finesse shot under Arcade) × 3 aims × with/without a defender closing in from the side, 60 seeds each, against each
+keeper level: 5,400-7,200 shots per level. Aims: **placed** = exactly at a corner (18 px inside the post); **keys** =
+the best of the 8 directions a keyboard can aim (what a human can actually do); **centre** = at the keeper.
+
+What it showed (before = Classic, which the code still reproduces exactly):
+
+* **Keyboard aim is the big one.** Keys give 8 directions only, so from a central spot a human's only on-target shot is
+  straight at the keeper, and a diagonal from the penalty spot goes wide. Classic, keys aim: penalty spot **0%** at every
+  keeper level, edge of the box full charge **0-3%**.
+* **Keepers smother a standing shooter** within 110 px of the line: from the penalty spot even a perfectly placed
+  half/full charge scored 0% (the keeper arrives before the 0.4-0.8 s charge ends).
+* **The charge is too slow under pressure:** with a defender 60 px away, half and full charges were tackled every time
+  (0%). Only quick (15%) shots got off, and those are slow enough to be caught.
+* **Catching:** `KEEPER_CATCH_SPEED` 850 is above any shot under ~70% charge, so most shots under pressure were held
+  (no rebound).
+* A precise corner shot from the middle of the edge of the box at full power already scored 78-100% in Classic (first
+  version of the test): no keeper can react in the ~0.13 s it takes. So keepers weren't the main problem at that range;
+  getting a good shot away was.
+* A keeper's reaction (easy 0.22 s, normal 0.1 s) is longer than a shot's flight from inside the box, so making the
+  existing keepers "react slower" would only change long shots. Arcade keepers instead get their own, faster profile
+  with deliberate flaws, tuned so they save the imprecise shots and not the precise ones.
+
+## 2. What changed (each switchable in `config.ts`; grouped in `MATCH_RULES`)
+
+The rules are part of the match state (`GameState.rules`, `sim/matchRules.ts`). **Classic** = exactly the T14 game.
+**Arcade** (the default, offline and online):
+
+| Option (`MatchRules` field) | Classic | Arcade |
+|---|---|---|
+| Goal width (`goalWidth`) | `GOAL_WIDTH` 140 | `GOAL_WIDTH_BIG` 180 |
+| Keepers' skill (`keeperDifficulty`, Settings → Keepers) | same as the team's AI | `KEEPER_DIFFICULTY` easy, from `KEEPER_PROFILES` |
+| Catch speed (`keeperCatchSpeed`) | 850 | `KEEPER_CATCH_SPEED_ARCADE` 480: medium and hard shots are parried (rebounds) |
+| Keeper flaws (`keeperFlaws`) | off | on (below) |
+| Full charge (`shotChargeTime`) | 0.8 s | `SHOT_QUICK_CHARGE_TIME` 0.5 s |
+| Aim assist (`aimAssist`) | off | on |
+| Finesse shot (`finesse`) | off | on |
+| Aim line (`aimLine`) | off | on |
+| Eased defending (`easedDefending`) | off | on |
+
+* **Keeper flaws:** extra reaction per level (`KEEPER_SLOW_REACTION`: easy 0.02 s, normal 0.01 s), plus up to
+  `KEEPER_CORNER_REACTION` (0.03 s) for a shot heading across the goal, ±40% random spread per shot
+  (`KEEPER_REACTION_SPREAD`, from the seeded RNG); it falls short of a ball going in by the post by up to
+  `KEEPER_POST_SHORTFALL` (16 px); it only smothers a carrier within `KEEPER_FLAW_SMOTHER_RANGE` (70 px, not 110).
+  Keepers given their own level use `KEEPER_PROFILES` (easy 0.02 s / 18 px error, normal 0.015 s / 12 px,
+  hard 0.012 s / 9 px).
+* **Aim assist** (`sim/shooting.ts`, `assistAim`): a shot from within `AIM_ASSIST_RANGE` (420 px) aimed at the goal or
+  within `AIM_ASSIST_CONE` (0.25 rad) of it bends `AIM_ASSIST_STRENGTH` (75%) of the way towards the nearer corner
+  (`AIM_ASSIST_CORNER_INSET`, 24 px inside the post), at most `AIM_ASSIST_MAX_BEND` (0.22 rad) when pulling a near miss
+  in, and only `AIM_ASSIST_MAX_BEND_OUT` (0.08 rad) when pushing a shot at the keeper out. Never fully onto the corner
+  (tested). A shot between the corners goes for the open one if the keeper blocks the nearer. The AI's shots get it too
+  (it plays by the same rules).
+* **Finesse shot:** hold shoot, tap pass. `FINESSE_SPEED` 800 (a full shot is 1150), aimed `FINESSE_POST_INSET` (14 px)
+  inside the post on the side the keys point to (straight on: the keeper's far side), launched wide and curled in
+  (`FINESSE_SPIN`, fading at `FINESSE_SPIN_DECAY`). The ball now has a `spin` (curl) that any touch or bounce ends;
+  keepers read the curve (`curledCrossing`). Out of range it just curls. It needs no charge, so it gets off under
+  pressure.
+* **Aim line:** a dotted line from the ball to where the shot crosses the goal line (keys + assist), while you charge
+  with the ball inside shooting range. Drawn from your own keys, so the online guest sees it without lag.
+* **Eased defending:** a human on the ball is pressed by one AI player, never two; AI players don't slide in from
+  behind a carrier inside their own box.
+* **Match rules setting:** Settings (Match rules, Keepers), the team picker (offline and hosting) and the lobby (the
+  host can change it there; the guest sees "Match rules: … · chosen by the host"; a change clears both ready flags).
+  Protocol 5: `LobbyState.rules` and `start.rules` carry the whole, validated rules object, and the guest builds its
+  match (goal size, prediction of its own kicks) from it.
+* Tools: `npm run simulate -- --rules arcade|classic`, `npm run shoottest -- --rules … --levels … --seeds …`.
+
+**Chip shot: skipped.** It doesn't fit cleanly: the sim is 2D and the ball collides with every player and post in every
+substep. Doing it properly needs a `z`/`vz` on the ball with gravity; no player (or keeper, above its reach) collisions
+while `z` is high; a bounce on landing; a rule for a high ball crossing the goal line (over the bar = goal kick);
+`z` in snapshots (+2 bytes) and in the guest's prediction of its own kick; and drawing it (the T10 lift fake would
+become real). A trigger could be shoot + tackle, or a double tap of shoot, and the AI keeper would need to judge a
+dropping ball. A good next task once Arcade has been feel-tested.
+
+## 3. Numbers
+
+**Shooting test** (60 seeds per cell, % scored, no defender unless said):
+
+| | Classic easy (before) | Classic normal (before) | **Arcade (easy keepers)** | Arcade target |
+|---|---|---|---|---|
+| Edge of the box, full charge, keys aim | 3% | 0% | **60%** | ~40-60% |
+| Edge of the box, full charge, aimed exactly at a corner | 25% | 0% | 100% | |
+| Penalty spot, half/full charge, keys aim | 0% | 0% | **95%** | ~70%+ |
+| Edge of the box, finesse shot | – | – | 47-50% | |
+| Edge of the box, quick (15%) charge | 0-15% | 0-12% | 0% (caught or saved) | |
+| All shots: goals / **saved** / tackled before the shot | 6% / 49% / 42% | 4% / 50% / 43% | 22% / **59%** / 18% | keepers still save |
+
+With Keepers set to Normal (Arcade): edge 47%, penalty 91%; Hard: 12% and 62%.
+
+**AI vs AI** (40 matches, seed 1, 2 × 3 min):
+
+| | Before (1.2.0) | Classic (1.3.0) | **Arcade (1.3.0)** |
+|---|---|---|---|
+| Easy: goals per match | 4.25 | 4.25 | **4.55** (5.17 at catch 560) |
+| Normal: goals per match | 4.15 (72.5% in 3-6) | 4.15 (72.5% in 3-6) | **6.72** (55% in 5-9) |
+| Hard: goals per match | 4.42 | 4.42 | **6.90** (70% in 5-9) |
+| Normal: keeper saves / save rate | 15.9 / 79% | 15.9 / 79% | 21.3 / 76% |
+| Stuck or dead ball | 0 | 0 | 0 (longest still spell 1.8 s) |
+
+Holdout (seed 7, 100 matches, Arcade): easy 4.97, normal 5.87 (70% in 5-9), hard 6.52 (67% in 5-9), 0 stuck. Easy sits right at the bottom of the target (4.55-5.17 across seeds and catch
+speeds): its AI shooters are poor, and the keepers are the same easy keepers at every level. Classic is unchanged to the last digit,
+so the T11 target (3-6) still holds.
+
+## 4. Please feel-test these by hand online (T15)
+
+1. Arcade, both players: can you score from the edge of the box by lining up and shooting straight? Does the keeper
+   still save often enough that it doesn't feel free? [`KEEPER_PROFILES`, `KEEPER_SLOW_REACTION`, `GOAL_WIDTH_BIG`]
+2. Does the aim assist ever feel as if the game took the shot for you — or not enough? Watch the aim line.
+   [`AIM_ASSIST_STRENGTH`, `AIM_ASSIST_MAX_BEND`, `AIM_ASSIST_MAX_BEND_OUT`]
+3. Finesse (hold Space, tap X): is the curl visible and satisfying, and does it go where you expect? As the guest
+   (`?lag=100`), does it curve smoothly, with no jump when the host's ball takes over? [`FINESSE_SPEED`, `FINESSE_SPIN`]
+4. Is a 0.5 s full charge right, or do all shots now feel the same? [`SHOT_QUICK_CHARGE_TIME`]
+5. Keepers now parry most shots: fun scrambles, or too many cheap tap-ins? [`KEEPER_CATCH_SPEED_ARCADE`]
+6. Lobby: the host switches Classic/Arcade; the guest's line updates and both have to press Ready again.
+7. Do the bigger goals look right (nets, posts, a ball going in off the post)?

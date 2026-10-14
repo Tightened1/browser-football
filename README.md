@@ -26,6 +26,7 @@ Both players must be running the same version of the game. If you see a "differe
 |---|---|
 | Move | Arrow keys or `W` `A` `S` `D` |
 | Pass (tap) / Shoot (hold to charge, release to kick) | `X` / `Space` |
+| Finesse shot (Arcade rules): hold shoot, then tap pass | `Space` + `X` |
 | Tackle or slide (when you don't have the ball) | `C` |
 | Switch player (when you don't have the ball) | `Z` or `Shift` |
 | Pause menu / back | `Esc` |
@@ -34,7 +35,10 @@ Both players must be running the same version of the game. If you see a "differe
 
 **Running with the ball:** run into a loose ball to take it; it then stays at your feet (you run a little slower). A slide tackle, an opponent in your way, or turning straight back at full speed loses it. Passes and shots go where the move keys point when you kick, so you can run one way and shoot another. Press pass or let go of shoot a moment *before* the ball reaches you and the kick fires as it arrives (an amber ring shows it is waiting; a white flash when it fires).
 
-**Throw-ins and the lines:** throw-ins are thrown, not dribbled. Stand still, aim with the move keys (a yellow arrow shows where), then press pass for a short throw or hold and release shoot for a long one. A throw always goes into the pitch, and if you do nothing for 3 seconds it goes to a free teammate. Corners and goal kicks are kicked as usual, also always into the pitch. You can't dribble the ball over a touchline or goal line: the line holds it and you slide along it, so the ball only goes out if it's kicked, tackled or deflected. If a restart goes straight back out before anyone else touches it, your team takes it again.
+**Match rules: Arcade or Classic** (Settings, or the team picker; online the host's choice is used and shown in the lobby, where the host can change it). **Arcade** (the default) makes scoring easier: bigger goals, a quicker charge (0.5 s to full power), a dotted aim line while you charge near goal, a mild aim assist (a shot near the goal bends a little towards a corner, never all the way), the finesse shot (curled and placed by a post, but slower, so keepers can get there), keepers that parry more and react a touch later, and the AI defends a human shooter a little more gently. **Classic** is the original game. Settings → Keepers sets the keepers' skill on its own. Tip: the keys aim in 8 directions, so line yourself up — a straight shot from off-centre goes towards the corner.
+
+**Throw-ins and the lines:**
+ throw-ins are thrown, not dribbled. Stand still, aim with the move keys (a yellow arrow shows where), then press pass for a short throw or hold and release shoot for a long one. A throw always goes into the pitch, and if you do nothing for 3 seconds it goes to a free teammate. Corners and goal kicks are kicked as usual, also always into the pitch. You can't dribble the ball over a touchline or goal line: the line holds it and you slide along it, so the ball only goes out if it's kicked, tackled or deflected. If a restart goes straight back out before anyone else touches it, your team takes it again.
 
 Move, pass, shoot, tackle and switch can all be rebound under **Settings** (two keys per action). `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved. **How to play** on the title screen shows the same table.
 

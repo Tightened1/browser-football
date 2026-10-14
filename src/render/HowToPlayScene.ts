@@ -20,6 +20,7 @@ export class HowToPlayScene extends Phaser.Scene {
     const rows: [string, string][] = [
       ['Move', `${move}`],
       ['Pass (tap) / Shoot (hold to charge, release), aimed with the move keys', `${keysText(b, 'pass')}   /   ${keysText(b, 'shoot')}`],
+      ['Finesse shot (Arcade rules): hold shoot, tap pass -- curled and placed by a post', `${keysText(b, 'shoot')}  +  ${keysText(b, 'pass')}`],
       ['Tackle / slide (when you have no ball)', keysText(b, 'tackle')],
       ['Switch player (when you have no ball)', keysText(b, 'switch')],
       ['AI debug overlay (roles, intents, team modes)', 'F2  /  `'],
@@ -42,12 +43,15 @@ export class HowToPlayScene extends Phaser.Scene {
       'Kick just before the ball reaches you and it fires when it arrives (amber ring = waiting).',
       'Throw-ins are thrown: aim with the move keys (yellow arrow), then pass = short throw, shoot = long.',
       `A throw always goes into the pitch (wait ${RESTART_AUTO_DELAY_HUMAN} s: to a free teammate). You can't dribble over a line.`,
+      'Match rules (Settings): Arcade = big goals, quick charge, aim line, aim assist towards the corners, kinder keepers.',
+      "Classic = the original game. Online, the host's rules are used (shown in the lobby). Line up your shot: keys aim in 8 directions.",
       'Online: one player hosts and shares the room code or invite link; the other joins. You pick your own team and kit.',
       'Change any key under Settings. The pause menu does not stop an online match, since your friend is still playing.',
     ];
-    notes.forEach((n, i) => label(this, CX, 500 + i * 30, 19, UI_COLORS.muted).setText(n).setWordWrapWidth(1000));
+    notes.forEach((n, i) => label(this, CX, 520 + i * 26, 17, UI_COLORS.muted).setText(n).setWordWrapWidth(1100));
 
-    const back = button(this, CX, 740, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 220 });
+    const back = button(this, CX, 765, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 220 });
+
     new Focus(this, [{ button: back }]);
     this.input.keyboard?.on('keydown-ESC', () => this.scene.start('MenuScene'));
   }

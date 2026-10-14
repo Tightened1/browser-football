@@ -40,10 +40,10 @@ export interface Boundary {
  * uses, so it can leave the pitch and the rules can award a throw-in, goal kick or corner. Players use
  * the closed outline.
  */
-export function buildBoundary(openField = false): Boundary {
+export function buildBoundary(openField = false, goalWidth = GOAL_WIDTH): Boundary {
   const midY = (PITCH_TOP + PITCH_BOTTOM) / 2;
-  const goalTop = midY - GOAL_WIDTH / 2;
-  const goalBottom = midY + GOAL_WIDTH / 2;
+  const goalTop = midY - goalWidth / 2;
+  const goalBottom = midY + goalWidth / 2;
   const w = (ax: number, ay: number, bx: number, by: number, restitution: number): Wall => ({
     a: { x: ax, y: ay },
     b: { x: bx, y: by },
@@ -86,6 +86,21 @@ export function buildBoundary(openField = false): Boundary {
 export const BOUNDARY: Boundary = buildBoundary();
 /** What the ball bounces off: no touchline/end-line walls, so it can go out of play. */
 export const BALL_BOUNDARY: Boundary = buildBoundary(true);
+
+const boundaries = new Map<string, Boundary>([
+  [`${GOAL_WIDTH}/0`, BOUNDARY],
+  [`${GOAL_WIDTH}/1`, BALL_BOUNDARY],
+]);
+/** The boundary for a match's goal width (T15: the rules can make the goals bigger), built once and reused. */
+export function boundaryFor(goalWidth: number, openField: boolean): Boundary {
+  const key = `${goalWidth}/${openField ? 1 : 0}`;
+  let b = boundaries.get(key);
+  if (!b) {
+    b = buildBoundary(openField, goalWidth);
+    boundaries.set(key, b);
+  }
+  return b;
+}
 
 export function speedOf(v: Vec2): number {
   return Math.hypot(v.x, v.y);

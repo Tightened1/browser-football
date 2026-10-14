@@ -1,9 +1,10 @@
 // Headless AI-vs-AI matches on the pure sim (no Phaser, no DOM). Run with `npm run simulate`.
-//   npm run simulate -- --matches 60 --difficulty normal --seed 1
-// Reports goals, shots, saves, possession, restarts and stalemates per difficulty.
+//   npm run simulate -- --matches 60 --difficulty normal --seed 1 --rules classic|arcade
+// Reports goals, shots, saves, possession, restarts and stalemates per difficulty (with the match rules' own keepers).
 import { SIM_DT } from '../src/config';
+import { rulesFor } from '../src/sim/matchRules';
 import { createMatchState, step } from '../src/sim/simulation';
-import type { Difficulty, GameState } from '../src/sim/types';
+import type { Difficulty, GameState, RulesPreset } from '../src/sim/types';
 
 const args = process.argv.slice(2);
 function opt(name: string, fallback: string): string {
@@ -16,6 +17,10 @@ const HALF = Number(opt('half', '180'));
 const which = opt('difficulty', 'all');
 const difficulties: Difficulty[] = which === 'all' ? ['easy', 'normal', 'hard'] : [which as Difficulty];
 const json = args.includes('--json');
+const PRESET = opt('rules', 'classic') as RulesPreset;
+const RULES = rulesFor(PRESET);
+/** Goals-per-match target range for the rules (T11 for Classic, T15 for Arcade). */
+const TARGET: [number, number] = PRESET === 'arcade' ? [5, 9] : [3, 6];
 
 /** The ball counts as stuck when, in open play, it stays within STUCK_RADIUS of one spot for this long (s). */
 const STUCK_RADIUS = 45;
@@ -53,6 +58,7 @@ function playMatch(difficulty: Difficulty, seed: number): MatchResult {
     seed,
     kickoffTeam: (seed % 2) as 0 | 1,
     halfLength: HALF,
+    rules: RULES,
   });
   let anchor = { ...s.ball.pos };
   let stillFor = 0;
@@ -149,6 +155,7 @@ for (const d of difficulties) {
     goalsMin: Math.min(...goals),
     goalsMax: Math.max(...goals),
     pctMatches3to6: (100 * goals.filter((g) => g >= 3 && g <= 6).length) / MATCHES,
+    pctMatchesInTarget: (100 * goals.filter((g) => g >= TARGET[0] && g <= TARGET[1]).length) / MATCHES,
     pctGoalless: (100 * goals.filter((g) => g === 0).length) / MATCHES,
     shotsPerMatch: avg(rs.map((r) => r.shots[0] + r.shots[1])),
     aiShotsPerMatch: avg(aiShots),
@@ -174,8 +181,10 @@ for (const d of difficulties) {
   };
   report[d] = out;
   if (json) continue;
-  console.log(`\n=== ${d.toUpperCase()}  (${MATCHES} matches, 2 x ${HALF}s) ===`);
-  console.log(`goals/match        ${f2(out.goalsPerMatch)}   (min ${out.goalsMin}, max ${out.goalsMax}; ${f1(out.pctMatches3to6)}% of matches in 3-6, ${f1(out.pctGoalless)}% goalless)`);
+  console.log(`\n=== ${d.toUpperCase()}  (${PRESET} rules, ${MATCHES} matches, 2 x ${HALF}s) ===`);
+
+  console.log(`goals/match        ${f2(out.goalsPerMatch)}   (min ${out.goalsMin}, max ${out.goalsMax}; ${f1(out.pctMatchesInTarget)}% of matches in ${TARGET[0]}-${TARGET[1]}, ${f1(out.pctGoalless)}% goalless)`);
+
   console.log(`shots/match        ${f1(out.shotsPerMatch)} (stat shots)   ${f1(out.aiShotsPerMatch)} (AI shot decisions)`);
   console.log(`keeper saves       ${f1(out.savesPerMatch)}/match   save rate ${f1(out.saveRate * 100)}%   goals per shot decision ${f1(out.conversion * 100)}%`);
   console.log(`possession         home ${f1(out.homePossession * 100)}%   avg gap ${f1(out.possessionGap * 100)} pts`);

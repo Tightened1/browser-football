@@ -1,7 +1,8 @@
 // Player settings, saved in localStorage. Everything that touches storage is wrapped in try/catch (private windows,
 // blocked storage and quota errors must never break the game); the validation is pure and unit-tested.
-import { AI_DIFFICULTY, CAMERA_DEFAULT_MODE, type CameraMode } from './config';
-import type { Difficulty } from './sim/types';
+import { AI_DIFFICULTY, CAMERA_DEFAULT_MODE, DEFAULT_RULES_PRESET, type CameraMode } from './config';
+import { KEEPER_LEVELS, RULES_PRESETS, rulesFor } from './sim/matchRules';
+import type { Difficulty, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
 import { DEFAULT_LOOK, sanitizeLook, type Look } from './teams';
 
 export type ActionId = 'up' | 'down' | 'left' | 'right' | 'pass' | 'shoot' | 'tackle' | 'switch';
@@ -36,11 +37,19 @@ export const RESERVED_KEYS: readonly string[] = ['Escape', 'Enter', 'NumpadEnter
 export const MATCH_LENGTH_OPTIONS = [1, 2, 3, 5] as const;
 export const DIFFICULTY_OPTIONS: readonly Difficulty[] = ['easy', 'normal', 'hard'];
 export const CAMERA_OPTIONS: readonly CameraMode[] = ['auto', 'wide', 'follow'];
+export const RULES_OPTIONS: readonly RulesPreset[] = RULES_PRESETS;
+/** Keepers: as the match rules say, or a fixed level (T15). */
+export type KeepersSetting = KeeperLevel | 'rules';
+export const KEEPERS_OPTIONS: readonly KeepersSetting[] = ['rules', ...KEEPER_LEVELS];
 
 export interface Settings {
   /** Minutes per half. */
   halfMinutes: number;
   difficulty: Difficulty;
+  /** Match rules preset (T15): offline, and when hosting (the guest plays the host's). */
+  rules: RulesPreset;
+  /** Keepers' skill: the preset's own, or a fixed level. */
+  keepers: KeepersSetting;
   /** Sound volume, 0..100. */
   volume: number;
   /** Camera: follow the ball when the pitch is drawn small (auto), never (wide) or always (follow). */
@@ -54,7 +63,7 @@ export interface Settings {
 export function defaultSettings(): Settings {
   const bindings = {} as Bindings;
   for (const a of ACTIONS) bindings[a.id] = [...DEFAULT_BINDINGS[a.id]] as [string, string];
-  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK } };
+  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, rules: DEFAULT_RULES_PRESET, keepers: 'rules', volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK } };
 }
 
 /** Left and right Shift (Ctrl, Alt) count as one key. */
@@ -90,6 +99,8 @@ export function sanitizeSettings(raw: unknown): Settings {
   return {
     halfMinutes: (MATCH_LENGTH_OPTIONS as readonly unknown[]).includes(r.halfMinutes) ? (r.halfMinutes as number) : d.halfMinutes,
     difficulty: DIFFICULTY_OPTIONS.includes(r.difficulty as Difficulty) ? (r.difficulty as Difficulty) : d.difficulty,
+    rules: RULES_OPTIONS.includes(r.rules as RulesPreset) ? (r.rules as RulesPreset) : d.rules,
+    keepers: KEEPERS_OPTIONS.includes(r.keepers as KeepersSetting) ? (r.keepers as KeepersSetting) : d.keepers,
     volume: typeof r.volume === 'number' && Number.isFinite(r.volume) ? Math.round(Math.min(100, Math.max(0, r.volume)) / 10) * 10 : d.volume,
     camera: CAMERA_OPTIONS.includes(r.camera as CameraMode) ? (r.camera as CameraMode) : d.camera,
     showControls: typeof r.showControls === 'boolean' ? r.showControls : d.showControls,
@@ -121,7 +132,13 @@ export function updateSettings(patch: Partial<Settings>): void {
   }
 }
 
+/** The match rules the settings ask for (offline, and when hosting). */
+export function matchRulesSetting(s: Settings = settings): MatchRules {
+  return rulesFor(s.rules, s.keepers);
+}
+
 /** Which action (other than `except`) already uses `code`. */
+
 export function actionUsing(bindings: Bindings, code: string, except?: ActionId): ActionId | null {
   for (const a of ACTIONS) if (a.id !== except && bindings[a.id].includes(code)) return a.id;
   return null;

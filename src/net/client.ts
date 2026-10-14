@@ -33,12 +33,15 @@ import {
   NET_KICK_CONFIRM_MS,
   NET_KICK_LEAD_DECAY,
   PASS_SPEED,
-  SHOT_MAX_CHARGE_TIME,
+  FINESSE_SPEED,
 } from '../config';
-import { createMatchState, shotSpeed, updatePlayer } from '../sim/simulation';
+import { ballBoundary, createMatchState, playerBoundary, shotSpeed, updatePlayer } from '../sim/simulation';
+import { CLASSIC_RULES, copyRules } from '../sim/matchRules';
+import { assistAim, finesseShot } from '../sim/shooting';
+
 import { advanceHold, heldBallSpot, holdOffLines, rollFreeBall, sharpTurnLosesBall } from '../sim/dribble';
 import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
-import type { BallState, GameState, InputFrame, MatchEvent, MatchStats, PlayerState, Possession, TeamId } from '../sim/types';
+import type { BallState, GameState, InputFrame, MatchEvent, MatchRules, MatchStats, PlayerState, Possession, TeamId } from '../sim/types';
 import { kindForPeerError, netError, type NetErrorKind } from './errors';
 import { PlaybackClock, SnapshotBuffer } from './interpolation';
 import { seconds, type MatchDriver, type NetOverlay } from './match';
@@ -270,7 +273,8 @@ export class GuestLobby implements Lobby {
         }
         this.inMatch = true;
         this.view.lobby = { ...this.view.lobby, hostTeam: msg.hostTeam };
-        this.onStart({ localTeam: teamOf(this.view.lobby, 'guest'), seed: msg.seed, halfLength: msg.half, looks: looksByTeam(this.view.lobby) });
+        this.view.lobby = { ...this.view.lobby, rules: msg.rules };
+        this.onStart({ localTeam: teamOf(this.view.lobby, 'guest'), seed: msg.seed, halfLength: msg.half, looks: looksByTeam(this.view.lobby), rules: copyRules(msg.rules) });
         break;
       case 'event':
       case 'stats':
@@ -412,6 +416,8 @@ export class GuestMatch implements MatchDriver {
   /** The ball held by the predicted player (sticky dribbling), predicted with it. */
   private predictedPoss: Possession | null = null;
   private kick: LocalKick | null = null;
+  /** Shoot still held after our finesse shot (its release kicks nothing), as on the host (T15). */
+  private shootSpent = false;
   /** Hides jumps when the drawn ball switches between the host's and a predicted one (fades like `offset`). */
   private ballOffset = { x: 0, y: 0 };
   private ballMode: BallMode = 'host';
@@ -431,9 +437,11 @@ export class GuestMatch implements MatchDriver {
     readonly localTeam: TeamId,
     private readonly halfLength: number,
     seed?: number,
+    /** The host's match rules (T15), from the lobby / `start` message. */
+    private readonly rules: MatchRules = CLASSIC_RULES,
   ) {
     // Static player data (teams, roles, radii, numbers) comes from our own copy; snapshots fill in the rest.
-    this.state = createMatchState({ humans: [true, true], seed, halfLength });
+    this.state = createMatchState({ humans: [true, true], seed, halfLength, rules });
     lobby.onMatchMessage = (msg) => this.onMessage(msg);
     lobby.lastEventId = () => this.lastEventId;
     lobby.onRestart = (restartSeed) => this.reset(restartSeed);
@@ -458,7 +466,7 @@ export class GuestMatch implements MatchDriver {
   /** The host started a rematch: forget the old match completely. */
   private reset(seed: number): void {
     this.staleFrom = this.newest ? this.newest.tick : Infinity;
-    this.state = createMatchState({ humans: [true, true], seed, halfLength: this.halfLength });
+    this.state = createMatchState({ humans: [true, true], seed, halfLength: this.halfLength, rules: this.rules });
     this.buffer.clear();
     this.clock.reset();
     this.newest = null;
@@ -490,7 +498,7 @@ export class GuestMatch implements MatchDriver {
       this.link?.sendFast(encodeInputs(this.history.slice(-NET_INPUT_REDUNDANCY)));
       if (this.predicted) this.predictFrame(this.predicted, prev, frame, nowMs);
       if (this.kick && !this.kick.handover) {
-        rollFreeBall(this.kick.ball, 1);
+        rollFreeBall(this.kick.ball, 1, SIM_DT, ballBoundary(this.state.rules));
         this.kick.age += SIM_DT;
       }
     }
@@ -587,10 +595,10 @@ export class GuestMatch implements MatchDriver {
   private replayFrame(p: PlayerState, poss: Possession | null, prev: InputFrame | undefined, f: InputFrame): Possession | null {
     const kicked = kickEdge(prev, f);
     if (poss && !kicked && sharpTurnLosesBall(p, f)) poss = null;
-    updatePlayer(p, f, SIM_DT, poss ? DRIBBLE_SPEED_FACTOR : 1);
+    updatePlayer(p, f, SIM_DT, poss ? DRIBBLE_SPEED_FACTOR : 1, playerBoundary(this.state.rules));
     if (poss) {
       advanceHold(poss, p, SIM_DT);
-      holdOffLines(poss, p, this.state.ball.radius); // the touchline holds the ball, as on the host
+      holdOffLines(poss, p, this.state.ball.radius, this.state.rules.goalWidth); // the touchline holds the ball, as on the host
     }
     // A kick from the dribble always fires (there is no kick buffer delay with the ball at your feet), ending it.
     return poss && kicked ? null : poss;
@@ -599,7 +607,14 @@ export class GuestMatch implements MatchDriver {
   /** A new local frame: predict our player and, if it strikes the ball it carries, the kick. */
   private predictFrame(p: PlayerState, prev: InputFrame | undefined, f: InputFrame, nowMs: number): void {
     const poss = this.predictedPoss;
-    const kicked = kickEdge(prev, f);
+    const rules = this.state.rules;
+    // The same kick edges as the host (sim/simulation.ts): a finesse shot is pass tapped while shoot is held, after
+    // which the shoot release kicks nothing.
+    const passPressed = f.pass && !prev?.pass;
+    const finesse = rules.finesse && passPressed && f.shoot && !this.shootSpent;
+    const kicked = passPressed || (!f.shoot && !!prev?.shoot && !this.shootSpent);
+    if (finesse) this.shootSpent = true;
+    if (!f.shoot) this.shootSpent = false;
     this.predictedPoss = this.replayFrame(p, poss, prev, f);
     if (!kicked) return;
     if (!poss) {
@@ -608,19 +623,31 @@ export class GuestMatch implements MatchDriver {
     }
     // Kick from our dribble: launch the ball here and now, as the host will (aimed by the move keys, else the facing).
     let charge = 0;
-    if (!f.pass) {
+    if (!passPressed) {
       for (let i = this.history.length - 2; i >= 0 && this.history[i].shoot; i--) charge += SIM_DT;
-      charge = Math.min(SHOT_MAX_CHARGE_TIME, charge);
+      charge = Math.min(rules.shotChargeTime, charge);
     }
-    const speed = f.pass ? PASS_SPEED : shotSpeed(charge);
-    const aim = Math.hypot(f.moveX, f.moveY) > 1e-6 ? Math.atan2(f.moveY, f.moveX) : p.facing;
-    const spot = heldBallSpot(poss, p, this.state.ball.radius);
+    const keys = Math.hypot(f.moveX, f.moveY) > 1e-6 ? Math.atan2(f.moveY, f.moveX) : p.facing;
+    const spot = heldBallSpot(poss, p, this.state.ball.radius, rules.goalWidth);
+    let speed = PASS_SPEED;
+    let aim = keys;
+    let spin = 0;
+    if (finesse) {
+      const shot = finesseShot(this.state, this.localTeam, spot, keys);
+      speed = FINESSE_SPEED;
+      aim = shot.aim;
+      spin = shot.spin;
+    } else if (!passPressed) {
+      speed = shotSpeed(charge, rules.shotChargeTime);
+      aim = assistAim(this.state, this.localTeam, spot, keys);
+    }
     this.kick = {
       seq: f.seq,
       ball: {
         pos: spot,
         vel: { x: Math.cos(aim) * speed + p.vel.x * KICK_PLAYER_VEL_FACTOR, y: Math.sin(aim) * speed + p.vel.y * KICK_PLAYER_VEL_FACTOR },
         radius: this.state.ball.radius,
+        spin,
       },
       age: 0,
       handover: false,
@@ -662,7 +689,7 @@ export class GuestMatch implements MatchDriver {
     if (carrying && this.predictedPoss) {
       mode = 'carry';
       const p = s.players[id];
-      pos = heldBallSpot(this.predictedPoss, p, ball.radius);
+      pos = heldBallSpot(this.predictedPoss, p, ball.radius, s.rules.goalWidth);
       vel = { ...p.vel };
       s.possession = { ...this.predictedPoss, player: id };
     } else if (this.kick && !this.kick.handover) {
@@ -675,10 +702,12 @@ export class GuestMatch implements MatchDriver {
       mode = 'handover';
       const k = this.kick;
       k.lead = Math.max(0, k.lead - dt * NET_KICK_LEAD_DECAY);
-      const ahead: BallState = { pos: { ...ball.pos }, vel: { ...ball.vel }, radius: ball.radius };
+      // (A curled kick keeps curling: the snapshots don't carry the spin, so use our own kick's.)
+      const ahead: BallState = { pos: { ...ball.pos }, vel: { ...ball.vel }, radius: ball.radius, spin: k.ball.spin };
       const whole = Math.floor(k.lead / SIM_DT);
-      rollFreeBall(ahead, whole);
-      rollFreeBall(ahead, 1, k.lead - whole * SIM_DT); // and the part tick, so the ball glides rather than steps
+      const bounds = ballBoundary(s.rules);
+      rollFreeBall(ahead, whole, SIM_DT, bounds);
+      rollFreeBall(ahead, 1, k.lead - whole * SIM_DT, bounds); // and the part tick, so the ball glides rather than steps
       pos = ahead.pos;
       vel = ahead.vel;
       if (k.lead === 0) this.kick = null;

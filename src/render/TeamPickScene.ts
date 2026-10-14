@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH } from '../config';
-import { settings, updateSettings } from '../settings';
+import { matchRulesSetting, RULES_OPTIONS, settings, updateSettings } from '../settings';
+import { rulesLabel, rulesSummary } from '../sim/matchRules';
 import { cycleKit, cycleName, KIT_PRESETS, randomOpponent, readableOn, TEAM_NAMES, type Look } from '../teams';
 import type { MatchSceneData } from './MatchScene';
 import type { LobbySceneData } from './LobbyScene';
@@ -22,6 +23,8 @@ export class TeamPickScene extends Phaser.Scene {
   private preview!: Phaser.GameObjects.Graphics;
   private nameBtn!: ReturnType<typeof button>;
   private kitBtn!: ReturnType<typeof button>;
+  private rulesBtn!: ReturnType<typeof button>;
+  private rulesInfo!: Phaser.GameObjects.Text;
   private title!: Phaser.GameObjects.Text;
 
   constructor() {
@@ -47,19 +50,24 @@ export class TeamPickScene extends Phaser.Scene {
     this.preview = this.add.graphics();
     this.title = label(this, CX, 395, 34, UI_COLORS.text, true).setStroke('#000000', 5);
 
-    this.nameBtn = button(this, CX, 470, '', () => this.changeName(1), { width: 460 });
-    this.kitBtn = button(this, CX, 545, '', () => this.changeKit(1), { width: 460 });
-    const go = button(this, CX, 640, d.mode === 'offline' ? 'Kick off' : d.mode === 'host' ? 'Open a room' : 'Join', () => this.go(), { width: 260 });
-    const back = button(this, CX - 330, 640, 'Back', () => this.scene.start(d.mode === 'join' ? 'JoinScene' : 'MenuScene'), { width: 200, secondary: true });
+    this.nameBtn = button(this, CX, 455, '', () => this.changeName(1), { width: 460 });
+    this.kitBtn = button(this, CX, 520, '', () => this.changeKit(1), { width: 460 });
+    // Match rules (T15): offline and when hosting (a guest plays the host's rules, shown in the lobby).
+    const pickRules = d.mode !== 'join';
+    this.rulesBtn = button(this, CX, 585, '', () => this.changeRules(1), { width: 460 }).setVisible(pickRules);
+    this.rulesInfo = label(this, CX, 622, 16, UI_COLORS.muted).setVisible(pickRules);
+    const go = button(this, CX, 680, d.mode === 'offline' ? 'Kick off' : d.mode === 'host' ? 'Open a room' : 'Join', () => this.go(), { width: 260 });
+    const back = button(this, CX - 330, 680, 'Back', () => this.scene.start(d.mode === 'join' ? 'JoinScene' : 'MenuScene'), { width: 200, secondary: true });
     new Focus(
       this,
       [
         { button: this.nameBtn, onLeft: () => this.changeName(-1), onRight: () => this.changeName(1) },
         { button: this.kitBtn, onLeft: () => this.changeKit(-1), onRight: () => this.changeKit(1) },
+        ...(pickRules ? [{ button: this.rulesBtn, onLeft: () => this.changeRules(-1), onRight: () => this.changeRules(1) }] : []),
         { button: go },
         { button: back },
       ],
-      2,
+      pickRules ? 3 : 2,
     );
     label(this, CX, GAME_HEIGHT - 50, 18, UI_COLORS.muted).setText('↑ ↓ choose a row · ← → change it · Enter: continue · Esc: back');
     this.input.keyboard?.on('keydown-ESC', () => back.click());
@@ -76,7 +84,16 @@ export class TeamPickScene extends Phaser.Scene {
     this.redraw();
   }
 
+  private changeRules(dir: 1 | -1): void {
+    const i = RULES_OPTIONS.indexOf(settings.rules);
+    updateSettings({ rules: RULES_OPTIONS[(i + dir + RULES_OPTIONS.length) % RULES_OPTIONS.length] });
+    this.redraw();
+  }
+
   private redraw(): void {
+    this.rulesBtn.setLabel(`◀   Match rules:  ${rulesLabel(settings.rules)}   ▶`);
+    this.rulesInfo.setText(rulesSummary(matchRulesSetting()));
+
     const kit = KIT_PRESETS[this.look.kit];
     this.nameBtn.setLabel(`◀   Team name:  ${TEAM_NAMES[this.look.name]}   ▶`);
     this.kitBtn.setLabel(`◀   Kit colour:  ${kit.label}   ▶`);

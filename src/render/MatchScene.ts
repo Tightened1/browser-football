@@ -20,6 +20,9 @@ import {
   DEBUG_KICK_SPEED,
   POST_RADIUS,
   SHOT_MAX_CHARGE_TIME,
+  AIM_LINE_ALPHA,
+  AIM_LINE_COLOR,
+
   KICK_BUFFER_TIME,
   KICK_FLASH_TIME,
   GAME_WIDTH,
@@ -40,13 +43,14 @@ import { sound } from '../audio/sound';
 import { approach, ballLift, cameraTarget, netBox, netGrid, Effects } from './effects';
 import { KeyboardInput } from '../input/keyboard';
 import { controlsSummary, settings } from '../settings';
-import { NEUTRAL_INPUT } from '../sim/simulation';
+import { ballBoundary, NEUTRAL_INPUT } from '../sim/simulation';
+import { matchRulesSetting } from '../settings';
 import { randomOpponent, type Look } from '../teams';
 import { setTeamLooks, teamStyle } from './teamStyle';
-import { BOUNDARY } from '../sim/physics';
 import { roleOf } from '../sim/ai';
-import { restartAim } from '../sim/setpiece';
-import type { Difficulty, GameState, InputFrame, MatchEvent, MatchStats, PlayerState, TeamId } from '../sim/types';
+import { pendingThrowIn, restartAim } from '../sim/setpiece';
+import { assistAim, attackedGoalX, inShootingRange, yAtGoalLine } from '../sim/shooting';
+import type { Difficulty, GameState, InputFrame, MatchEvent, MatchRules, MatchStats, PlayerState, TeamId, Vec2 } from '../sim/types';
 import { GuestLobby, GuestMatch } from '../net/client';
 import { HostLobby, HostMatch } from '../net/host';
 import type { MatchDriver, NetOverlay } from '../net/match';
@@ -63,10 +67,9 @@ export interface MatchSceneData {
   halfLength?: number;
   /** Both teams' names and kits, indexed by team (default: the saved look against a random opponent). */
   looks?: [Look, Look];
+  /** Match rules (T15; default: from the settings). Online, the host's. */
+  rules?: MatchRules;
 }
-
-/** The goal posts' centres, for spotting a ball ringing off the woodwork. */
-const POST_POSITIONS = BOUNDARY.posts.map((p) => p.pos);
 
 /** How long the final whistle is left alone before the results screen appears. */
 const RESULTS_DELAY = 1.2;
@@ -120,6 +123,9 @@ export class MatchScene extends Phaser.Scene {
   private online?: Lobby;
   private halfLength = 180;
   private looks!: [Look, Look];
+  private rules!: MatchRules;
+  /** The goal posts' centres (for the match's goal width), for spotting a ball ringing off the woodwork. */
+  private posts: Vec2[] = [];
   /** The pause menu is open (offline this also stops the match; online the match carries on without your input). */
   private pauseOpen = false;
   private frozen = false;
@@ -141,6 +147,7 @@ export class MatchScene extends Phaser.Scene {
     this.seed = data.seed ?? (data.online ? undefined : Math.floor(Math.random() * 0x7fffffff));
     this.halfLength = data.halfLength ?? settings.halfMinutes * 60;
     this.looks = data.looks ?? [settings.look, randomOpponent(settings.look)];
+    this.rules = data.rules ?? matchRulesSetting();
     setTeamLooks(this.looks);
     this.pauseOpen = false;
     this.frozen = false;
@@ -152,6 +159,7 @@ export class MatchScene extends Phaser.Scene {
     const opts = urlOptions();
     this.aiVsAi = !this.online && opts.aiVsAi;
     this.driver = this.createDriver(opts.difficulty);
+    this.posts = ballBoundary(this.driver.state.rules).posts.map((p) => p.pos);
     this.effects = new Effects();
     this.detector = new BallCueDetector();
     this.kickCues = new KickCueWatcher();
@@ -262,9 +270,10 @@ export class MatchScene extends Phaser.Scene {
     const online = this.online;
     const level = difficulty ?? settings.difficulty;
     const halfLength = this.halfLength;
-    if (online instanceof HostLobby) return new HostMatch({ localTeam: this.humanTeam, seed: this.seed, difficulty: level, halfLength, lobby: online });
-    if (online instanceof GuestLobby) return new GuestMatch(online, this.humanTeam, halfLength, this.seed);
-    return new HostMatch({ localTeam: this.aiVsAi ? null : this.humanTeam, seed: this.seed, difficulty: level, halfLength });
+    const rules = this.rules;
+    if (online instanceof HostLobby) return new HostMatch({ localTeam: this.humanTeam, seed: this.seed, difficulty: level, halfLength, lobby: online, rules });
+    if (online instanceof GuestLobby) return new GuestMatch(online, this.humanTeam, halfLength, this.seed, rules);
+    return new HostMatch({ localTeam: this.aiVsAi ? null : this.humanTeam, seed: this.seed, difficulty: level, halfLength, rules });
   }
 
   /** Read-only access for the HUD. */
@@ -394,7 +403,7 @@ export class MatchScene extends Phaser.Scene {
       this.detector.heard();
     } else if (kickCue === 'queued') sound.queued();
     else if (kickCue === 'expired') sound.whiff();
-    const cue = this.detector.update(state.ball, dt, POST_POSITIONS);
+    const cue = this.detector.update(state.ball, dt, this.posts);
     if (cue) this.onBallCue(cue);
     this.excitementTimer -= dt;
     if (this.excitementTimer <= 0) {
@@ -454,10 +463,11 @@ export class MatchScene extends Phaser.Scene {
     const g = this.netGfx;
     g.clear();
     for (const side of [-1, 1] as const) {
-      const box = netBox(side);
+      const gw = this.driver.state.rules.goalWidth;
+      const box = netBox(side, gw);
       g.fillStyle(0x000000, 0.2);
       g.fillRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
-      const { cols, rows, pts } = netGrid(side, this.effects.ripples);
+      const { cols, rows, pts } = netGrid(side, this.effects.ripples, gw);
       g.lineStyle(1, COLORS.goalNet, 0.5);
       for (let r = 0; r < rows; r++) {
         g.beginPath();
@@ -552,7 +562,7 @@ export class MatchScene extends Phaser.Scene {
     const g = this.dynamic;
     g.clear();
     g.fillStyle(0xffffff, 1);
-    for (const post of BOUNDARY.posts) g.fillCircle(post.pos.x, post.pos.y, POST_RADIUS);
+    for (const post of this.posts) g.fillCircle(post.x, post.y, POST_RADIUS);
     for (const p of state.players) {
       this.drawPlayer(g, p, state.controlled[p.team] === p.id);
       this.shirtLabels[p.id]?.setPosition(p.pos.x, p.pos.y + 1);
@@ -565,6 +575,7 @@ export class MatchScene extends Phaser.Scene {
     }
     this.drawDebugOverlay(state);
     this.drawRestartAim(g, state);
+    this.drawAimLine(g, state);
     // Ball: a hard shot looks lifted: it grows a little and its shadow slides away and shrinks. (Drawing only: the sim is 2D.)
     const { ball } = state;
     const lift = ballLift(Math.hypot(ball.vel.x, ball.vel.y));
@@ -600,6 +611,35 @@ export class MatchScene extends Phaser.Scene {
       x + fx * (len - 14) - fy * 8, y + fy * (len - 14) + fx * 8,
       x + fx * (len - 14) + fy * 8, y + fy * (len - 14) - fx * 8,
     );
+  }
+
+  /**
+   * Aim line (rules.aimLine, T15): while you charge a shot with the ball, inside shooting range, a dashed line shows
+   * where it will go -- your move keys (else your facing) plus the aim assist, as the sim will strike it. Drawn from
+   * your keys straight away, so the online guest sees it without lag.
+   */
+  private drawAimLine(g: Phaser.GameObjects.Graphics, state: GameState): void {
+    const team = this.humanTeam;
+    const id = state.controlled[team];
+    if (this.aiVsAi || !state.rules.aimLine || id < 0 || state.phase !== 'playing') return;
+    const p = state.players[id];
+    if (!(this.lastInput.shoot || p.charge > 0) || pendingThrowIn(state)?.taker === id) return;
+    const { ball } = state;
+    const mine = state.possession ? state.possession.player === id : Math.hypot(ball.pos.x - p.pos.x, ball.pos.y - p.pos.y) <= p.radius + ball.radius + 10;
+    if (!mine || !inShootingRange(state, team, ball.pos)) return;
+    const keys = this.lastInput;
+    const raw = Math.hypot(keys.moveX, keys.moveY) > 1e-6 ? Math.atan2(keys.moveY, keys.moveX) : p.facing;
+    const aim = assistAim(state, team, ball.pos, raw);
+    const goalX = attackedGoalX(state, team);
+    const y = yAtGoalLine(ball.pos, aim, goalX);
+    const len = y === null ? 140 : Math.min(600, Math.hypot(goalX - ball.pos.x, y - ball.pos.y));
+    const fx = Math.cos(aim);
+    const fy = Math.sin(aim);
+    g.lineStyle(2, AIM_LINE_COLOR, AIM_LINE_ALPHA);
+    for (let d = ball.radius + 4; d < len; d += 16) {
+      const e = Math.min(len, d + 9);
+      g.lineBetween(ball.pos.x + fx * d, ball.pos.y + fy * d, ball.pos.x + fx * e, ball.pos.y + fy * e);
+    }
   }
 
   private drawPlayer(g: Phaser.GameObjects.Graphics, p: PlayerState, controlled: boolean): void {
@@ -645,7 +685,9 @@ export class MatchScene extends Phaser.Scene {
     if (p.charge > 0) {
       const w = 36;
       const h = 6;
-      const frac = Math.min(1, p.charge / SHOT_MAX_CHARGE_TIME);
+      // (A long throw charges like the Classic shot; a shot takes the rules' charge time.)
+      const full = pendingThrowIn(this.driver.state)?.taker === p.id ? SHOT_MAX_CHARGE_TIME : this.driver.state.rules.shotChargeTime;
+      const frac = Math.min(1, p.charge / full);
       const bx = x - w / 2;
       const by = y + p.radius + 6;
       g.fillStyle(0x000000, 0.6);

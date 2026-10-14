@@ -1,5 +1,5 @@
 // All tunable constants live here.
-import type { Difficulty } from './sim/types';
+import type { Difficulty, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
 import { turnServersFromEnv } from './net/ice';
 
 /** Pitch playing area in world units (pixels at 1x). */
@@ -17,8 +17,9 @@ export const PITCH_TOP = PITCH_MARGIN;
 export const PITCH_RIGHT = PITCH_LEFT + PITCH_WIDTH;
 export const PITCH_BOTTOM = PITCH_TOP + PITCH_HEIGHT;
 
-/** Pitch markings. */
+/** Pitch markings. Goal width: normal, and the "Big" goals of the Arcade rules (T15; the match's width is GameState.rules.goalWidth). */
 export const GOAL_WIDTH = 140;
+export const GOAL_WIDTH_BIG = 180;
 export const GOAL_DEPTH = 36;
 export const CENTRE_CIRCLE_RADIUS = 80;
 export const PENALTY_BOX_WIDTH = 150;
@@ -134,8 +135,9 @@ export const PASS_SPEED = 450;
 /** A tap of shoot, or a minimal charge. */
 export const SHOT_MIN_SPEED = 500;
 export const SHOT_MAX_SPEED = 1150;
-/** Charge time (s) for a full-power shot; holding longer is capped. */
+/** Charge time (s) for a full-power shot; holding longer is capped. The quick charge is the Arcade rules' (T15). */
 export const SHOT_MAX_CHARGE_TIME = 0.8;
+export const SHOT_QUICK_CHARGE_TIME = 0.5;
 /** How much of the player's velocity is added to a kick (0..1). */
 export const KICK_PLAYER_VEL_FACTOR = 0.3;
 /** Seconds after a kick/knock before the dribble touch can act again. */
@@ -200,6 +202,8 @@ export const KEEPER_CLEAR_SPEED = 240;
  * (px/s); harder shots are parried as before. A keeper holding the ball can't be tackled or body-checked.
  */
 export const KEEPER_CATCH_SPEED = 850;
+/** ...under the Arcade rules (T15): only soft shots are held; medium and hard ones are parried (a rebound). */
+export const KEEPER_CATCH_SPEED_ARCADE = 480;
 
 export const TEAMS = [
   { name: 'Home', kit: 0x2a6fdb, keeper: 0xf2c94c, outline: 0x0b2a5e },
@@ -330,10 +334,98 @@ export const AI_PASS_TO_HUMAN_BONUS = 0.15;
 export const AI_KEEPER_MAX_OUT = 62;
 /** It rushes out for a loose ball (or a carrier) within this distance of its goal line (px). */
 export const AI_KEEPER_RUSH_RANGE = 170;
+/** It comes out to smother a carrier in its box this close to its goal line (px). */
+export const AI_KEEPER_SMOTHER_RANGE = 110;
 /** A ball moving at least this fast towards goal counts as a shot (px/s). */
 export const AI_SHOT_DETECT_SPEED = 260;
 /** Only react to shots arriving within this time (s). */
 export const AI_SHOT_DETECT_TIME = 0.9;
+
+/* ---------------------------------------------------------------------------------------------
+ * Match-rules presets (T15). The rules travel with the match (GameState.rules); online, the host's are used.
+ * ------------------------------------------------------------------------------------------- */
+
+/** Keepers' skill under the Arcade rules, independent of the outfield AI difficulty ('team' = the same as the rest of their team). */
+export const KEEPER_DIFFICULTY: KeeperLevel = 'easy';
+/**
+ * Shot-stopping of a keeper given its own level (rules.keeperDifficulty not 'team'). A 'team' keeper uses its team's
+ * AI_PROFILES entry instead (the Classic rules, unchanged). Fields as in AiProfile.
+ */
+export const KEEPER_PROFILES: Record<Difficulty, Pick<AiProfile, 'keeperReaction' | 'keeperError' | 'keeperSpeed'>> = {
+  easy: { keeperReaction: 0.02, keeperError: 18, keeperSpeed: 0.6 },
+  normal: { keeperReaction: 0.015, keeperError: 12, keeperSpeed: 0.7 },
+  hard: { keeperReaction: 0.012, keeperError: 9, keeperSpeed: 0.75 },
+};
+/** Keeper flaws: the reaction time to each shot varies by up to this fraction either way (seeded, so still deterministic). */
+export const KEEPER_REACTION_SPREAD = 0.4;
+
+
+export const MATCH_RULES: Record<RulesPreset, MatchRules> = {
+  arcade: {
+    preset: 'arcade',
+    goalWidth: GOAL_WIDTH_BIG,
+    keeperDifficulty: KEEPER_DIFFICULTY,
+    keeperCatchSpeed: KEEPER_CATCH_SPEED_ARCADE,
+    keeperFlaws: true,
+    shotChargeTime: SHOT_QUICK_CHARGE_TIME,
+    aimAssist: true,
+    finesse: true,
+    aimLine: true,
+    easedDefending: true,
+  },
+  classic: {
+    preset: 'classic',
+    goalWidth: GOAL_WIDTH,
+    keeperDifficulty: 'team',
+    keeperCatchSpeed: KEEPER_CATCH_SPEED,
+    keeperFlaws: false,
+    shotChargeTime: SHOT_MAX_CHARGE_TIME,
+    aimAssist: false,
+    finesse: false,
+    aimLine: false,
+    easedDefending: false,
+  },
+};
+/** The preset a new player starts with (Settings → Match rules), offline and when hosting. */
+export const DEFAULT_RULES_PRESET: RulesPreset = 'arcade';
+
+/**
+ * Keeper flaws (rules.keeperFlaws): extra reaction time to a shot per keeper difficulty (s), plus up to
+ * KEEPER_CORNER_REACTION more for a shot heading for the far side of the goal from the keeper (scaled by how far).
+ */
+export const KEEPER_SLOW_REACTION: Record<Difficulty, number> = { easy: 0.02, normal: 0.01, hard: 0 };
+export const KEEPER_CORNER_REACTION = 0.03;
+/** ...a keeper's dive / step falls short of a shot by up to this (px), most for a ball heading right by the post. */
+export const KEEPER_POST_SHORTFALL = 16;
+/** ...and it only comes out to smother a carrier this close to its goal line (px; AI_KEEPER_SMOTHER_RANGE without flaws). */
+export const KEEPER_FLAW_SMOTHER_RANGE = 70;
+
+/**
+ * Aim assist (rules.aimAssist): a shot from within AIM_ASSIST_RANGE of the goal centre, aimed at the goal or within
+ * AIM_ASSIST_CONE (rad) of it, has its direction bent towards the nearer open corner (AIM_ASSIST_CORNER_INSET px inside a
+ * post) by AIM_ASSIST_STRENGTH of the difference, at most AIM_ASSIST_MAX_BEND rad -- or AIM_ASSIST_MAX_BEND_OUT when
+ * that bends it away from the middle (a shot at the keeper only gets nudged). Never all the way onto target.
+ */
+export const AIM_ASSIST_RANGE = 420;
+export const AIM_ASSIST_CONE = 0.25;
+export const AIM_ASSIST_STRENGTH = 0.75;
+export const AIM_ASSIST_MAX_BEND = 0.22;
+export const AIM_ASSIST_MAX_BEND_OUT = 0.08;
+
+export const AIM_ASSIST_CORNER_INSET = 24;
+
+/**
+ * Finesse shot (rules.finesse): hold shoot and tap pass. In range (AIM_ASSIST_RANGE) it is aimed FINESSE_POST_INSET px
+ * inside the post on the side the move keys point to (the keeper's far side if straight at goal), launched wide and
+ * curled back in; out of range it curls along the aim. Slower than a full shot; the curl fades at FINESSE_SPIN_DECAY (1/s).
+ */
+export const FINESSE_SPEED = 800;
+export const FINESSE_POST_INSET = 14;
+export const FINESSE_SPIN = 1.1;
+export const FINESSE_SPIN_DECAY = 1.2;
+/** Aim line while charging a shot (rules.aimLine): colour and alpha. */
+export const AIM_LINE_COLOR = 0xffffff;
+export const AIM_LINE_ALPHA = 0.45;
 
 /* ---------------------------------------------------------------------------------------------
  * Match rules (T05)
