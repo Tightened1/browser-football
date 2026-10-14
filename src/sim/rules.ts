@@ -14,6 +14,7 @@ import {
   PITCH_TOP,
   CENTRE_CIRCLE_RADIUS,
   RESTART_AUTO_DELAY,
+  RESTART_AUTO_DELAY_HUMAN,
   RESTART_CLEAR_RADIUS,
   RESTART_INSET,
   RESTART_PLAYED_DISTANCE,
@@ -21,6 +22,7 @@ import {
   THROW_IN_MIN_END_DISTANCE,
 } from '../config';
 import { formationPosition, resetAiPlans } from './ai';
+import { autoPlayRestart, inwardDirection, releaseRestart } from './setpiece';
 import type { GameState, MatchEvent, MatchPhase, PlayerState, Restart, RestartType, TeamId, Vec2 } from './types';
 
 const MID_X = (PITCH_LEFT + PITCH_RIGHT) / 2;
@@ -76,6 +78,7 @@ export function resetForKickoff(state: GameState): void {
   state.possession = null;
   state.lastTouch = null;
   state.restart = null;
+  state.grace = null;
   resetAiPlans(state.ai);
 }
 
@@ -108,6 +111,7 @@ function chooseTaker(state: GameState, team: TeamId, spot: Vec2, type: RestartTy
 function setRestart(state: GameState, type: RestartType, team: TeamId, pos: Vec2, side: Vec2): void {
   const taker = chooseTaker(state, team, pos, type);
   state.possession = null;
+  state.grace = null;
   state.ball.pos = { ...pos };
   state.ball.vel = { x: 0, y: 0 };
   if (!taker) {
@@ -127,7 +131,9 @@ function setRestart(state: GameState, type: RestartType, team: TeamId, pos: Vec2
   taker.facing = Math.atan2(-side.y, -side.x);
   if (state.controlled[team] >= 0 && taker.role !== 'keeper') state.controlled[team] = taker.id;
   state.lastTouch = { team, player: taker.id };
-  state.restart = { type, team, pos: { ...pos }, taker: taker.id, timer: RESTART_AUTO_DELAY };
+  // A human taker gets longer to aim before it is played for them (see autoPlayRestart).
+  const human = state.controlled[team] === taker.id;
+  state.restart = { type, team, pos: { ...pos }, taker: taker.id, timer: human ? RESTART_AUTO_DELAY_HUMAN : RESTART_AUTO_DELAY };
   resetAiPlans(state.ai);
   if (type !== 'kickoff') pushEvent(state, type, { team });
 }
@@ -140,13 +146,20 @@ function beginPlay(state: GameState): void {
   pushEvent(state, 'kickoff', { team: state.kickoffTeam });
 }
 
-/** Keeps the opposition clear of a pending restart and releases it once played or after its timer. */
+/**
+ * Keeps the opposition clear of a pending restart and releases it once played. When its timer runs out a throw-in (or a
+ * human's kick) is played automatically to a teammate; an AI's kick is just released.
+ */
 function updateRestart(state: GameState, dt: number): void {
   const r: Restart | null = state.restart;
   if (!r) return;
   r.timer -= dt;
-  if (r.timer <= 0 || dist(state.ball.pos, r.pos) > RESTART_PLAYED_DISTANCE) {
-    state.restart = null;
+  if (dist(state.ball.pos, r.pos) > RESTART_PLAYED_DISTANCE) {
+    releaseRestart(state);
+    return;
+  }
+  if (r.timer <= 0) {
+    if (!autoPlayRestart(state, state.controlled[r.team] === r.taker)) releaseRestart(state);
     return;
   }
   const clear = r.type === 'kickoff' ? CENTRE_CIRCLE_RADIUS : RESTART_CLEAR_RADIUS;
@@ -197,6 +210,25 @@ function goalLineOut(state: GameState, side: -1 | 1): void {
   }
 }
 
+/**
+ * Grace period: the restart just taken went straight back out without anyone but the taker touching it, so the same team
+ * takes it again from the same spot.
+ */
+function retake(state: GameState): void {
+  const g = state.grace!;
+  const inward = inwardDirection(g.type, g.pos);
+  const side = inward ? { x: -inward.x, y: -inward.y } : { x: -state.attackDir[g.team], y: 0 };
+  setRestart(state, g.type, g.team, g.pos, side);
+}
+
+/** The grace period runs out, or ends with a touch from anyone but the taker. */
+function updateGrace(state: GameState, dt: number): void {
+  const g = state.grace;
+  if (!g) return;
+  g.timer -= dt;
+  if (g.timer <= 0 || (state.lastTouch && state.lastTouch.player !== g.taker)) state.grace = null;
+}
+
 function scoreGoal(state: GameState, side: -1 | 1): void {
   const conceding = defenderOf(state, side);
   const scorer = (1 - conceding) as TeamId;
@@ -206,6 +238,7 @@ function scoreGoal(state: GameState, side: -1 | 1): void {
   state.phaseTimer = GOAL_PAUSE;
   state.possession = null;
   state.restart = null;
+  state.grace = null;
   state.kickoffTeam = conceding;
   const ownGoal = !!last && last.team === conceding;
   state.stats.goals.push({ team: scorer, player: last ? last.player : -1, ownGoal, half: state.half, clock: state.clock });
@@ -214,6 +247,7 @@ function scoreGoal(state: GameState, side: -1 | 1): void {
 
 function endHalf(state: GameState): void {
   state.restart = null;
+  state.grace = null;
   state.possession = null;
   if (state.half < HALVES) {
     state.phase = 'half-time';
@@ -240,9 +274,11 @@ function checkBall(state: GameState): void {
   if (wholeX || restX) {
     const side = ball.pos.x < PITCH_LEFT ? -1 : 1;
     if (inGoalMouth) scoreGoal(state, side);
+    else if (state.grace) retake(state);
     else goalLineOut(state, side);
   } else if (ball.pos.y < PITCH_TOP - r || ball.pos.y > PITCH_BOTTOM + r || (resting && (ball.pos.y < PITCH_TOP || ball.pos.y > PITCH_BOTTOM))) {
-    throwIn(state);
+    if (state.grace) retake(state);
+    else throwIn(state);
   }
 }
 
@@ -257,6 +293,7 @@ export function updateRules(state: GameState, dt: number): void {
       state.clock = Math.min(state.halfLength, state.clock + dt);
       if (state.lastTouch) state.stats.possession[state.lastTouch.team] += dt;
       updateRestart(state, dt);
+      updateGrace(state, dt);
       checkBall(state);
       if (state.phase === 'playing' && state.clock >= state.halfLength) endHalf(state);
       break;

@@ -11,7 +11,7 @@ import {
   PITCH_LEFT,
   PITCH_RIGHT,
   PITCH_TOP,
-  RESTART_AUTO_DELAY,
+  RESTART_AUTO_DELAY_HUMAN,
   RESTART_CLEAR_RADIUS,
   SIM_DT,
 } from '../src/config';
@@ -209,7 +209,7 @@ describe('out of play', () => {
     expect(eventTypes(s)).toContain('corner');
   });
 
-  it('keeps the other team away until the restart is released, then lets go after about a second', () => {
+  it('keeps the other team away until the throw-in is taken, and throws it for an idle human after RESTART_AUTO_DELAY_HUMAN', () => {
     // The taking team has an idle human, so its taker (who is given the ball) just stands there.
     const start = playing(400, PITCH_TOP - BALL_RADIUS - 2, 0);
     start.controlled = [-1, 9];
@@ -218,8 +218,6 @@ describe('out of play', () => {
     const spot = { ...s.restart!.pos };
     let checked = 0;
     for (let i = 0; i < 20 && s.restart; i++) {
-      s.ball.pos = { ...spot }; // nobody plays it
-      s.ball.vel = { x: 0, y: 0 };
       s = step(s, idle, SIM_DT);
       checked++;
       for (const p of s.players.filter((q) => q.team === 0)) {
@@ -227,17 +225,17 @@ describe('out of play', () => {
       }
     }
     expect(checked).toBe(20);
-    for (let i = 0; i < Math.round(RESTART_AUTO_DELAY / SIM_DT) + 2; i++) {
-      s.ball.pos = { ...spot };
-      s.ball.vel = { x: 0, y: 0 };
-      s = step(s, idle, SIM_DT);
-    }
+    for (let i = 0; i < Math.round(RESTART_AUTO_DELAY_HUMAN / SIM_DT) - 30; i++) s = step(s, idle, SIM_DT);
+    expect(s.restart?.type).toBe('throw-in'); // still waiting for the human
+    expect(s.ball.pos).toEqual(spot);
+    for (let i = 0; i < 20; i++) s = step(s, idle, SIM_DT);
     expect(s.restart).toBeNull();
+    expect(s.ball.pos.y).toBeGreaterThan(spot.y); // thrown into the pitch
     expect(s.phase).toBe('playing');
   });
 
-  it('releases the restart as soon as the ball is played', () => {
-    let s = step(playing(400, PITCH_TOP - BALL_RADIUS - 2, 0), [], SIM_DT);
+  it('releases a kicked restart as soon as the ball is played', () => {
+    let s = step(playing(PITCH_RIGHT + BALL_RADIUS + 2, PITCH_BOTTOM - 80, 1), [], SIM_DT); // a corner
     s.ball.pos.x += 20; // someone kicked it away from the spot
     s = step(s, [], SIM_DT);
     expect(s.restart).toBeNull();

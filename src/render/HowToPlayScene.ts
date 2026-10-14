@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH } from '../config';
+import { GAME_HEIGHT, GAME_WIDTH, RESTART_AUTO_DELAY_HUMAN } from '../config';
 import { keysText, settings } from '../settings';
 import { button, drawBackdrop, Focus, heading, label, UI_COLORS } from './ui';
 
@@ -40,10 +40,12 @@ export class HowToPlayScene extends Phaser.Scene {
       'You control the ringed player; the AI plays the rest. Run into a loose ball to take it.',
       'The ball stays at your feet. A slide, a player in your way or a U-turn at full speed loses it.',
       'Kick just before the ball reaches you and it fires when it arrives (amber ring = waiting).',
+      'Throw-ins are thrown: aim with the move keys (yellow arrow), then pass = short throw, shoot = long.',
+      `A throw always goes into the pitch (wait ${RESTART_AUTO_DELAY_HUMAN} s: to a free teammate). You can't dribble over a line.`,
       'Online: one player hosts and shares the room code or invite link; the other joins. You pick your own team and kit.',
       'Change any key under Settings. The pause menu does not stop an online match, since your friend is still playing.',
     ];
-    notes.forEach((n, i) => label(this, CX, 515 + i * 34, 19, UI_COLORS.muted).setText(n).setWordWrapWidth(1000));
+    notes.forEach((n, i) => label(this, CX, 500 + i * 30, 19, UI_COLORS.muted).setText(n).setWordWrapWidth(1000));
 
     const back = button(this, CX, 740, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 220 });
     new Focus(this, [{ button: back }]);

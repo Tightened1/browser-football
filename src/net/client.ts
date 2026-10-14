@@ -36,7 +36,7 @@ import {
   SHOT_MAX_CHARGE_TIME,
 } from '../config';
 import { createMatchState, shotSpeed, updatePlayer } from '../sim/simulation';
-import { advanceHold, holdOffset, rollFreeBall, sharpTurnLosesBall } from '../sim/dribble';
+import { advanceHold, heldBallSpot, holdOffLines, rollFreeBall, sharpTurnLosesBall } from '../sim/dribble';
 import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
 import type { BallState, GameState, InputFrame, MatchEvent, MatchStats, PlayerState, Possession, TeamId } from '../sim/types';
 import { kindForPeerError, netError, type NetErrorKind } from './errors';
@@ -588,7 +588,10 @@ export class GuestMatch implements MatchDriver {
     const kicked = kickEdge(prev, f);
     if (poss && !kicked && sharpTurnLosesBall(p, f)) poss = null;
     updatePlayer(p, f, SIM_DT, poss ? DRIBBLE_SPEED_FACTOR : 1);
-    if (poss) advanceHold(poss, p, SIM_DT);
+    if (poss) {
+      advanceHold(poss, p, SIM_DT);
+      holdOffLines(poss, p, this.state.ball.radius); // the touchline holds the ball, as on the host
+    }
     // A kick from the dribble always fires (there is no kick buffer delay with the ball at your feet), ending it.
     return poss && kicked ? null : poss;
   }
@@ -611,11 +614,11 @@ export class GuestMatch implements MatchDriver {
     }
     const speed = f.pass ? PASS_SPEED : shotSpeed(charge);
     const aim = Math.hypot(f.moveX, f.moveY) > 1e-6 ? Math.atan2(f.moveY, f.moveX) : p.facing;
-    const off = holdOffset(poss, p, this.state.ball.radius);
+    const spot = heldBallSpot(poss, p, this.state.ball.radius);
     this.kick = {
       seq: f.seq,
       ball: {
-        pos: { x: p.pos.x + off.x, y: p.pos.y + off.y },
+        pos: spot,
         vel: { x: Math.cos(aim) * speed + p.vel.x * KICK_PLAYER_VEL_FACTOR, y: Math.sin(aim) * speed + p.vel.y * KICK_PLAYER_VEL_FACTOR },
         radius: this.state.ball.radius,
       },
@@ -659,8 +662,7 @@ export class GuestMatch implements MatchDriver {
     if (carrying && this.predictedPoss) {
       mode = 'carry';
       const p = s.players[id];
-      const off = holdOffset(this.predictedPoss, p, ball.radius);
-      pos = { x: p.pos.x + off.x, y: p.pos.y + off.y };
+      pos = heldBallSpot(this.predictedPoss, p, ball.radius);
       vel = { ...p.vel };
       s.possession = { ...this.predictedPoss, player: id };
     } else if (this.kick && !this.kick.handover) {

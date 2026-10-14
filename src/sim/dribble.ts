@@ -18,9 +18,11 @@ import {
   DRIBBLE_SHARP_TURN_SPEED,
   DRIBBLE_SPEED_FACTOR,
   DRIBBLE_TURN_RATE,
+  GOAL_WIDTH,
   KEEPER_CATCH_SPEED,
   PENALTY_BOX_HEIGHT,
   PENALTY_BOX_WIDTH,
+  PITCH_BOTTOM,
   PITCH_LEFT,
   PITCH_RIGHT,
   PITCH_TOP,
@@ -28,6 +30,9 @@ import {
   PLAYER_MAX_SPEED,
   BALL_MAX_SPEED,
   SIM_DT,
+  TOUCHLINE_HOLDS_DRIBBLE,
+  TOUCHLINE_HOLD_MAX_PUSH,
+  TOUCHLINE_HOLD_SPEED_FACTOR,
   WALL_TANGENT_KEEP,
 } from '../config';
 import { applyRollingFriction, BALL_BOUNDARY, capSpeed, collideWithBoundary, moveCircle } from './physics';
@@ -61,15 +66,69 @@ export function advanceHold(poss: Possession, p: PlayerState, dt: number, toward
   poss.roll = (poss.roll + Math.hypot(p.vel.x, p.vel.y) * dt) % DRIBBLE_ROLL_PERIOD;
 }
 
+const MID_Y = PITCH_TOP + PITCH_HEIGHT / 2;
+
+/**
+ * How far (x, y) a held ball centred at (x, y) is over the limit of the lines it may not be carried across: the whole
+ * ball stays inside the touchlines and the goal lines (except in the goal mouth, where it can be walked in to score).
+ */
+function overLines(x: number, y: number, r: number): Vec2 {
+  const over = { x: 0, y: 0 };
+  if (y < PITCH_TOP + r) over.y = y - (PITCH_TOP + r);
+  else if (y > PITCH_BOTTOM - r) over.y = y - (PITCH_BOTTOM - r);
+  if (Math.abs(y - MID_Y) > GOAL_WIDTH / 2) {
+    if (x < PITCH_LEFT + r) over.x = x - (PITCH_LEFT + r);
+    else if (x > PITCH_RIGHT - r) over.x = x - (PITCH_RIGHT - r);
+  }
+  return over;
+}
+
+/**
+ * Arcade touchline (T14, TOUCHLINE_HOLDS_DRIBBLE): the carrier can't take the ball over a line. If its spot is over one,
+ * the carrier is held back off the line (at most TOUCHLINE_HOLD_MAX_PUSH a tick), stops running into it and slides
+ * along it, slower. Run after the carrier has moved, before the ball is steered. Returns whether it held them.
+ */
+export function holdOffLines(poss: Possession, p: PlayerState, ballRadius: number): boolean {
+  if (!TOUCHLINE_HOLDS_DRIBBLE) return false;
+  const off = holdOffset(poss, p, ballRadius);
+  const over = overLines(p.pos.x + off.x, p.pos.y + off.y, ballRadius);
+  if (over.x === 0 && over.y === 0) return false;
+  const clampPush = (v: number): number => Math.max(-TOUCHLINE_HOLD_MAX_PUSH, Math.min(TOUCHLINE_HOLD_MAX_PUSH, v));
+  p.pos.x -= clampPush(over.x);
+  p.pos.y -= clampPush(over.y);
+  if (over.x * p.vel.x > 0) p.vel.x = 0;
+  if (over.y * p.vel.y > 0) p.vel.y = 0;
+  const sp = Math.hypot(p.vel.x, p.vel.y);
+  const max = CARRY_SPEED * TOUCHLINE_HOLD_SPEED_FACTOR;
+  if (sp > max) {
+    p.vel.x *= max / sp;
+    p.vel.y *= max / sp;
+  }
+  return true;
+}
+
 /**
  * Pulls the held ball towards its spot (the carrier has already moved this tick): it is given the velocity that covers
- * most of the gap during this tick, so it follows closely, never overshoots and never jumps.
+ * most of the gap during this tick, so it follows closely, never overshoots and never jumps. With the arcade touchline
+ * the spot is kept inside the lines.
  */
 export function steerHeldBall(poss: Possession, p: PlayerState, ball: BallState, dt = SIM_DT): void {
-  const off = holdOffset(poss, p, ball.radius);
+  const spot = heldBallSpot(poss, p, ball.radius);
   const k = (1 - Math.exp(-DRIBBLE_HOLD_STIFFNESS * dt)) / dt;
-  ball.vel.x = (p.pos.x + off.x - ball.pos.x) * k;
-  ball.vel.y = (p.pos.y + off.y - ball.pos.y) * k;
+  ball.vel.x = (spot.x - ball.pos.x) * k;
+  ball.vel.y = (spot.y - ball.pos.y) * k;
+}
+
+/** Where the held ball belongs: in front of the carrier (holdOffset), kept inside the lines with the arcade touchline. */
+export function heldBallSpot(poss: Possession, p: PlayerState, ballRadius: number): Vec2 {
+  const off = holdOffset(poss, p, ballRadius);
+  const spot = { x: p.pos.x + off.x, y: p.pos.y + off.y };
+  if (TOUCHLINE_HOLDS_DRIBBLE) {
+    const over = overLines(spot.x, spot.y, ballRadius);
+    spot.x -= over.x;
+    spot.y -= over.y;
+  }
+  return spot;
 }
 
 /** A turn of almost straight back at full carrying speed: the ball runs on and is lost. */
@@ -138,7 +197,8 @@ export function takePossession(state: GameState, p: PlayerState): void {
  */
 export function updatePossession(state: GameState): void {
   if (!stickyDribbling()) return;
-  if (state.phase !== 'playing') {
+  // (Nobody can pick up a throw-in: it is thrown.)
+  if (state.phase !== 'playing' || state.restart?.type === 'throw-in') {
     state.possession = null;
     return;
   }
@@ -185,6 +245,7 @@ export function updatePossession(state: GameState): void {
   }
   if (poss) {
     state.lastTouch = { team: players[poss.player].team, player: poss.player };
+    holdOffLines(poss, players[poss.player], ball.radius);
     steerHeldBall(poss, players[poss.player], ball);
   }
 }

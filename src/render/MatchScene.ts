@@ -3,6 +3,8 @@ import {
   CENTRE_CIRCLE_RADIUS,
   COLORS,
   CONTROL_RING_COLOR,
+  SET_PIECE_ARROW_COLOR,
+  SET_PIECE_ARROW_LENGTH,
   GAME_HEIGHT,
   LINE_THICKNESS,
   PENALTY_BOX_HEIGHT,
@@ -43,6 +45,7 @@ import { randomOpponent, type Look } from '../teams';
 import { setTeamLooks, teamStyle } from './teamStyle';
 import { BOUNDARY } from '../sim/physics';
 import { roleOf } from '../sim/ai';
+import { restartAim } from '../sim/setpiece';
 import type { Difficulty, GameState, InputFrame, MatchEvent, MatchStats, PlayerState, TeamId } from '../sim/types';
 import { GuestLobby, GuestMatch } from '../net/client';
 import { HostLobby, HostMatch } from '../net/host';
@@ -95,6 +98,8 @@ export class MatchScene extends Phaser.Scene {
   private effects = new Effects();
   private detector = new BallCueDetector();
   private kickCues = new KickCueWatcher();
+  /** The latest local input (for the set-piece aim arrow, drawn from your keys at once, even online). */
+  private lastInput: InputFrame = { ...NEUTRAL_INPUT };
   private lastEventId = 0;
   private lastTick = 0;
   private netsDirty = true;
@@ -321,7 +326,8 @@ export class MatchScene extends Phaser.Scene {
   /** Local input for one tick: nothing while a menu is open (the keys belong to the menu then). */
   private sampleInput(): InputFrame {
     const frame = this.keyboard.sample();
-    return this.pauseOpen || this.resultsShown ? { ...NEUTRAL_INPUT, seq: frame.seq } : frame;
+    this.lastInput = this.pauseOpen || this.resultsShown ? { ...NEUTRAL_INPUT, seq: frame.seq } : frame;
+    return this.lastInput;
   }
 
   /** Full time: after a moment, the results screen goes over the match; it closes itself when a new match starts. */
@@ -558,6 +564,7 @@ export class MatchScene extends Phaser.Scene {
       if (cur) label.setText(String(cur.number)).setPosition(cur.pos.x, cur.pos.y - cur.radius - 10);
     }
     this.drawDebugOverlay(state);
+    this.drawRestartAim(g, state);
     // Ball: a hard shot looks lifted: it grows a little and its shadow slides away and shrinks. (Drawing only: the sim is 2D.)
     const { ball } = state;
     const lift = ballLift(Math.hypot(ball.vel.x, ball.vel.y));
@@ -569,6 +576,30 @@ export class MatchScene extends Phaser.Scene {
     g.fillCircle(ball.pos.x, by, r);
     g.lineStyle(2, 0x222222, 1);
     g.strokeCircle(ball.pos.x, by, r);
+  }
+
+  /**
+   * Your set piece (throw-in, corner, kickoff): an arrow from the ball where it will go, from your move keys and clamped
+   * into the pitch as the sim will (sim/setpiece.ts), longer as a long throw / shot charges.
+   */
+  private drawRestartAim(g: Phaser.GameObjects.Graphics, state: GameState): void {
+    const r = state.restart;
+    if (this.aiVsAi || !r || r.team !== this.humanTeam || r.taker < 0 || r.taker !== state.controlled[this.humanTeam]) return;
+    const taker = state.players[r.taker];
+    const aim = restartAim(r, this.lastInput, taker.facing);
+    const fx = Math.cos(aim);
+    const fy = Math.sin(aim);
+    const { x, y } = r.pos;
+    const start = state.ball.radius + 6;
+    const len = start + SET_PIECE_ARROW_LENGTH * (1 + Math.min(1, taker.charge / SHOT_MAX_CHARGE_TIME));
+    g.lineStyle(4, SET_PIECE_ARROW_COLOR, 0.85);
+    g.lineBetween(x + fx * start, y + fy * start, x + fx * (len - 10), y + fy * (len - 10));
+    g.fillStyle(SET_PIECE_ARROW_COLOR, 0.85);
+    g.fillTriangle(
+      x + fx * len, y + fy * len,
+      x + fx * (len - 14) - fy * 8, y + fy * (len - 14) + fx * 8,
+      x + fx * (len - 14) + fy * 8, y + fy * (len - 14) - fx * 8,
+    );
   }
 
   private drawPlayer(g: Phaser.GameObjects.Graphics, p: PlayerState, controlled: boolean): void {

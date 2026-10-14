@@ -206,6 +206,9 @@ export const TEAMS = [
   { name: 'Away', kit: 0xd9372b, keeper: 0x2fbf71, outline: 0x5e1410 },
 ] as const;
 export const CONTROL_RING_COLOR = 0xffffff;
+/** Your set piece's aim arrow (T14): colour, and length (px) for a short throw/pass (twice that at full charge). */
+export const SET_PIECE_ARROW_COLOR = 0xffe27a;
+export const SET_PIECE_ARROW_LENGTH = 45;
 
 export const COLORS = {
   player: 0x2a6fdb,
@@ -342,8 +345,39 @@ export const KICKOFF_DELAY = 1;
 export const GOAL_PAUSE = 2;
 /** Seconds of half-time before the second half. */
 export const HALF_TIME_PAUSE = 4;
-/** A restart (kickoff, throw-in, goal kick, corner) is released after this long if nobody has played the ball. */
+/**
+ * A restart (kickoff, throw-in, goal kick, corner) taken by the AI is released after this long if nobody has played the
+ * ball (a throw-in, which can't be dribbled, is then thrown to a teammate automatically).
+ */
 export const RESTART_AUTO_DELAY = 1;
+/** ...and one taken by a human gets this long (s) before it is thrown / passed to the nearest unmarked teammate for them (T14). */
+export const RESTART_AUTO_DELAY_HUMAN = 3;
+/**
+ * Grace period (T14): for this long (s) after a restart is taken, a ball that goes back out of play without anyone but
+ * the taker touching it is retaken by the same team (instead of handing the opponent a restart). 0 turns it off.
+ */
+export const RESTART_GRACE_TIME = 1;
+/**
+ * Throw-ins (T14) are thrown, not dribbled: the taker stands still, aims with the move keys (clamped into the pitch:
+ * at least THROW_AIM_EDGE rad off the line) and throws with pass (short) or shoot (long, charged like a shot).
+ * Corners and goal kicks are kicked as usual, but their aim is clamped into the pitch the same way.
+ */
+export const THROW_SHORT_SPEED = 380;
+export const THROW_LONG_MIN_SPEED = 460;
+export const THROW_LONG_MAX_SPEED = 720;
+export const THROW_AIM_EDGE = 0.2;
+/** Auto-throw / auto-pass target (T14): a teammate counts as marked with an opponent this close (px). */
+export const THROW_MARKED_DISTANCE = 60;
+/**
+ * Arcade touchline (T14): while a player is carrying the ball (sticky dribbling) it can't be carried over a touchline or
+ * goal line (outside the goal mouth); the carrier is held off the line and slides along it, slower. The ball then only
+ * goes out from a kick, a pass, a deflection, a tackle or a keeper's parry. false = the ball can be walked out.
+ */
+export const TOUCHLINE_HOLDS_DRIBBLE = true;
+/** ...the carrier's top speed while held against a line (fraction of the carrying speed). */
+export const TOUCHLINE_HOLD_SPEED_FACTOR = 0.6;
+/** ...the most the carrier is pushed back off a line in one tick (px); beyond that the ball is squeezed in instead. */
+export const TOUCHLINE_HOLD_MAX_PUSH = 6;
 /** The team not taking a restart is kept this far from the ball until it is released (px). */
 export const RESTART_CLEAR_RADIUS = 90;
 /**

@@ -2,7 +2,7 @@
 // leave the foot at once, and the host's version wins. The real GuestMatch, against the real sim, over a fake
 // link with simulated latency and packet loss (no PeerJS, no browser).
 import { describe, expect, it, vi } from 'vitest';
-import { BALL_RADIUS, KICK_REACH, NET_SNAPSHOT_INTERVAL_TICKS, PITCH_HEIGHT, PITCH_TOP, PLAYER_RADIUS, SIM_DT } from '../src/config';
+import { BALL_RADIUS, KICK_REACH, NET_SNAPSHOT_INTERVAL_TICKS, PITCH_BOTTOM, PITCH_HEIGHT, PITCH_TOP, PLAYER_RADIUS, SIM_DT } from '../src/config';
 import { createMatchState, NEUTRAL_INPUT, step } from '../src/sim/simulation';
 import type { GameState, InputFrame } from '../src/sim/types';
 import { decodeInputs, encodeSnapshot, mergeInputs, takeSnapshot } from '../src/net/snapshot';
@@ -17,7 +17,7 @@ const CONTACT = PLAYER_RADIUS + BALL_RADIUS;
 interface Run {
   /** Per drawn frame: the guest's own player and the ball as drawn, and who the host says has the ball. */
   /** `seq`: input frames sampled so far (the guest steps 0-2 fixed ticks per drawn frame). */
-  frames: { seq: number; px: number; py: number; bx: number; by: number; drawnPoss: number; hostPoss: number }[];
+  frames: { seq: number; px: number; py: number; bx: number; by: number; drawnPoss: number; hostPoss: number; drawnRestart: string; drawnTaker: number }[];
   host: GameState;
 }
 
@@ -96,7 +96,17 @@ function play(latencyMs: number, loss: number, ticks: number, script: (n: number
     guest.advance(SIM_DT, () => ({ ...NEUTRAL_INPUT, ...script(seq), seq: seq++ }), now);
     const s = guest.state;
     const p = s.players[9];
-    frames.push({ seq, px: p.pos.x, py: p.pos.y, bx: s.ball.pos.x, by: s.ball.pos.y, drawnPoss: s.possession?.player ?? -1, hostPoss: host.possession?.player ?? -1 });
+    frames.push({
+      seq,
+      px: p.pos.x,
+      py: p.pos.y,
+      bx: s.ball.pos.x,
+      by: s.ball.pos.y,
+      drawnPoss: s.possession?.player ?? -1,
+      hostPoss: host.possession?.player ?? -1,
+      drawnRestart: s.restart?.type ?? '',
+      drawnTaker: s.restart?.taker ?? -1,
+    });
   }
   vi.restoreAllMocks();
   return { frames, host };
@@ -165,5 +175,69 @@ describe('guest prediction: the host wins a dispute', () => {
     expect(end.drawnPoss).not.toBe(9);
     expect(Math.abs(end.by - run.host.ball.pos.y)).toBeLessThan(80);
     expect(end.by).toBeGreaterThan(midY + 60); // it went where the host knocked it
+  });
+});
+
+describe('guest: the touchline holds the ball it carries (T14, 100 ms one way, 3% loss)', () => {
+  // Run down into the bottom touchline with the ball, keep pushing into it, then go diagonally along it.
+  const run = play(100, 0.03, 300, (n) => (n < 200 ? { moveY: 1 } : { moveX: 1, moveY: 1 }), (host) => {
+    expect(host.restart).toBeNull(); // never out on the host
+  });
+
+  it('the host keeps the ball in, and the guest draws it inside the line too, at its feet', () => {
+    for (let t = 30; t < run.frames.length; t++) {
+      const f = run.frames[t];
+      expect(f.hostPoss).toBe(9);
+      expect(f.by).toBeLessThanOrEqual(PITCH_BOTTOM - BALL_RADIUS + 0.5);
+      const gap = Math.hypot(f.bx - f.px, f.by - f.py) - CONTACT;
+      expect(gap).toBeLessThanOrEqual(KICK_REACH + 1);
+    }
+  });
+
+  it('prediction agrees with the host: no rubber-banding against the line, and the same place in the end', () => {
+    for (let t = 31; t < run.frames.length; t++) {
+      const a = run.frames[t - 1];
+      const b = run.frames[t];
+      expect(jump({ x: a.px, y: a.py }, { x: b.px, y: b.py })).toBeLessThan(8);
+      expect(jump({ x: a.bx, y: a.by }, { x: b.bx, y: b.by })).toBeLessThan(8);
+    }
+    const end = run.frames[run.frames.length - 1];
+    const hp = run.host.players[9].pos;
+    expect(Math.abs(end.py - hp.y)).toBeLessThan(3); // held off the line at the same distance
+    expect(Math.abs(end.px - hp.x)).toBeLessThan(40); // (the guest is ~100 ms ahead along the line)
+    expect(end.px).toBeGreaterThan(720); // slid along it
+  });
+});
+
+describe('guest: taking a throw-in (T14, 100 ms one way, 3% loss)', () => {
+  // On the host the ball goes out over the bottom touchline off the home team: the guest's throw-in. The guest waits,
+  // aims straight out (down) and presses pass on input frame THROW.
+  const THROW = 120;
+  let thrownAt = -1;
+  const run = play(100, 0.03, 220, (n) => (n < 60 ? {} : n === THROW ? { moveY: 1, pass: true } : { moveY: 1 }), (host, t) => {
+    if (t === 10) {
+      host.possession = null;
+      host.players[9].touchTimer = 1;
+      host.ball.pos = { x: 700, y: PITCH_BOTTOM + BALL_RADIUS + 3 };
+      host.ball.vel = { x: 0, y: 60 };
+      host.lastTouch = { team: 0, player: 1 };
+    }
+    if (thrownAt < 0 && t > 12 && !host.restart) thrownAt = t;
+  });
+
+  it('the host gives the guest the throw-in, holds the ball for it, and its throw goes into the pitch', () => {
+    expect(thrownAt).toBeGreaterThan(THROW); // only once the guest's pass press arrived (not dribbled, not auto-thrown)
+    expect(run.host.ball.vel.y).toBeLessThan(0); // thrown up, into the pitch, although aimed out
+    expect(run.host.ball.pos.y).toBeLessThan(PITCH_BOTTOM - 100);
+  });
+
+  it('the guest draws its own throw-in: taker known, ball on the spot, never over the line', () => {
+    const during = run.frames.filter((f) => f.drawnRestart === 'throw-in');
+    expect(during.length).toBeGreaterThan(30);
+    for (const f of during) {
+      expect(f.drawnTaker).toBe(9); // so the aim arrow is drawn for the guest
+      expect(Math.abs(f.bx - 700)).toBeLessThan(1);
+    }
+    for (const f of run.frames.slice(30)) expect(f.by).toBeLessThan(PITCH_BOTTOM);
   });
 });

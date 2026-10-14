@@ -1,5 +1,6 @@
 // Circle movement, friction, collisions, wall bounces. Pure functions, no Phaser/DOM.
 import {
+  AI_PASS_ARRIVE_SPEED,
   BALL_DRAG,
   BALL_FRICTION,
   BALL_STOP_SPEED,
@@ -12,6 +13,7 @@ import {
   PITCH_TOP,
   POST_RADIUS,
   POST_RESTITUTION,
+  SHOT_MAX_SPEED,
   WALL_RESTITUTION,
 } from '../config';
 import type { CircleBody, Vec2 } from './types';
@@ -230,4 +232,21 @@ export function collideWithBoundary(
     if (collideCircles(c, postBody, restitution ?? POST_RESTITUTION, 1, 0)) hit = true;
   }
   return hit;
+}
+
+/** Ball speed needed to travel `d` px and still be moving at `arrive` px/s (inverse of the friction model). */
+export function kickSpeedForDistance(d: number, arrive = AI_PASS_ARRIVE_SPEED, max = SHOT_MAX_SPEED): number {
+  const travel = (v0: number): number => {
+    const k = BALL_FRICTION / BALL_DRAG;
+    return (v0 - arrive - k * Math.log((k + v0) / (k + arrive))) / BALL_DRAG;
+  };
+  let lo = arrive;
+  let hi = max;
+  if (travel(hi) < d) return hi;
+  for (let i = 0; i < 30; i++) {
+    const mid = (lo + hi) / 2;
+    if (travel(mid) < d) lo = mid;
+    else hi = mid;
+  }
+  return hi;
 }

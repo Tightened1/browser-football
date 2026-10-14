@@ -89,7 +89,10 @@ export function applySnapshot(s: GameState, snap: Snapshot): void {
   s.attackDir = [snap.attackDir0, -snap.attackDir0 as 1 | -1];
   s.kickoffTeam = snap.kickoffTeam;
   s.controlled = [snap.controlled[0], snap.controlled[1]];
-  s.restart = snap.restart ? { ...snap.restart, pos: { x: snap.ball.x, y: snap.ball.y }, taker: -1, timer: 0 } : null;
+  // The taker isn't sent: a human team's taker is always its controlled player (keepers take goal kicks, AI-controlled).
+  const r = snap.restart;
+  const taker = r && r.type !== 'goal-kick' ? snap.controlled[r.team] : -1;
+  s.restart = r ? { ...r, pos: { x: snap.ball.x, y: snap.ball.y }, taker, timer: 0 } : null;
   s.possession = snap.possession ? { ...snap.possession } : null;
   s.ball.pos = { x: snap.ball.x, y: snap.ball.y };
   s.ball.vel = { x: snap.ball.vx, y: snap.ball.vy };

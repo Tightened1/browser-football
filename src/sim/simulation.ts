@@ -60,6 +60,7 @@ import { cloneAiState, computeAiInputs, createAiState, formationPosition } from 
 import { applySwitching, updateTouches } from './control';
 import { advanceHold, canControl, controlSpeed, keeperHoldAngle, loseBall, relativeSpeed, sharpTurnLosesBall, stickyDribbling, takePossession, updatePossession } from './dribble';
 import { isFrozen, updateRules } from './rules';
+import { pendingThrowIn, restartAim, takeThrowIn } from './setpiece';
 import type { Difficulty, GameState, InputFrame, MatchPhase, PlayerRole, PlayerState, TeamId } from './types';
 
 export const NEUTRAL_INPUT: InputFrame = {
@@ -168,6 +169,7 @@ export function createInitialState(options: MatchOptions = {}): GameState {
     kickoffTeam: options.kickoffTeam ?? 0,
     firstKickoffTeam: options.kickoffTeam ?? 0,
     restart: null,
+    grace: null,
     events: [],
     nextEventId: 1,
     stats: { shots: [0, 0], possession: [0, 0], goals: [] },
@@ -203,6 +205,7 @@ export function cloneState(s: GameState): GameState {
     kickoffTeam: s.kickoffTeam,
     firstKickoffTeam: s.firstKickoffTeam,
     restart: s.restart ? { ...s.restart, pos: { ...s.restart.pos } } : null,
+    grace: s.grace ? { ...s.grace, pos: { ...s.grace.pos } } : null,
     events: s.events.map((e) => ({ ...e, score: [e.score[0], e.score[1]] as [number, number] })),
     nextEventId: s.nextEventId,
     stats: { shots: [s.stats.shots[0], s.stats.shots[1]], possession: [s.stats.possession[0], s.stats.possession[1]], goals: s.stats.goals.map((g) => ({ ...g })) },
@@ -352,7 +355,10 @@ function interactWithBall(state: GameState, p: PlayerState, input: InputFrame, d
   if (!input.shoot) p.charge = 0;
   if (p.kickQueue > 1e-9 && canKick(state, p)) {
     result.shot = p.queuedShot;
-    kickBall(state, p, p.queuedSpeed, p.queuedAim);
+    // A set piece (corner, goal kick) always goes into the pitch.
+    const r = state.restart;
+    const aim = r && r.taker === p.id ? restartAim(r, { moveX: Math.cos(p.queuedAim), moveY: Math.sin(p.queuedAim) }, p.facing) : p.queuedAim;
+    kickBall(state, p, p.queuedSpeed, aim);
     result.touched = true;
     return result;
   }
@@ -420,6 +426,14 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   for (const i of order) {
     const p = next.players[i];
     const input = used[i];
+    if (pendingThrowIn(next)?.taker === p.id) {
+      // A throw-in is thrown, not dribbled: the taker stands still, aims and throws (sim/setpiece.ts).
+      if (takeThrowIn(next, p, input, dt)) next.lastTouch = { team: p.team, player: p.id };
+      p.prevPass = input.pass;
+      p.prevShoot = input.shoot;
+      p.prevTackle = input.tackle;
+      continue;
+    }
     const kicking = (input.pass && !p.prevPass) || (!input.shoot && p.prevShoot);
     // Turning almost straight back at full speed loses the ball (unless the turn comes with a kick, which wins).
     if (next.possession?.player === p.id && !kicking && sharpTurnLosesBall(p, input)) loseBall(next);
@@ -440,6 +454,18 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
 
   if (!next.possession) applyRollingFriction(ball, dt);
   capSpeed(ball, BALL_MAX_SPEED);
+
+  // A throw-in not yet thrown: the ball stays on its spot (in the taker's hands); players can't move it.
+  const held = pendingThrowIn(next);
+  if (held) {
+    ball.pos = { ...held.pos };
+    ball.vel = { x: 0, y: 0 };
+    for (const p of next.players) if (p.id !== held.taker) collideCircles(p, ball, 0, 1, 0);
+    updateTouches(next);
+    next.tick = state.tick + 1;
+    updateRules(next, dt);
+    return next;
+  }
 
   // Substep so a fast ball can never skip through a wall, post or player.
   const sticky = stickyDribbling();

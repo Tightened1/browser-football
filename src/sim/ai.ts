@@ -27,7 +27,6 @@ import {
   AI_MARK_DISTANCE_ATT,
   AI_MARK_DISTANCE_DEF,
   AI_MIN_SHOT_ANGLE,
-  AI_PASS_ARRIVE_SPEED,
   AI_PASS_MAX,
   AI_PASS_MIN,
   AI_PASS_TO_HUMAN_BONUS,
@@ -63,6 +62,8 @@ import {
   KICK_REACH,
   KICK_FLASH_TIME,
   PASS_SPEED,
+  THROW_LONG_MAX_SPEED,
+  THROW_SHORT_SPEED,
   PENALTY_BOX_HEIGHT,
   PITCH_BOTTOM,
   PITCH_HEIGHT,
@@ -81,6 +82,8 @@ import {
   type AiProfile,
 } from '../config';
 import { angleDiff, CARRY_SPEED } from './dribble';
+import { kickSpeedForDistance } from './physics';
+import { inwardDirection, pendingThrowIn, restartTarget, throwChargeFor } from './setpiece';
 import type {
   AiIntent,
   AiPlayerMemory,
@@ -717,22 +720,7 @@ export interface OnBallDecision {
   scores: Record<OnBallAction, number>;
 }
 
-/** Ball speed needed to travel `d` px and still be moving at `arrive` px/s (inverse of the friction model). */
-export function kickSpeedForDistance(d: number, arrive = AI_PASS_ARRIVE_SPEED): number {
-  const travel = (v0: number): number => {
-    const k = BALL_FRICTION / BALL_DRAG;
-    return (v0 - arrive - k * Math.log((k + v0) / (k + arrive))) / BALL_DRAG;
-  };
-  let lo = arrive;
-  let hi = SHOT_MAX_SPEED;
-  if (travel(hi) < d) return hi;
-  for (let i = 0; i < 30; i++) {
-    const mid = (lo + hi) / 2;
-    if (travel(mid) < d) lo = mid;
-    else hi = mid;
-  }
-  return hi;
-}
+export { kickSpeedForDistance };
 
 /** Best spot to aim at in the goal: the candidate with the widest gap from the keeper and defenders. */
 export function bestShot(state: GameState, p: PlayerState): { target: Vec2; clearance: number } {
@@ -761,7 +749,15 @@ function chargeFor(speed: number): number {
  * Scores dribbling, each possible pass, shooting and clearing for the player on the ball, and picks the best.
  * `noise()` returns [0, 1); pass () => 0.5 for no randomness.
  */
-export function evaluateOnBall(state: GameState, p: PlayerState, noise: () => number, noiseAmount = 0, allowDribble = true): OnBallDecision {
+export function evaluateOnBall(
+  state: GameState,
+  p: PlayerState,
+  noise: () => number,
+  noiseAmount = 0,
+  allowDribble = true,
+  /** Taking a throw-in: only a throw to a teammate it can reach, into the pitch. */
+  throwIn = false,
+): OnBallDecision {
   const dir = state.attackDir[p.team];
   const goalX = ownGoalX(-dir);
   const goal = { x: goalX, y: MID_Y };
@@ -778,7 +774,7 @@ export function evaluateOnBall(state: GameState, p: PlayerState, noise: () => nu
   let shoot = -Infinity;
   let shotTarget = goal;
   let shotSpeed = SHOT_MAX_SPEED;
-  if (dGoal < AI_SHOOT_RANGE && goalAngle(p.pos, goalX) > AI_MIN_SHOT_ANGLE) {
+  if (!throwIn && dGoal < AI_SHOOT_RANGE && goalAngle(p.pos, goalX) > AI_MIN_SHOT_ANGLE) {
     const s = bestShot(state, p);
     if (s.clearance > 2) {
       shoot = 0.25 + 1.6 * (1 - dGoal / AI_SHOOT_RANGE) + Math.min(s.clearance, 50) / 100 + (dGoal < 190 ? 0.4 : 0) + n();
@@ -798,6 +794,7 @@ export function evaluateOnBall(state: GameState, p: PlayerState, noise: () => nu
     const len = dist(state.ball.pos, point);
     const lane = laneClearance(state, p.team, state.ball.pos, point);
     if (lane < 0) continue;
+    if (throwIn && !throwable(state, point, len)) continue;
     const open = Math.min(150, nearestOpponentDist(state, p.team, point)) / 150;
     const progress = clamp((along(point.x, dir) - myAlong) / 300, -1, 1);
     let score = 0.05 + 0.6 * progress + 0.5 * open + Math.min(lane, 40) / 100 + 0.45 * pressureAmount;
@@ -833,17 +830,32 @@ export function evaluateOnBall(state: GameState, p: PlayerState, noise: () => nu
 
   // Clear: a defender in trouble near its own goal just boots it upfield.
   let clear = -Infinity;
-  if (myAlong < 0.3 * PITCH_WIDTH && pressured) clear = 0.2 + 0.5 * pressureAmount + n();
+  if (!throwIn && myAlong < 0.3 * PITCH_WIDTH && pressured) clear = 0.2 + 0.5 * pressureAmount + n();
 
   const scores: Record<OnBallAction, number> = { dribble, pass, shoot, clear };
   let action: OnBallAction = 'dribble';
   for (const a of ['pass', 'shoot', 'clear'] as const) if (scores[a] > scores[action]) action = a;
   if (action === 'dribble' && !allowDribble) action = 'clear';
 
+  if (throwIn && action !== 'pass') {
+    // Nobody open within reach: throw it to the nearest unmarked teammate anyway (the same choice as the auto-throw).
+    const r = state.restart!;
+    const t = restartTarget(state, r, p);
+    const to = t.receiver >= 0 ? state.players[t.receiver].pos : { x: state.ball.pos.x + Math.cos(t.aim) * 150, y: state.ball.pos.y + Math.sin(t.aim) * 150 };
+    return { action: 'pass', target: { ...to }, speed: t.speed, receiver: t.receiver, scores };
+  }
   if (action === 'shoot') return { action, target: shotTarget, speed: shotSpeed, receiver: -1, scores };
   if (action === 'pass') return { action, target: passTarget, speed: passSpeed, receiver, scores };
   if (action === 'clear') return { action, target: clearTarget(state, p), speed: SHOT_MAX_SPEED * 0.85, receiver: -1, scores };
   return { action, target: goal, speed: 0, receiver: -1, scores };
+}
+
+/** Can a throw-in reach `point`, `len` px away, going into the pitch? */
+function throwable(state: GameState, point: Vec2, len: number): boolean {
+  const r = state.restart;
+  const inward = r ? inwardDirection(r.type, r.pos) : null;
+  if (inward && (point.x - state.ball.pos.x) * inward.x + (point.y - state.ball.pos.y) * inward.y < len * 0.2) return false;
+  return kickSpeedForDistance(len) <= THROW_LONG_MAX_SPEED;
 }
 
 /** Upfield and wide, on the side with fewer opponents. */
@@ -986,6 +998,19 @@ function executeKick(state: GameState, p: PlayerState, m: AiPlayerMemory, speed:
   const ang = Math.atan2(m.kickTarget.y - ball.pos.y, m.kickTarget.x - ball.pos.x) + m.kickError;
   // The kick adds some of the player's own velocity: aim off to cancel it.
   const face = unit(Math.cos(ang) * m.kickSpeed - p.vel.x * KICK_PLAYER_VEL_FACTOR, Math.sin(ang) * m.kickSpeed - p.vel.y * KICK_PLAYER_VEL_FACTOR);
+  if (pendingThrowIn(state)?.taker === p.id) {
+    // Taking a throw-in: aim with the move keys and throw, short (pass) or long (charged shoot). The sim keeps it in play.
+    m.target = m.kickTarget;
+    const aimInput = { ...IDLE, moveX: face.x * 0.3, moveY: face.y * 0.3 };
+    if (m.kickSpeed <= THROW_SHORT_SPEED * 1.15) {
+      if (p.prevPass) return aimInput;
+      m.kickPending = true;
+      return { ...aimInput, pass: true };
+    }
+    if (p.charge + SIM_DT * 0.5 < throwChargeFor(m.kickSpeed)) return { ...aimInput, shoot: true };
+    m.kickPending = true;
+    return aimInput;
+  }
   if (state.possession?.player === p.id) {
     // Carrying it: a kick goes where the move keys point, so no lining up. Tap pass, or charge a shot while carrying
     // the ball on towards the target, then release.
@@ -1057,7 +1082,8 @@ function takingRestart(state: GameState, p: PlayerState): boolean {
 
 function decideOnBall(state: GameState, p: PlayerState, m: AiPlayerMemory, prof: AiProfile): void {
   const { ai } = state;
-  const dec = evaluateOnBall(state, p, () => nextRandom(ai), prof.decisionNoise, !takingRestart(state, p));
+  const throwIn = pendingThrowIn(state)?.taker === p.id;
+  const dec = evaluateOnBall(state, p, () => nextRandom(ai), prof.decisionNoise, !takingRestart(state, p), throwIn);
   m.intent = dec.action;
   m.kickTarget = dec.target;
   m.kickSpeed = dec.speed;

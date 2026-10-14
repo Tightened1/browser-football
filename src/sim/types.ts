@@ -210,6 +210,8 @@ export interface GameState {
   firstKickoffTeam: TeamId;
   /** A set piece waiting to be taken (kickoff, throw-in, goal kick, corner), or null in open play. */
   restart: Restart | null;
+  /** Just after a restart is taken: if the ball goes straight back out, the same team retakes it (T14). */
+  grace: RestartGrace | null;
   /** The most recent events (capped), oldest first. Consumers remember the last `id` they handled. */
   events: MatchEvent[];
   nextEventId: number;
@@ -238,6 +240,17 @@ export interface Restart {
   /** Player id placed next to the ball to take it. */
   taker: number;
   /** Seconds until the restart is released automatically (the opposition keeps clear until then). */
+  timer: number;
+}
+
+/** The restart just taken, kept for RESTART_GRACE_TIME so it can be retaken if the ball goes straight back out. */
+export interface RestartGrace {
+  type: RestartType;
+  team: TeamId;
+  pos: Vec2;
+  /** The taker: a touch by anyone else ends the grace period. */
+  taker: number;
+  /** Seconds left. */
   timer: number;
 }
 

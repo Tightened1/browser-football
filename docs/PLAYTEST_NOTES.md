@@ -1,4 +1,4 @@
-# Playtest notes (T11, game 0.11.0; T13, game 1.1.0 at the end)
+# Playtest notes (T11, game 0.11.0; T13, game 1.1.0; T14, game 1.2.0 at the end)
 
 How the match was measured, what was wrong, what changed, and what to feel-test by hand.
 
@@ -238,3 +238,65 @@ about half); from the centre spot full-power shots now score 15-20% (40-45% with
 8. Keepers now catch most shots below ~850 px/s: still possible to score with placed half-power shots? [`KEEPER_CATCH_SPEED`]
 9. Online, as the guest with `?lag=50` (100 ms ping) and `?lag=100&loss=0.03`: does dribbling feel like offline, does a
    shot leave your foot immediately, and when you're tackled does the ball move to the host's version smoothly?
+
+# T14: throw-ins and touchlines (game 1.2.0)
+
+Feedback: "When it's a throw-in, half the time one of us walks it straight back off the pitch, so the other person gets
+a throw-in."
+
+## 1. Cause (confirmed with failing tests first)
+
+* Nothing stopped a ball held by a sticky dribbler from crossing a line: holding a direction into the touchline carried
+  the ball (sitting ~27 px in front of the player) wholly over it while the player was still on the pitch.
+* At a throw-in the taker could simply walk onto the ball, take possession and carry it anywhere, including back out.
+
+## 2. What changed
+
+* **Throw-ins are thrown** (`sim/setpiece.ts`). The ball stays on its spot until thrown; nobody can take possession of
+  it. The taker stands still, aims with the move keys and presses pass (short, `THROW_SHORT_SPEED` 380) or holds and
+  releases shoot (long, `THROW_LONG_MIN_SPEED`..`THROW_LONG_MAX_SPEED`, 460-720). The aim is clamped into the pitch: an
+  outward aim is mirrored back in, then kept at least `THROW_AIM_EDGE` (0.2 rad) off the line. A yellow arrow shows a
+  human taker's aim and grows with the charge. Corners and goal kicks are kicked as before, clamped the same way.
+* **Auto-throw:** a human taker gets `RESTART_AUTO_DELAY_HUMAN` (3 s); if they do nothing, it is thrown (or a kicked
+  restart passed) to the nearest unmarked teammate (no opponent within `THROW_MARKED_DISTANCE`, 60 px). If they are
+  charging a long throw, it is released. AI takers keep `RESTART_AUTO_DELAY` (1 s); an AI's corner or goal kick is
+  still just released then, as before.
+* **The touchline holds the dribbled ball** (`TOUCHLINE_HOLDS_DRIBBLE`, default on). The held ball stays wholly inside
+  the touchlines and goal lines (the goal mouth excepted: you can still walk it into the net). Pushing into a line,
+  the carrier is held off it (at most `TOUCHLINE_HOLD_MAX_PUSH`, 6 px a tick) and slides along it at
+  `TOUCHLINE_HOLD_SPEED_FACTOR` (60%) of carrying speed. The ball only goes out from a kick, pass, deflection, tackle,
+  body check or keeper parry.
+* **Grace period** (`RESTART_GRACE_TIME`, 1 s): a restart that goes straight back out before anyone but the taker has
+  touched it is retaken by the same team from the same spot. Goals still count.
+* **AI:** a throw-in taker only considers passes it can reach with a throw, into the pitch; if nobody is open it throws
+  to the same target the auto-throw would pick.
+* **Online:** the guest predicts its own carried ball with the same touchline rule (`holdOffLines` / `heldBallSpot` in
+  `sim/dribble.ts`), so prediction and host agree at the line. Prediction stays off during set pieces, so the host
+  decides every throw; the guest draws its aim arrow from its own keys straight away. Game version 1.2.0 (both players
+  must match); the wire format is unchanged (protocol 4).
+
+## 3. Numbers (AI vs AI, 40 matches each, seed 1, 2 x 3 min)
+
+| | Before (1.1.0) | **After (1.2.0)** | Target |
+|---|---|---|---|
+| Normal: goals per match | 5.08 | **4.15** | 3-6 |
+| Normal: matches with 3-6 goals | 65% | **72.5%** | |
+| Normal: shots / saves / save rate | 35.3 / 18.6 / 79% | 28.2 / 15.9 / 79% | |
+| Normal: throw-ins / goal kicks / corners | 105 / 17 / 12 | 108 / 15 / 11 | |
+| Easy goals | 4.67 | 4.25 | |
+| Hard goals | 5.63 | 4.42 | |
+| Stuck or dead ball, any level | 0 | **0** (longest still spell 1.7 s) | none |
+
+Holdout (seed 7, 100 matches): Normal 4.72 goals, 73% of matches in 3-6, 0 stuck. Goals dropped by about one a match
+(fewer shots, and a little less open play because throw-ins now take up to a second); still inside the T11 target.
+
+## 4. Please feel-test these by hand (T14)
+
+1. Offline and online (guest with `?lag=50` and `?lag=100&loss=0.03`): take throw-ins aiming every way, including
+   straight out. Does the arrow match where it goes? Is a short throw (pass) a useful length? [`THROW_SHORT_SPEED`]
+2. Long throws: is a full charge too strong or too weak? [`THROW_LONG_MIN_SPEED`, `THROW_LONG_MAX_SPEED`]
+3. Wait without pressing anything: does the 3 s auto-throw feel fair, and go to someone sensible? [`RESTART_AUTO_DELAY_HUMAN`]
+4. Dribble into the touchline and along it: does sliding at 60% speed feel natural, or sticky? Can you still beat a
+   player down the wing? [`TOUCHLINE_HOLD_SPEED_FACTOR`; `TOUCHLINE_HOLDS_DRIBBLE = false` restores the old rule]
+5. Kick the ball out on purpose: it must still go out and give the other team the throw.
+6. Kick a corner along the goal line: is the clamp (0.2 rad off the line) too restrictive? [`THROW_AIM_EDGE`]

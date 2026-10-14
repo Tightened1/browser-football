@@ -38,7 +38,8 @@ src/
     types.ts           GameState, PlayerState, BallState, InputFrame…
     physics.ts         Circle movement, friction, collisions, wall bounces
     simulation.ts      step(state, inputs, dt) -> state   (the whole game advances here)
-    dribble.ts         Sticky dribbling: taking, carrying and losing the ball (shared with the guest's prediction)
+    dribble.ts         Sticky dribbling: taking, carrying and losing the ball, the touchline holding it (shared with the guest's prediction)
+    setpiece.ts        Set pieces: throw-ins thrown not dribbled, aim clamped into the pitch, auto-throw, grace period
     rules.ts           Goals, kickoff, out of play, timer, halves
     ai.ts              AI decisions -> produces InputFrames for AI-controlled players
   render/              Phaser scenes that DRAW a GameState (never change it)
@@ -91,6 +92,8 @@ tests/                 Vitest tests for sim/
 
 With the ball (sticky dribbling) it stays at your feet; passes and shots go where the move keys point at release, and a kick pressed just before the ball arrives is held for 0.25 s and fires when it does.
 
+Throw-ins are thrown: the taker stands still, aims with the move keys (yellow arrow) and presses pass (short throw) or holds and releases shoot (long throw); the aim is always clamped into the pitch, and after 3 s of nothing it goes to a free teammate. Corners and goal kicks are kicked, also clamped into the pitch. A dribbled ball can't be carried over a line (`TOUCHLINE_HOLDS_DRIBBLE`).
+
 All of the movement and action keys can be rebound under **Settings** (two keys per action); the table shows the defaults. `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved.
 
 URL options: `?room=CODE` (invite link: joins that room), `?aivsai` (both teams AI, spectate), `?difficulty=easy|normal|hard`, and for testing online play on one machine `?lag=50&jitter=10&loss=0.03` (simulated network, per window) and `?predict=0|1` (guest prediction off/on).
@@ -124,12 +127,14 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T05 | Match rules: kickoff, goals, out of play, timer, HUD | T03 | Sonnet 5.5 | [x] |
 | T06 | Networking: PeerJS host/join lobby with room codes | T05 | **Opus 5.5** | [x] |
 | T07 | Netcode: input sending, snapshots, interpolation, disconnects | T06 | **Opus 5.5** | [x] |
-| T08 | Real-world network test & TURN fallback | T07 | **Opus 5.5** | [!] code done; waiting on you: create TURN keys + `VITE_TURN_CREDENTIALS_URL` secret, then run the checklist in `docs/NETWORK_TESTING.md` |
+| T08 | Real-world network test & TURN fallback | T07 | **Opus 5.5** | [x] |
 | T09 | Menus & game flow (title, host/join, settings, results) | T07 | Sonnet 5.5 | [x] |
 | T10 | Juice & audio: sounds, goal celebration, team colours, camera | T05 | Sonnet 5.5 | [x] |
 | T11 | Playtest & gameplay tuning | T04, T10 | Sonnet 5.5 | [x] |
 | T12 | Release: README, how-to-play, final deploy | T11, T08, T09 | Haiku 5.5 | [x] |
 | T13 | Sticky dribbling & fix shooting | T12 | **Opus 5.5** | [x] |
+| T14 | Throw-ins & touchlines: no walking the ball back out | T13 | Sonnet 5.5 | [x] |
+| T15 | Make scoring easier: keepers, shooting & "Arcade" rules preset | T14 | **Opus 5.5** | [ ] |
 
 ### Which model, and why
 
@@ -481,6 +486,70 @@ Finally, mark T13 as [x] in the ROADMAP.md task queue, add a change log entry, c
 
 ---
 
+### T14 — Throw-ins & touchlines: no walking the ball back out
+**Model:** Sonnet 5.5 (a well-defined rules change in `sim/rules.ts` and `sim/simulation.ts` with clear tests; switch to Opus 5.5 if the online guest's prediction starts fighting the new rules)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture and golden rules exactly (all game logic in pure TypeScript under src/sim/, tunables in src/config.ts). You are doing task T14, based on playtest feedback.
+
+Feedback from the players: "When it's a throw-in, half the time one of us walks it straight back off the pitch, so the other person gets a throw-in."
+Likely cause: restarts (src/sim/rules.ts setRestart/updateRestart) place the ball only RESTART_INSET inside the touchline. Since T13's sticky dribbling, the taker — or whoever picks the ball up right after the restart is released — can carry the ball back over the line by holding a direction towards it. Confirm this (write a failing test first) before fixing.
+
+Do the following:
+1. Throw-ins are thrown, not dribbled: during a throw-in the taker can't move with the ball or pick it up with a dribble. They aim with the movement keys and press pass (short throw) or shoot (long throw, can charge). The throw always goes into the pitch: clamp the aim to the inward half-circle. Show an aim arrow for the human taker. Corners and goal kicks stay as kicks, but use the same "aim into the pitch" clamp.
+2. Auto-throw: if a human taker does nothing for RESTART_AUTO_DELAY (raise it to ~3 s for a human taker; keep it short for the AI), throw it to the nearest unmarked teammate automatically.
+3. The touchline holds the ball for the dribbler (arcade rule, configurable): while a player is dribbling (sticky possession), the ball can't be carried over a touchline or goal line. The dribbler slows down and slides along the line instead. The ball can only go out of play from a kick, a pass, a deflection, a tackle or a keeper parry. Add TOUCHLINE_HOLDS_DRIBBLE = true in config.ts.
+4. Grace period: for ~1 s after any restart, if the ball goes back out without a touch from another player, the same team retakes it (instead of handing it to the opponent). Configurable.
+5. The AI takes throw-ins with the same rules (aims to a teammate, never out of play).
+6. Make sure all of this works for the online guest (predicted player and restarts must agree with the host; the host always wins). Test with the simulated latency settings.
+7. Update How-to-play text for throw-ins.
+8. Tests (Vitest): a dribbler holding a direction into the touchline can't take the ball out; a throw-in aimed outwards still goes into the pitch; auto-throw fires after the delay; the grace-period retake goes to the same team; a kicked ball can still go out normally.
+9. Re-run `npm run simulate` and confirm there are no stalemates (e.g. ball stuck against the line with a dribbler) and the T11 targets still hold. Report the numbers.
+
+Done when: in an offline and an online match, throw-ins always go into play, and nobody can walk the ball off the pitch. `npm test` and `npm run build` pass.
+Finally, mark T14 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
+### T15 — Make scoring easier: keepers, shooting & "Arcade" rules preset
+**Model:** Opus 5.5 (balance work spanning the keeper AI in `sim/ai.ts`, the shooting mechanics and match settings, which must stay fair online; the trade-offs need judgment, not just number tweaking)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture and golden rules exactly. You are doing task T15, based on playtest feedback.
+
+Feedback from the players: "In multiplayer nobody can score — it's too difficult. Even against the AI it's hard to score."
+Things that may be making it hard (check and measure before changing anything): KEEPER_CATCH_SPEED (850 px/s) is close to SHOT_MAX_SPEED (1150) and above most shots taken under pressure; a full charge takes SHOT_MAX_CHARGE_TIME (0.8 s), which is hard to get under pressure; keepers are AI on both sides even in multiplayer, using AI_TEAMMATE_DIFFICULTY 'normal'; GOAL_WIDTH is 140 px; 2 AI pressers close the shooter down quickly.
+
+Step 1 — measure. Extend `npm run simulate` (or add a separate script) with a "shooting test": thousands of scripted shots from typical positions (penalty spot, edge of the box, angled, with/without a defender nearby) at different charge levels, against each keeper difficulty. Report the % scored. Also report goals per match for AI vs AI at each difficulty. Save the before numbers.
+
+Step 2 — implement these options, each switchable in config.ts and grouped into a match-rules preset:
+1. Keeper balance: lower the catch speed so medium and hard shots are parried, not caught; keepers react slower to shots aimed at the far corners; keepers don't dive perfectly to the post; a slower keeper reaction on 'easy'/'normal'. Add a separate KEEPER_DIFFICULTY setting (independent of the outfield AI difficulty).
+2. Easier shooting:
+   - A faster charge (~0.5 s to full).
+   - Mild aim assist: a shot aimed roughly at goal from inside shooting range bends its direction a little towards the nearer open corner, never fully onto target.
+   - A "finesse" shot: holding pass + shoot (or a double-tap) gives a curled, placed shot that's slower but aimed near the post.
+   - A visible aim line while charging, inside shooting range.
+3. Optional chip shot (only if it fits cleanly into the 2D sim): a lofted ball with a simple height value that goes over a keeper who has come off their line. If it doesn't fit cleanly, write up how it could be done and skip it.
+4. Defending eased slightly: one AI presser instead of two when a human is shooting, and AI defenders don't slide-tackle from behind inside the box.
+5. Goal size setting: Normal (140) / Big (~180).
+6. A "Match rules" setting in the Settings/team-picker screen with presets: **Arcade** (default for online multiplayer: bigger goals, easy keepers, aim assist, quick charge) and **Classic** (current behaviour). In online play the host's choice is used and shown to the guest in the lobby; send it in the existing protocol (bump the protocol version).
+
+Step 3 — tune to targets and report before/after numbers:
+- Arcade: ~5–9 goals per 6-minute AI-vs-AI match; a well-placed charged shot from the edge of the box scores ~40–60% of the time; a penalty-spot shot ~70%+.
+- Classic: keep the T11 targets (~3–6 goals per match).
+- Keepers must still make visible saves — scoring shouldn't feel free.
+
+Also:
+- Tests (Vitest): the presets apply the right values; aim assist never turns a wide shot into a perfectly placed one; the keeper parries (doesn't catch) shots above the new catch speed; the setting survives the network handshake.
+- Update How-to-play and docs/PLAYTEST_NOTES.md with what changed and a short list of things to feel-test by hand online.
+
+Done when: in an online Arcade match, both of us can score regularly with well-taken shots, but keepers still make saves; the shooting test and simulation numbers hit the targets; `npm test` and `npm run build` pass.
+Finally, mark T15 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
 ## 6. Backlog (after v1)
 
 | # | Idea | Suggested model |
@@ -507,3 +576,5 @@ Finally, mark T13 as [x] in the ROADMAP.md task queue, add a change log entry, c
 - 2026-10-12 — T11 (game 0.11.0): `npm run simulate` (`scripts/simulate.ts`, bundled with rolldown, runs the pure sim headlessly) plays AI-vs-AI matches and reports goals, shots, saves, possession, restarts and stuck/dead-ball detection; `npm run probe` is a shot-vs-keeper exploit probe. Normal difficulty went from 3.07 to 3.88 goals a match (73% of matches in 3-6), saves ~64%, no stalemates. Mostly **bug fixes**: throw-in/corner takers stood on the pitch side facing the line, so every restart sent the ball straight out again (~630 throw-ins a match, now ~90; `setRestart` now puts the taker on the line side and the ball `RESTART_INSET` in); `lastTouch` was given to anyone within reach of a ball flying past (own goals, wrong-team restarts), now only real contacts or a near-rest ball count; a ball resting just outside a corner (not "wholly over" the line, unreachable) stalled play for 93 s, now a resting ball beyond a line is out (`OUT_REST_SPEED`); AI own goals (chasing from upfield, walking into the ball, goal-mouth scrambles) fixed with `routeAroundBall`, `AI_OWN_GOAL_DANGER` and a keeper-owned goal mouth. Exploits: missed slides now cost 1.3 s (`TACKLE_COOLDOWN`), connecting ones 0.5 s (`TACKLE_HIT_COOLDOWN`), keepers keep 0.9 s; Normal/Hard keepers react faster so placed half-charge corner shots no longer always score. Details, before/after tables and a hand-test list: `docs/PLAYTEST_NOTES.md`. Feel values in `config.ts` (speeds, friction, kick power) were deliberately not changed.
 - 2026-10-12 — T12 (game 1.0.0): release. `README.md` covers what the game is, the live link, playing with a friend (host → invite link → join), controls, connection troubleshooting and running locally. `index.html` has a meta description, an inline SVG favicon and Open Graph / Twitter title and description tags (no social image yet). Version bumped to 1.0.0; tag `v1.0.0`.
 - 2026-10-12 — T13 (game 1.1.0, protocol 4): **sticky dribbling and shots that always respond.** Causes found first: the free-running dribbled ball was usually out of `KICK_REACH` on the release frame, so the shot was dropped silently (main cause); the host's input merge kept `shoot` from the newer frame only, so a quick tap from a lagging guest vanished; a Space held over from a menu auto-repeated into a phantom press. New `sim/dribble.ts`: `GameState.possession` (carrier, hold angle, roll) — a slow enough loose ball is taken on contact (teammate passes up to 900 px/s), held in front, swung round with the facing, slightly slower running; lost to a slide, an opponent touching it from the front, any kick, or a full-speed U-turn. `DRIBBLE_MODE: 'classic'` restores T02. **Kick buffer** (`KICK_BUFFER_TIME` 0.25 s) for pass/shoot pressed out of reach; kicks are aimed by the move keys at release; queued/fired/expired cues (amber ring, white burst, tick/kick/swish). **Keepers catch** in the box (`KEEPER_CATCH_SPEED`) and can't be tackled while holding. AI uses possession (carry, staged turns, shielding, kick from possession, set pieces kicked, pressers step in goal-side). Re-tuned to the T11 targets: Normal 5.08 goals a match (65% in 3-6; seed 7: 4.97, 70%), no stalemates; all levels press with two and tackle more, keepers move faster. **Online:** snapshots carry possession and kick flags (146 bytes); the guest predicts the ball its own player carries, launches its own kicks at once and hands over to the host's ball without it ever going backwards; the host always wins (`tests/guestPrediction.test.ts`, 100 ms one way, 3% loss). Details and the hand-test list: `docs/PLAYTEST_NOTES.md` (T13 section).
+- 2026-10-14 — T08 marked done: TURN keys and `VITE_TURN_CREDENTIALS_URL` set up by the user. Added T14 (throw-ins/touchlines) and T15 (easier scoring, Arcade/Classic rules presets) from playtest feedback.
+- 2026-10-14 — T14 (game 1.2.0, protocol unchanged at 4): **throw-ins are thrown, and the ball can't be walked off the pitch.** Cause confirmed by failing tests first: the taker (or anyone) could walk onto the restart ball, pick it up with a sticky dribble and carry it back over the line, and nothing stopped a held ball crossing any line. New `sim/setpiece.ts`: during a throw-in the ball is held on its spot and nobody can take possession; the taker stands still, aims with the move keys and throws with pass (`THROW_SHORT_SPEED`) or a charged shoot (`THROW_LONG_*`); every restart's aim is clamped into the pitch (an outward aim is mirrored back in, then kept `THROW_AIM_EDGE` off the line), and a yellow arrow shows a human taker's aim (drawn from local keys, so the online guest sees it at once; the guest's copy of the restart now names the taker). Auto-play: a human taker gets `RESTART_AUTO_DELAY_HUMAN` (3 s), then it is thrown/passed to the nearest unmarked teammate (`THROW_MARKED_DISTANCE`); an AI throw-in goes within `RESTART_AUTO_DELAY` (1 s) and the AI only throws to a teammate it can reach. **Arcade touchline** (`TOUCHLINE_HOLDS_DRIBBLE`, on): a carried ball stays wholly inside the touchlines and goal lines (not the goal mouth: you can still walk it in); the carrier is held off the line and slides along it at `TOUCHLINE_HOLD_SPEED_FACTOR`. **Grace period** (`RESTART_GRACE_TIME` 1 s): a restart that goes straight back out before anyone but the taker touches it is retaken by the same team. Online: the guest's prediction runs the same touchline rule (`holdOffLines`, `heldBallSpot`); prediction stays off during set pieces, so the host decides every throw. Simulation (40 matches, seed 1): Normal 4.15 goals (was 5.08), 72.5% of matches in 3-6 (was 65%), Easy 4.25, Hard 4.42, 0 stuck or dead balls; holdout seed 7 (100 matches): Normal 4.72, 73% in 3-6, 0 stuck. Tests: `tests/throwins.test.ts`, two online cases in `tests/guestPrediction.test.ts` (100 ms one way, 3% loss). Details: `docs/PLAYTEST_NOTES.md` (T14 section).
