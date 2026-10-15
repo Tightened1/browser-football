@@ -4,6 +4,7 @@ import {
   ACTIONS,
   CAMERA_OPTIONS,
   DEFAULT_BINDINGS,
+  DEFENDING_OPTIONS,
   DIFFICULTY_OPTIONS,
   MATCH_LENGTH_OPTIONS,
   KEEPERS_OPTIONS,
@@ -24,10 +25,10 @@ import { rulesLabel, rulesSummary } from '../sim/matchRules';
 import { button, drawBackdrop, Focus, heading, label, UI_COLORS, type Button, type FocusItem } from './ui';
 
 const CX = GAME_WIDTH / 2;
-const VALUE_Y = 170;
-const VALUE_STEP = 43;
-const KEYS_Y = 497;
-const KEYS_STEP = 29;
+const VALUE_Y = 160;
+const VALUE_STEP = 37;
+const KEYS_Y = 482;
+const KEYS_STEP = 25;
 const CAMERA_LABEL = { auto: 'Auto (follow ball on small screens)', wide: 'Whole pitch', follow: 'Follow the ball' } as const;
 
 const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
@@ -38,8 +39,9 @@ function step<T>(list: readonly T[], current: T, dir: number): T {
 }
 
 const KEEPERS_LABEL = { rules: 'As the match rules say', team: 'Same as the AI', easy: 'Easy', normal: 'Normal', hard: 'Hard' } as const;
+const DEFENDING_LABEL = { rules: 'As the match rules say', relaxed: 'Relaxed', normal: 'Normal', tough: 'Tough' } as const;
 
-/** Settings: match length, AI difficulty, match rules, keepers, volume, controls overlay and key rebinding. Saved on every change. */
+/** Settings: match length, AI difficulty, match rules, keepers, AI defending vs humans, volume, controls overlay and key rebinding. Saved on every change. */
 export class SettingsScene extends Phaser.Scene {
   private focus!: Focus;
   private message!: Phaser.GameObjects.Text;
@@ -47,6 +49,7 @@ export class SettingsScene extends Phaser.Scene {
   private difficulty!: Button;
   private rules!: Button;
   private keepers!: Button;
+  private defending!: Button;
   private rulesInfo!: Phaser.GameObjects.Text;
   private volume!: Button;
   private overlay!: Button;
@@ -68,36 +71,37 @@ export class SettingsScene extends Phaser.Scene {
       items.push({ button: b, onLeft: () => change(-1), onRight: () => change(1) });
       return b;
     };
-    label(this, CX, 128, 22, UI_COLORS.warn, true).setText('MATCH');
+    label(this, CX, 120, 22, UI_COLORS.warn, true).setText('MATCH');
     this.length = value(VALUE_Y, (d) => this.set({ halfMinutes: step(MATCH_LENGTH_OPTIONS, settings.halfMinutes, d) }));
     this.difficulty = value(VALUE_Y + VALUE_STEP, (d) => this.set({ difficulty: step(DIFFICULTY_OPTIONS, settings.difficulty, d) }));
     this.rules = value(VALUE_Y + VALUE_STEP * 2, (d) => this.set({ rules: step(RULES_OPTIONS, settings.rules, d) }));
     this.keepers = value(VALUE_Y + VALUE_STEP * 3, (d) => this.set({ keepers: step(KEEPERS_OPTIONS, settings.keepers, d) }));
-    this.rulesInfo = label(this, CX + 250, VALUE_Y + VALUE_STEP * 2.5, 14, UI_COLORS.muted).setOrigin(0, 0.5).setWordWrapWidth(300);
-    this.volume = value(VALUE_Y + VALUE_STEP * 4, (d) => {
+    this.defending = value(VALUE_Y + VALUE_STEP * 4, (d) => this.set({ aiDefending: step(DEFENDING_OPTIONS, settings.aiDefending, d) }));
+    this.rulesInfo = label(this, CX + 250, VALUE_Y + VALUE_STEP * 3, 14, UI_COLORS.muted).setOrigin(0, 0.5).setWordWrapWidth(300);
+    this.volume = value(VALUE_Y + VALUE_STEP * 5, (d) => {
       this.set({ volume: Math.min(100, Math.max(0, settings.volume + d * 10)) });
       sound.applyVolume();
       sound.blip();
     });
-    this.camera = value(VALUE_Y + VALUE_STEP * 5, (d) => this.set({ camera: step(CAMERA_OPTIONS, settings.camera, d) }));
-    this.overlay = value(VALUE_Y + VALUE_STEP * 6, () => this.set({ showControls: !settings.showControls }));
+    this.camera = value(VALUE_Y + VALUE_STEP * 6, (d) => this.set({ camera: step(CAMERA_OPTIONS, settings.camera, d) }));
+    this.overlay = value(VALUE_Y + VALUE_STEP * 7, () => this.set({ showControls: !settings.showControls }));
 
-    label(this, CX, 466, 22, UI_COLORS.warn, true).setText('KEY BINDINGS');
+    label(this, CX, 452, 22, UI_COLORS.warn, true).setText('KEY BINDINGS');
     ACTIONS.forEach((a, i) => {
       const y = KEYS_Y + i * KEYS_STEP;
-      const text = label(this, CX - 240, y, 21, UI_COLORS.text).setText(a.label);
+      const text = label(this, CX - 240, y, 19, UI_COLORS.text).setText(a.label);
       text.setOrigin(0, 0.5);
       for (const slot of [0, 1] as const) {
-        const b = button(this, CX + 100 + slot * 130, y, '', () => this.startCapture(a.id, slot), { size: 18, width: 100, secondary: true });
+        const b = button(this, CX + 100 + slot * 130, y, '', () => this.startCapture(a.id, slot), { size: 16, width: 100, secondary: true });
         this.slots.set(`${a.id}:${slot}`, b);
         items.push({ button: b });
       }
     });
 
-    const reset = button(this, CX - 130, 768, 'Reset keys', () => this.resetKeys(), { size: 22, width: 210, secondary: true });
-    const back = button(this, CX + 130, 768, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 210 });
+    const reset = button(this, CX - 130, 774, 'Reset keys', () => this.resetKeys(), { size: 22, width: 210, secondary: true });
+    const back = button(this, CX + 130, 774, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 210 });
     items.push({ button: reset }, { button: back });
-    this.message = label(this, CX, 733, 18, UI_COLORS.warn).setWordWrapWidth(1000);
+    this.message = label(this, CX, 742, 18, UI_COLORS.warn).setWordWrapWidth(1000);
     label(this, CX, GAME_HEIGHT - 14, 14, UI_COLORS.muted).setText('Esc: back · reserved keys (Esc, Enter, Tab, F-keys, `, N) cannot be bound');
 
     this.focus = new Focus(this, items);
@@ -117,6 +121,7 @@ export class SettingsScene extends Phaser.Scene {
     this.difficulty.setLabel(`AI difficulty:   ◀  ${cap(settings.difficulty)}  ▶`);
     this.rules.setLabel(`Match rules:   ◀  ${rulesLabel(settings.rules)}  ▶`);
     this.keepers.setLabel(`Keepers:   ◀  ${KEEPERS_LABEL[settings.keepers]}  ▶`);
+    this.defending.setLabel(`AI defending vs humans:   ◀  ${DEFENDING_LABEL[settings.aiDefending]}  ▶`);
     this.rulesInfo.setText(`${rulesLabel(settings.rules)}: ${rulesSummary(matchRulesSetting())}. Online, the host's rules are used.`);
     this.volume.setLabel(`Sound volume:   ◀  ${settings.volume}%  ▶`);
     this.camera.setLabel(`Camera:   ◀  ${CAMERA_LABEL[settings.camera]}  ▶`);

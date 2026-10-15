@@ -92,7 +92,7 @@ describe('snapshot encode/decode', () => {
     const jsonState = JSON.stringify(s).length;
     console.log(`[snapshot] ${bytes.length} bytes binary · ${jsonSnapshot} bytes as JSON · full GameState ${jsonState} bytes as JSON · at 30/s: ${((bytes.length * 30) / 1024).toFixed(1)} KB/s`);
     expect(bytes.length).toBe(snapshotBytes(10));
-    expect(bytes.length).toBe(146);
+    expect(bytes.length).toBe(156);
     expect(bytes.length).toBeLessThan(jsonSnapshot / 5);
   });
 

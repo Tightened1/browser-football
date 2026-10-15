@@ -20,6 +20,14 @@ export interface PlayerSnap extends BodySnap {
   queued: boolean;
   /** A kick has just been struck (the "kick fired" cue). */
   kicked: boolean;
+  /** T17: sprint stamina (0..1) and whether it is emptied (locked until SPRINT_RESUME). */
+  stamina: number;
+  sprintLock: boolean;
+  /** T17: sprinting, shielding the ball, winding up a slide, feinting. */
+  sprinting: boolean;
+  shielding: boolean;
+  windup: boolean;
+  feinting: boolean;
 }
 
 /** Everything the guest needs to draw one moment of the match (static player data comes from its own copy). */
@@ -74,7 +82,20 @@ export function takeSnapshot(s: GameState, net: SnapshotNet): Snapshot {
     paused: net.paused,
     resumeIn: net.resumeIn,
     ball: body(s.ball),
-    players: s.players.map((p) => ({ ...body(p), facing: p.facing, charge: p.charge, tackling: p.tackleTimer > 0, queued: p.kickQueue > 1e-9, kicked: p.kickFlash > 0 })),
+    players: s.players.map((p) => ({
+      ...body(p),
+      facing: p.facing,
+      charge: p.charge,
+      tackling: p.tackleTimer > 0,
+      queued: p.kickQueue > 1e-9,
+      kicked: p.kickFlash > 0,
+      stamina: p.stamina,
+      sprintLock: p.sprintLock,
+      sprinting: p.sprinting,
+      shielding: p.shielding,
+      windup: p.windup > 0,
+      feinting: p.feintTimer > 0,
+    })),
   };
 }
 
@@ -106,6 +127,12 @@ export function applySnapshot(s: GameState, snap: Snapshot): void {
     p.tackleTimer = ps.tackling ? 0.01 : 0;
     p.kickQueue = ps.queued ? KICK_BUFFER_TIME : 0;
     p.kickFlash = ps.kicked ? KICK_FLASH_TIME : 0;
+    p.stamina = ps.stamina;
+    p.sprintLock = ps.sprintLock;
+    p.sprinting = ps.sprinting;
+    p.shielding = ps.shielding;
+    p.windup = ps.windup ? 0.01 : 0;
+    p.feintTimer = ps.feinting ? 0.01 : 0;
   });
 }
 
@@ -116,8 +143,10 @@ export function applySnapshot(s: GameState, snap: Snapshot): void {
  *   i8 controlled0 · i8 controlled1 · u8 restart (0 none, else type+1 | team<<4) · u16 lastEventId · u8 players
  *   i8 carrier (-1 none) · u8 hold angle (1/256 turn) · u8 roll (1/256 of DRIBBLE_ROLL_PERIOD)
  *   ball: i16 x, y (1/16 px) · i16 vx, vy (1/8 px/s)
- *   per player: i16 x, y · i16 vx, vy · u8 facing (1/256 turn) · u8 charge (1/255 of max) · u8 flags (tackling, queued, kicked)
- * Inputs: u8 type=2 · u8 count · u32 newest seq · per frame, newest first: i8 moveX, i8 moveY (1/127) · u8 buttons
+ *   per player: i16 x, y · i16 vx, vy · u8 facing (1/256 turn) · u8 charge (1/255 of max)
+ *               u8 flags (tackling, queued, kicked, sprinting, shielding, wind-up, feinting) · u8 stamina (1/127) | sprint lock<<7
+ * Inputs: u8 type=2 · u8 count · u32 newest seq · per frame, newest first: i8 moveX, i8 moveY (1/127)
+ *         u8 buttons (pass, shoot, tackle, switch, sprint, shield, feint)
  * ------------------------------------------------------------------------------------------------- */
 
 export const PACKET_SNAPSHOT = 1;
@@ -130,7 +159,7 @@ const VEL_SCALE = 8;
 const TIME_SCALE = 100;
 const HEADER_BYTES = 28;
 const BODY_BYTES = 8;
-const PLAYER_BYTES = BODY_BYTES + 3;
+const PLAYER_BYTES = BODY_BYTES + 4;
 const TAU = Math.PI * 2;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
@@ -195,8 +224,9 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
     o = writeBody(v, o, p);
     v.setUint8(o, turnByte(p.facing));
     v.setUint8(o + 1, u8((p.charge / SHOT_MAX_CHARGE_TIME) * 255));
-    v.setUint8(o + 2, (p.tackling ? 1 : 0) | (p.queued ? 2 : 0) | (p.kicked ? 4 : 0));
-    o += 3;
+    v.setUint8(o + 2, (p.tackling ? 1 : 0) | (p.queued ? 2 : 0) | (p.kicked ? 4 : 0) | (p.sprinting ? 8 : 0) | (p.shielding ? 16 : 0) | (p.windup ? 32 : 0) | (p.feinting ? 64 : 0));
+    v.setUint8(o + 3, clamp(Math.round(p.stamina * 127), 0, 127) | (p.sprintLock ? 128 : 0));
+    o += 4;
   }
   return bytes;
 }
@@ -220,8 +250,22 @@ export function decodeSnapshot(bytes: Uint8Array): Snapshot | null {
     const b = readBody(v, o);
     o += BODY_BYTES;
     const pf = v.getUint8(o + 2);
-    players.push({ ...b, facing: byteTurn(v.getUint8(o)), charge: (v.getUint8(o + 1) / 255) * SHOT_MAX_CHARGE_TIME, tackling: (pf & 1) !== 0, queued: (pf & 2) !== 0, kicked: (pf & 4) !== 0 });
-    o += 3;
+    const st = v.getUint8(o + 3);
+    players.push({
+      ...b,
+      facing: byteTurn(v.getUint8(o)),
+      charge: (v.getUint8(o + 1) / 255) * SHOT_MAX_CHARGE_TIME,
+      tackling: (pf & 1) !== 0,
+      queued: (pf & 2) !== 0,
+      kicked: (pf & 4) !== 0,
+      sprinting: (pf & 8) !== 0,
+      shielding: (pf & 16) !== 0,
+      windup: (pf & 32) !== 0,
+      feinting: (pf & 64) !== 0,
+      stamina: (st & 127) / 127,
+      sprintLock: (st & 128) !== 0,
+    });
+    o += 4;
   }
   return {
     tick: v.getUint32(1, true),
@@ -250,6 +294,9 @@ const BTN_PASS = 1;
 const BTN_SHOOT = 2;
 const BTN_TACKLE = 4;
 const BTN_SWITCH = 8;
+const BTN_SPRINT = 16;
+const BTN_SHIELD = 32;
+const BTN_FEINT = 64;
 const MOVE_SCALE = 127;
 
 /** The frame exactly as the host will see it after the trip through the wire format (prediction must use this). */
@@ -271,7 +318,10 @@ export function encodeInputs(frames: readonly InputFrame[]): Uint8Array {
     const o = 6 + i * 3;
     v.setInt8(o, clamp(Math.round(f.moveX * MOVE_SCALE), -MOVE_SCALE, MOVE_SCALE));
     v.setInt8(o + 1, clamp(Math.round(f.moveY * MOVE_SCALE), -MOVE_SCALE, MOVE_SCALE));
-    v.setUint8(o + 2, (f.pass ? BTN_PASS : 0) | (f.shoot ? BTN_SHOOT : 0) | (f.tackle ? BTN_TACKLE : 0) | (f.switchPlayer ? BTN_SWITCH : 0));
+    v.setUint8(
+      o + 2,
+      (f.pass ? BTN_PASS : 0) | (f.shoot ? BTN_SHOOT : 0) | (f.tackle ? BTN_TACKLE : 0) | (f.switchPlayer ? BTN_SWITCH : 0) | (f.sprint ? BTN_SPRINT : 0) | (f.shield ? BTN_SHIELD : 0) | (f.feint ? BTN_FEINT : 0),
+    );
   }
   return bytes;
 }
@@ -297,6 +347,9 @@ export function decodeInputs(bytes: Uint8Array): InputFrame[] | null {
       shoot: (b & BTN_SHOOT) !== 0,
       tackle: (b & BTN_TACKLE) !== 0,
       switchPlayer: (b & BTN_SWITCH) !== 0,
+      sprint: (b & BTN_SPRINT) !== 0,
+      shield: (b & BTN_SHIELD) !== 0,
+      feint: (b & BTN_FEINT) !== 0,
     });
   }
   return frames;
@@ -305,7 +358,8 @@ export function decodeInputs(bytes: Uint8Array): InputFrame[] | null {
 /**
  * Combines two queued input frames into one (the host's backlog), keeping any button press from either. Shoot too: a
  * quick tap (held in the older frame only) would otherwise vanish with both its press and its release; kept, it is
- * released on the next frame instead.
+ * released on the next frame instead. A feint (one frame long) is kept the same way; sprint and shield are held keys,
+ * so the newer frame's state stands.
  */
 export function mergeInputs(older: InputFrame, newer: InputFrame): InputFrame {
   return {
@@ -314,6 +368,7 @@ export function mergeInputs(older: InputFrame, newer: InputFrame): InputFrame {
     shoot: older.shoot || newer.shoot,
     tackle: older.tackle || newer.tackle,
     switchPlayer: older.switchPlayer || newer.switchPlayer,
+    feint: !!older.feint || !!newer.feint,
   };
 }
 

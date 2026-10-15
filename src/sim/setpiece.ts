@@ -112,7 +112,7 @@ export function throwChargeFor(speed: number, type: RestartType = 'throw-in'): n
  * Where a corner is crossed to: the most open teammate in the box (the one furthest from an opponent, nearer the
  * penalty spot breaking ties), else the penalty spot. Speed suits the distance, between a low and a hard cross.
  */
-export function cornerTarget(state: GameState, r: Restart, taker: PlayerState): { aim: number; speed: number; receiver: number } {
+export function cornerTarget(state: GameState, r: Restart, taker: PlayerState): { aim: number; speed: number; receiver: number; to: Vec2 } {
   const ball = state.ball.pos;
   const goalX = r.pos.x < MID_X ? PITCH_LEFT : PITCH_RIGHT;
   const inX = goalX === PITCH_LEFT ? 1 : -1;
@@ -130,10 +130,19 @@ export function cornerTarget(state: GameState, r: Restart, taker: PlayerState): 
       best = t;
     }
   }
-  const to = best ? best.pos : spot;
-  const d = Math.hypot(to.x - ball.x, to.y - ball.y);
-  const speed = Math.max(CORNER_LOW_SPEED, Math.min(CORNER_HARD_MAX_SPEED, kickSpeedForDistance(d, undefined, CORNER_HARD_MAX_SPEED)));
-  return { aim: clampAim(Math.atan2(to.y - ball.y, to.x - ball.x), inwardDirection(r.type, r.pos)), speed, receiver: best ? best.id : -1 };
+  let to = best ? best.pos : spot;
+  let d = Math.hypot(to.x - ball.x, to.y - ball.y);
+  let speed = Math.max(CORNER_LOW_SPEED, Math.min(CORNER_HARD_MAX_SPEED, kickSpeedForDistance(d, undefined, CORNER_HARD_MAX_SPEED)));
+  if (best) {
+    // A runner still on the move (T17: they sprint in) is crossed to where they'll be when the ball gets there.
+    // (Kept in the box, and off the goal line.)
+    const t = d / (speed * 0.8);
+    const out = Math.max(45, Math.min(PENALTY_BOX_WIDTH, (best.pos.x + best.vel.x * t - goalX) * inX));
+    to = { x: goalX + inX * out, y: Math.max(MID_Y - PENALTY_BOX_HEIGHT / 2, Math.min(MID_Y + PENALTY_BOX_HEIGHT / 2, best.pos.y + best.vel.y * t)) };
+    d = Math.hypot(to.x - ball.x, to.y - ball.y);
+    speed = Math.max(CORNER_LOW_SPEED, Math.min(CORNER_HARD_MAX_SPEED, kickSpeedForDistance(d, undefined, CORNER_HARD_MAX_SPEED)));
+  }
+  return { aim: clampAim(Math.atan2(to.y - ball.y, to.x - ball.x), inwardDirection(r.type, r.pos)), speed, receiver: best ? best.id : -1, to };
 }
 
 /**

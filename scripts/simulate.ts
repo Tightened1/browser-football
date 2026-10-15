@@ -1,7 +1,12 @@
 // Headless AI-vs-AI matches on the pure sim (no Phaser, no DOM). Run with `npm run simulate`.
 //   npm run simulate -- --matches 60 --difficulty normal --seed 1 --rules classic|arcade
 // Reports goals, shots, saves, possession, restarts and stalemates per difficulty (with the match rules' own keepers).
+//   --human naive|skilled   team 0's controlled player is a scripted human-like dribbler (scripts/humanBot.ts) instead of
+//                           the AI, to measure how the AI defends against a person (T17); --defending relaxed|normal|tough
+//                           overrides the rules' "AI defending vs humans" setting.
+// Always reports AI tackle duels: how often an AI challenge on a carrier wins the ball, for AI and human carriers.
 import { SIM_DT } from '../src/config';
+import { botInput, createBotMemory, type BotSkill } from './humanBot';
 import { rulesFor } from '../src/sim/matchRules';
 import { createMatchState, step } from '../src/sim/simulation';
 import type { Difficulty, GameState, RulesPreset } from '../src/sim/types';
@@ -19,6 +24,9 @@ const difficulties: Difficulty[] = which === 'all' ? ['easy', 'normal', 'hard'] 
 const json = args.includes('--json');
 const PRESET = opt('rules', 'classic') as RulesPreset;
 const RULES = rulesFor(PRESET);
+const HUMAN = opt('human', '') as BotSkill | '';
+const DEFENDING = opt('defending', '');
+if (DEFENDING) (RULES as unknown as Record<string, unknown>).aiDefending = DEFENDING;
 /** Goals-per-match target range for the rules (T11 for Classic, T15 for Arcade). */
 const TARGET: [number, number] = PRESET === 'arcade' ? [5, 9] : [3, 6];
 /** Corners-per-match target range (T16). */
@@ -53,11 +61,19 @@ interface MatchResult {
   playSeconds: number;
   /** Goals scored within 8 s of a kickoff (cheap-goal check). */
   quickGoals: number;
+  /** AI challenges on carriers and those that won the ball: [on AI carriers, on the human carrier]. */
+  duelTries: [number, number];
+  duelWins: [number, number];
+  /** Seconds the ball was carried by AI outfield players / by the human. */
+  carrySeconds: [number, number];
+  /** Separate carries by the human. */
+  humanCarries: number;
 }
 
 function playMatch(difficulty: Difficulty, seed: number): MatchResult {
   let s: GameState = createMatchState({
-    aiVsAi: true,
+    aiVsAi: !HUMAN,
+    humans: HUMAN ? [true, false] : undefined,
     difficulty: [difficulty, difficulty],
     seed,
     kickoffTeam: (seed % 2) as 0 | 1,
@@ -78,9 +94,18 @@ function playMatch(difficulty: Difficulty, seed: number): MatchResult {
   let cornerGoals = 0;
   let lastId = 0;
   const counts: Record<string, number> = {};
+  const bot = createBotMemory(seed);
+  const carry: [number, number] = [0, 0];
+  let humanCarries = 0;
+  let wasHumanCarrying = false;
   const maxTicks = Math.ceil((HALF * 2 + 30) / SIM_DT) * 3;
   for (let i = 0; i < maxTicks && s.phase !== 'full-time'; i++) {
-    s = step(s, [undefined, undefined], SIM_DT);
+    s = step(s, [HUMAN ? botInput(s, 0, bot, i, HUMAN) : undefined, undefined], SIM_DT);
+    const carrier = s.possession && s.phase === 'playing' ? s.players[s.possession.player] : null;
+    const humanCarrying = !!HUMAN && !!carrier && carrier.id === s.controlled[0];
+    if (carrier && carrier.role !== 'keeper') carry[humanCarrying ? 1 : 0] += SIM_DT;
+    if (humanCarrying && !wasHumanCarrying) humanCarries++;
+    wasHumanCarrying = humanCarrying;
     // The event list is capped, so count events as they appear (ids increase).
     for (const e of s.events) {
       if (e.id > lastId) {
@@ -139,6 +164,10 @@ function playMatch(difficulty: Difficulty, seed: number): MatchResult {
     ownGoals: s.stats.goals.filter((g) => g.ownGoal).length,
     playSeconds: play,
     quickGoals: quick,
+    duelTries: [a.duelTries + b.duelTries, a.duelTriesHuman + b.duelTriesHuman],
+    duelWins: [a.duelWins + b.duelWins, a.duelWinsHuman + b.duelWinsHuman],
+    carrySeconds: carry,
+    humanCarries,
   };
 }
 
@@ -147,6 +176,7 @@ const avg = (xs: number[]) => (xs.length ? sum(xs) / xs.length : 0);
 const f1 = (n: number) => n.toFixed(1);
 const f2 = (n: number) => n.toFixed(2);
 
+const s0 = (): GameState => createMatchState({ rules: RULES });
 const report: Record<string, unknown> = {};
 for (const d of difficulties) {
   const t0 = Date.now();
@@ -191,6 +221,15 @@ for (const d of difficulties) {
     longestStillSeconds: Math.max(...rs.map((r) => r.longestStill)),
     quickGoalsPerMatch: avg(rs.map((r) => r.quickGoals)),
     playSecondsPerMatch: avg(rs.map((r) => r.playSeconds)),
+    homeGoalsPerMatch: avg(rs.map((r) => r.goals[0])),
+    awayGoalsPerMatch: avg(rs.map((r) => r.goals[1])),
+    duels: [0, 1].map((k) => {
+      const tries = sum(rs.map((r) => r.duelTries[k]));
+      const wins = sum(rs.map((r) => r.duelWins[k]));
+      const carryMin = sum(rs.map((r) => r.carrySeconds[k])) / 60;
+      const carries = sum(rs.map((r) => r.humanCarries));
+      return { carrier: k ? 'human' : 'AI', triesPerMatch: tries / MATCHES, winsPerMatch: wins / MATCHES, winRate: tries ? wins / tries : 0, winsPerCarryMinute: carryMin ? wins / carryMin : 0, carryMinutesPerMatch: carryMin / MATCHES, pctCarriesTackled: k && carries ? wins / carries : null };
+    }),
     wallSeconds: (Date.now() - t0) / 1000,
   };
   report[d] = out;
@@ -209,6 +248,12 @@ for (const d of difficulties) {
   const bad = rs.filter((r) => r.stuckEpisodes > 0);
   if (bad.length) console.log(`  stuck in seeds: ${bad.map((r) => `${r.seed} (${f1(r.longestStill)}s)`).join(', ')}  -- reproduce with --seed ${SEED} --matches ${MATCHES}`);
   console.log(`dead ball (<${DEAD_SPEED}px/s for ${DEAD_SECONDS}s)  ${f2(out.deadBallPerMatch)}/match`);
+  if (HUMAN) console.log(`human team         scores ${f2(out.homeGoalsPerMatch)}/match, concedes ${f2(out.awayGoalsPerMatch)}/match`);
+  for (const du of out.duels) {
+    if (!du.triesPerMatch && !du.winsPerMatch) continue;
+    const pc = du.pctCarriesTackled === null ? '' : `   ${f1(du.pctCarriesTackled * 100)}% of the human's carries ended by an AI tackle`;
+    console.log(`AI tackles on ${du.carrier.padEnd(5)}  ${f1(du.winsPerMatch)} won of ${f1(du.triesPerMatch)} tries/match (${f1(du.winRate * 100)}%)   ${f2(du.winsPerCarryMinute)} won per minute carried (${f2(du.carryMinutesPerMatch)} min/match)${pc}`);
+  }
   console.log(`goals within 8s of a kickoff ${f2(out.quickGoalsPerMatch)}/match   open play ${f1(out.playSecondsPerMatch)}s/match   (${f1(out.wallSeconds)}s to simulate)`);
 }
 if (json) console.log(JSON.stringify(report, null, 2));

@@ -38,13 +38,14 @@ export function interpolateSnapshots(a: Snapshot, b: Snapshot, t: number): Snaps
   const base = t < 1 ? a : b;
   const players: PlayerSnap[] = a.players.map((pa, i) => {
     const pb = b.players[i] ?? pa;
+    const pbase = base.players[i] ?? pa;
     return {
+      // Discrete flags (incl. T17's sprint, shield, wind-up, feint) come from the base snapshot; stamina is interpolated.
+      ...pbase,
       ...lerpBody(pa, pb, t),
+      stamina: lerp(pa.stamina, pb.stamina, t),
       facing: lerpAngle(pa.facing, pb.facing, t),
       charge: pb.charge >= pa.charge ? lerp(pa.charge, pb.charge, t) : base === a ? pa.charge : pb.charge,
-      tackling: base.players[i]?.tackling ?? pa.tackling,
-      queued: base.players[i]?.queued ?? pa.queued,
-      kicked: base.players[i]?.kicked ?? pa.kicked,
     };
   });
   const samePhase = a.phase === b.phase && a.half === b.half;

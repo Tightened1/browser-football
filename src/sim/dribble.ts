@@ -17,7 +17,18 @@ import {
   DRIBBLE_SHARP_TURN_LOSS,
   DRIBBLE_SHARP_TURN_SPEED,
   DRIBBLE_SPEED_FACTOR,
+  DRIBBLE_SPRINT_ROLL_AMPLITUDE,
+  DRIBBLE_SPRINT_TURN_RATE,
   DRIBBLE_TURN_RATE,
+  FEINT_COOLDOWN,
+  FEINT_MAX_SHIFT,
+  FEINT_SPEED,
+  FEINT_TIME,
+  SHIELD_AWARE_RADIUS,
+  SHIELD_CHECK_CONE,
+  SHIELD_FRONT_ANGLE,
+  SHIELD_SLIDE_WIN,
+  STAND_TACKLE_COOLDOWN,
   GOAL_WIDTH,
   PENALTY_BOX_HEIGHT,
   PENALTY_BOX_WIDTH,
@@ -35,8 +46,10 @@ import {
   WALL_TANGENT_KEEP,
 } from '../config';
 import { applyRollingFriction, BALL_BOUNDARY, capSpeed, collideWithBoundary, moveCircle, type Boundary } from './physics';
+import { defendingProfile } from './matchRules';
+import { nextRandom } from './random';
 import { curlBall } from './shooting';
-import type { BallState, GameState, InputFrame, PlayerState, Possession, Vec2 } from './types';
+import type { BallState, GameState, InputFrame, PlayerState, Possession, TeamId, Vec2 } from './types';
 
 export const stickyDribbling = (): boolean => DRIBBLE_MODE === 'sticky';
 
@@ -48,20 +61,23 @@ export function angleDiff(a: number, b: number): number {
 /** Top speed of a player running with the ball. */
 export const CARRY_SPEED = PLAYER_MAX_SPEED * DRIBBLE_SPEED_FACTOR;
 
-/** Where the held ball sits relative to the carrier's centre: in front at `angle`, rolling a little out and back in. */
+/**
+ * Where the held ball sits relative to the carrier's centre: in front at `angle`, rolling a little out and back in --
+ * further out when sprinting (bigger touches, T17).
+ */
 export function holdOffset(poss: Possession, p: PlayerState, ballRadius: number): Vec2 {
   const roll = 0.5 - 0.5 * Math.cos((2 * Math.PI * poss.roll) / DRIBBLE_ROLL_PERIOD);
-  const d = p.radius + ballRadius + DRIBBLE_HOLD_GAP + DRIBBLE_ROLL_AMPLITUDE * roll;
+  const d = p.radius + ballRadius + DRIBBLE_HOLD_GAP + (p.sprinting ? DRIBBLE_SPRINT_ROLL_AMPLITUDE : DRIBBLE_ROLL_AMPLITUDE) * roll;
   return { x: Math.cos(poss.angle) * d, y: Math.sin(poss.angle) * d };
 }
 
 /**
- * One tick of carrying: the ball swings round towards `towards` (default the carrier's facing; rate-limited) and rolls
- * with the distance run.
+ * One tick of carrying: the ball swings round towards `towards` (default the carrier's facing; rate-limited, slower
+ * when sprinting) and rolls with the distance run.
  */
 export function advanceHold(poss: Possession, p: PlayerState, dt: number, towards = p.facing): void {
   const turn = angleDiff(towards, poss.angle);
-  const max = DRIBBLE_TURN_RATE * dt;
+  const max = (p.sprinting ? DRIBBLE_SPRINT_TURN_RATE : DRIBBLE_TURN_RATE) * dt;
   poss.angle += Math.max(-max, Math.min(max, turn));
   poss.roll = (poss.roll + Math.hypot(p.vel.x, p.vel.y) * dt) % DRIBBLE_ROLL_PERIOD;
 }
@@ -131,9 +147,63 @@ export function heldBallSpot(poss: Possession, p: PlayerState, ballRadius: numbe
   return spot;
 }
 
-/** A turn of almost straight back at full carrying speed: the ball runs on and is lost. */
+/**
+ * Shield (T17): where a shielding carrier holds the ball -- on the far side of their body from the nearest opponent
+ * within SHIELD_AWARE_RADIUS (else in front, as usual). `players` may be the drawn state's (the online guest).
+ */
+export function shieldHoldAngle(players: readonly PlayerState[], p: PlayerState): number {
+  let best: PlayerState | null = null;
+  let bestD = SHIELD_AWARE_RADIUS;
+  for (const o of players) {
+    if (o.team === p.team) continue;
+    const d = Math.hypot(o.pos.x - p.pos.x, o.pos.y - p.pos.y);
+    if (d < bestD) {
+      bestD = d;
+      best = o;
+    }
+  }
+  return best ? Math.atan2(p.pos.y - best.pos.y, p.pos.x - best.pos.x) : p.facing;
+}
+
+/** Where the carrier's ball swings towards this tick: out of a keeper's goal, away from an opponent when shielding, else the facing. */
+export function holdTarget(state: GameState, p: PlayerState): number {
+  if (p.role === 'keeper') return keeperHoldAngle(state, p);
+  return p.shielding ? shieldHoldAngle(state.players, p) : p.facing;
+}
+
+/**
+ * Feint / drag-back (T17, a double-tapped move key while carrying): the ball is dragged round towards the move keys (at
+ * most FEINT_MAX_SHIFT) and the carrier steps that way at FEINT_SPEED for FEINT_TIME. Returns whether it happened.
+ * Shared with the online guest's prediction.
+ */
+export function startFeint(poss: Possession, p: PlayerState, input: InputFrame): boolean {
+  if (p.feintCooldown > 0 || p.tackleTimer > 0 || p.role === 'keeper') return false;
+  if (Math.hypot(input.moveX, input.moveY) < 0.5) return false;
+  const a = Math.atan2(input.moveY, input.moveX);
+  poss.angle += Math.max(-FEINT_MAX_SHIFT, Math.min(FEINT_MAX_SHIFT, angleDiff(a, poss.angle)));
+  p.facing = a;
+  p.vel.x = Math.cos(a) * FEINT_SPEED;
+  p.vel.y = Math.sin(a) * FEINT_SPEED;
+  p.feintTimer = FEINT_TIME;
+  p.feintCooldown = FEINT_COOLDOWN;
+  return true;
+}
+
+/**
+ * A slide reaching a shielding carrier's ball from behind or beside them (more than SHIELD_FRONT_ANGLE off the side the
+ * ball is on) goes through the body: it wins the ball only SHIELD_SLIDE_WIN of the time (seeded roll).
+ */
+export function shieldBlocksSlide(state: GameState, carrier: PlayerState, tackler: PlayerState): boolean {
+  const poss = state.possession;
+  if (!poss || !carrier.shielding) return false;
+  const from = Math.atan2(tackler.pos.y - carrier.pos.y, tackler.pos.x - carrier.pos.x);
+  if (Math.abs(angleDiff(from, poss.angle)) <= SHIELD_FRONT_ANGLE) return false;
+  return nextRandom(state.ai) >= SHIELD_SLIDE_WIN;
+}
+
+/** A turn of almost straight back at full carrying speed: the ball runs on and is lost (not during a feint). */
 export function sharpTurnLosesBall(p: PlayerState, input: InputFrame): boolean {
-  if (!DRIBBLE_SHARP_TURN_LOSS) return false;
+  if (!DRIBBLE_SHARP_TURN_LOSS || p.feintTimer > 0) return false;
   const sp = Math.hypot(p.vel.x, p.vel.y);
   const ml = Math.hypot(input.moveX, input.moveY);
   if (sp < DRIBBLE_SHARP_TURN_SPEED * CARRY_SPEED || ml < 0.5) return false;
@@ -165,7 +235,7 @@ export function keeperHoldAngle(state: GameState, p: PlayerState): number {
 /** Can `p` take control of the ball right now? (A teammate's pass may arrive faster than a loose ball; a keeper catches.) */
 export function canControl(state: GameState, p: PlayerState): boolean {
   const { ball } = state;
-  if (p.tackleTimer > 0 || p.touchTimer > 0 || p.kickFlash > 0) return false;
+  if (p.tackleTimer > 0 || p.windup > 0 || p.touchTimer > 0 || p.kickFlash > 0) return false;
   if (p.role === 'keeper' && !keeperInBox(state, p)) return false;
   const gap = Math.hypot(ball.pos.x - p.pos.x, ball.pos.y - p.pos.y) - p.radius - ball.radius;
   if (gap > DRIBBLE_CONTROL_REACH) return false;
@@ -190,12 +260,39 @@ export function takePossession(state: GameState, p: PlayerState): void {
   state.lastTouch = { team: p.team, player: p.id };
 }
 
+/** Counts one of `team`'s AI challenges on a carrier (`tried`) and/or its winning the ball (AiTeamMemory.duel*, for tuning). */
+export function recordDuel(state: GameState, team: TeamId, humanCarrier: boolean, tried: boolean, won: boolean): void {
+  const tm = state.ai.teams[team];
+  if (humanCarrier) {
+    tm.duelTriesHuman += tried ? 1 : 0;
+    tm.duelWinsHuman += won ? 1 : 0;
+  } else {
+    tm.duelTries += tried ? 1 : 0;
+    tm.duelWins += won ? 1 : 0;
+  }
+}
+
+/**
+ * Standing tackle (T17): does `o`'s body check win the ball off carrier `c`? Never against a feint; an AI challenger on a
+ * human carrier wins with the rules' AI-defending standWin chance (a seeded roll), anyone else always. A failed one
+ * costs the challenger STAND_TACKLE_COOLDOWN.
+ */
+function standingTackleWins(state: GameState, o: PlayerState, c: PlayerState, humanDriven: readonly boolean[]): boolean {
+  const aiChallenger = !humanDriven[o.id];
+  const humanCarrier = !!humanDriven[c.id];
+  const chance = c.feintTimer > 0 ? 0 : aiChallenger ? defendingProfile(state.rules, humanCarrier).standWin : 1;
+  const wins = chance >= 1 || (chance > 0 && nextRandom(state.ai) < chance);
+  if (!wins) o.standCooldown = STAND_TACKLE_COOLDOWN;
+  if (aiChallenger) recordDuel(state, o.team, humanCarrier, true, wins);
+  return wins;
+}
+
 /**
  * Once per tick, after everyone has moved: the carrier loses the ball to an opponent body-checking them from the front
- * (or if it has been pushed away from them); otherwise the closest player able to control a loose ball takes it.
- * Then the held ball is steered to its spot. Sticky mode, open play only.
+ * (a standing tackle, which can fail: standingTackleWins), or if it has been pushed away from them; otherwise the closest player able to control a loose ball takes it.
+ * Then the held ball is steered to its spot. Sticky mode, open play only. `humanDriven[id]`: that player is a human's this tick.
  */
-export function updatePossession(state: GameState): void {
+export function updatePossession(state: GameState, humanDriven: readonly boolean[] = []): void {
   if (!stickyDribbling()) return;
   // (Nobody can pick up a throw-in or a corner: it is thrown / crossed from its spot.)
   const held = state.restart?.type === 'throw-in' || state.restart?.type === 'corner';
@@ -212,11 +309,12 @@ export function updatePossession(state: GameState): void {
     else if (c.role !== 'keeper') {
       // (A keeper holding the ball can't be challenged.)
       for (const o of players) {
-        if (o.team === c.team || o.tackleTimer > 0) continue;
+        if (o.team === c.team || o.tackleTimer > 0 || o.windup > 0 || o.standCooldown > 0) continue;
         const og = Math.hypot(ball.pos.x - o.pos.x, ball.pos.y - o.pos.y) - o.radius - ball.radius;
         if (og > DRIBBLE_CHECK_REACH) continue;
         const front = Math.abs(angleDiff(Math.atan2(o.pos.y - c.pos.y, o.pos.x - c.pos.x), poss.angle));
-        if (front > DRIBBLE_CHECK_CONE) continue; // from behind or the side: the carrier shields it
+        if (front > (c.shielding ? SHIELD_CHECK_CONE : DRIBBLE_CHECK_CONE)) continue; // from behind or the side: the carrier's body is in the way
+        if (!standingTackleWins(state, o, c, humanDriven)) continue;
         // Knocked loose, sideways off the line between the two players.
         const ux = o.pos.x - c.pos.x;
         const uy = o.pos.y - c.pos.y;

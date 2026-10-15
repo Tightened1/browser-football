@@ -317,11 +317,13 @@ describe('taking a corner', () => {
         if (s.restart) most = Math.max(most, inBox(s));
         if (taken && !s.restart && !crossed) {
           crossed = true;
-          // Played into the box: heading towards the goal mouth area.
+          // Played into the box: by the time it is level with the goal it is inside the penalty box, in front of goal.
           const b = s.ball;
-          const t = (goalX - (goalX > PITCH_LEFT ? 1 : -1) * 90 - b.pos.x) / b.vel.x;
+          const t = (midY - b.pos.y) / b.vel.y;
           expect(t).toBeGreaterThan(0);
-          expect(Math.abs(b.pos.y + b.vel.y * t - midY)).toBeLessThan(PENALTY_BOX_HEIGHT / 2);
+          const x = b.pos.x + b.vel.x * t;
+          expect(Math.abs(x - goalX)).toBeLessThan(PENALTY_BOX_WIDTH);
+          expect((x - goalX) * (goalX > PITCH_LEFT ? -1 : 1)).toBeGreaterThan(0);
         }
       }
       expect(most).toBeGreaterThanOrEqual(2);

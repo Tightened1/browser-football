@@ -28,7 +28,10 @@ Both players must be running the same version of the game. If you see a "differe
 | Pass (tap) / Shoot (hold to charge, release to kick) | `X` / `Space` |
 | Finesse shot (Arcade rules): hold shoot, then tap pass | `Space` + `X` |
 | Tackle or slide (when you don't have the ball) | `C` |
-| Switch player (when you don't have the ball) | `Z` or `Shift` |
+| Sprint (hold; drains the stamina bar under you) | `Shift` |
+| Shield the ball (hold, with the ball) | `V` |
+| Feint / drag-back (with the ball) | double-tap a move key |
+| Switch player (when you don't have the ball) | `Z` |
 | Pause menu / back | `Esc` |
 | Network overlay (ping, route, rates) | `F3` or `N` |
 | AI debug overlay | `F2` or `` ` `` |
@@ -40,7 +43,9 @@ Both players must be running the same version of the game. If you see a "differe
 **Throw-ins, corners and the lines:**
  throw-ins are thrown, not dribbled. Stand still, aim with the move keys (a yellow arrow shows where), then press pass for a short throw or hold and release shoot for a long one. A throw always goes into the pitch, and if you do nothing for 3 seconds it goes to a free teammate. Corners are taken the same way: aim the cross with the arrow, then pass for a low cross or hold and release shoot for a hard one. Goal kicks are kicked as usual, also always into the pitch. You can't dribble the ball over a touchline or goal line: the line holds it and you slide along it, so the ball only goes out if it's kicked, tackled or deflected. If a restart goes straight back out before anyone else touches it, your team takes it again.
 
-Move, pass, shoot, tackle and switch can all be rebound under **Settings** (two keys per action). `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved. **How to play** on the title screen shows the same table.
+**Beating a defender:** an AI defender about to slide in crouches and flashes orange for a moment first, committed to its direction: change direction (or feint) and it slides past. Sprint to get away (the stamina bar empties and refills; with the ball your touches get bigger, so it's easier to lose). Hold shield with the ball to keep it on the far side of your body: you move slowly, but tackles from behind or the side rarely get it. Double-tap a move key to drag the ball across that way and step past. How hard the AI tackles *you* is set by **AI defending vs humans** (Settings: Relaxed / Normal / Tough; Arcade uses Relaxed, Classic Normal); AI players still defend each other at full strength.
+
+Move, pass, shoot, tackle, sprint, shield and switch can all be rebound under **Settings** (two keys per action). `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved. **How to play** on the title screen shows the same table.
 
 In menus, use the arrow keys or the mouse. `Enter` or `Space` selects.
 

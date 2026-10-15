@@ -1,5 +1,5 @@
 // All tunable constants live here.
-import type { Difficulty, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
+import type { AiDefending, Difficulty, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
 import { turnServersFromEnv } from './net/ice';
 
 /** Pitch playing area in world units (pixels at 1x). */
@@ -152,6 +152,53 @@ export const TACKLE_HIT_COOLDOWN = 0.5;
 /** A keeper's dive uses its own, shorter cooldown. */
 export const KEEPER_DIVE_COOLDOWN = 0.9;
 export const TACKLE_KNOCK_SPEED = 650;
+/**
+ * Telegraphed tackles (T17): an AI slide at a human carrier starts with a wind-up (DefendingProfile.windup, ~0.2-0.3 s:
+ * a crouch and a flash) during which the slider is committed to its direction and moves at WINDUP_SPEED_FACTOR of top
+ * speed, so the human can react by changing direction. A human's own slide (the tackle key) starts at once, and so do
+ * keepers' dives.
+ */
+export const WINDUP_SPEED_FACTOR = 0.45;
+/**
+ * Standing tackle (the body check from the front, see DRIBBLE_CHECK_*): when one fails (see DefendingProfile.standWin)
+ * the challenger can't try again for this long (s), so the carrier gets away.
+ */
+export const STAND_TACKLE_COOLDOWN = 0.7;
+
+/**
+ * Sprint (T17): holding the sprint key while moving runs at SPRINT_SPEED_FACTOR of top speed, draining stamina
+ * (0..1, PlayerState.stamina) at SPRINT_DRAIN per second; it refills at SPRINT_RECOVER per second when not sprinting.
+ * An emptied bar can't sprint again until it is back to SPRINT_RESUME.
+ */
+export const SPRINT_SPEED_FACTOR = 1.25;
+export const SPRINT_DRAIN = 0.28;
+export const SPRINT_RECOVER = 0.16;
+export const SPRINT_RESUME = 0.3;
+/** Sprinting with the ball: bigger touches (the ball rolls out this far, px, instead of DRIBBLE_ROLL_AMPLITUDE) and slower turns with it (rad/s). */
+export const DRIBBLE_SPRINT_ROLL_AMPLITUDE = 12;
+export const DRIBBLE_SPRINT_TURN_RATE = 6;
+/**
+ * Shield (T17): holding the shield key with the ball slows you to SHIELD_SPEED_FACTOR of top speed and keeps the ball on
+ * the far side of your body from the nearest opponent within SHIELD_AWARE_RADIUS (px). A tackler more than
+ * SHIELD_FRONT_ANGLE (rad) off the side the ball is on (behind or beside you) then wins it with a slide only
+ * SHIELD_SLIDE_WIN of the time, and a standing tackle only reaches it within SHIELD_CHECK_CONE of the ball's side.
+ */
+export const SHIELD_SPEED_FACTOR = 0.4;
+export const SHIELD_AWARE_RADIUS = 110;
+export const SHIELD_FRONT_ANGLE = 0.6;
+export const SHIELD_SLIDE_WIN = 0.2;
+export const SHIELD_CHECK_CONE = 0.6;
+/**
+ * Feint / drag-back (T17): double-tapping a move key (within FEINT_DOUBLE_TAP_MS) with the ball drags it across to that
+ * side and steps you that way at up to FEINT_SPEED for FEINT_TIME (s); meanwhile standing tackles can't win it and AI
+ * defenders close by are wrong-footed for AI_FEINT_FOOL_TIME. Then FEINT_COOLDOWN (s) before the next one.
+ */
+export const FEINT_DOUBLE_TAP_MS = 250;
+export const FEINT_SPEED = 320;
+export const FEINT_TIME = 0.22;
+export const FEINT_COOLDOWN = 0.9;
+/** How far (rad) a feint swings the held ball round towards the feint direction, at most. */
+export const FEINT_MAX_SHIFT = 1.9;
 
 /** Teams: 5-a-side (1 keeper + 4 outfield). Team 0 defends the left goal, team 1 the right. */
 export const PLAYERS_PER_TEAM = 5;
@@ -214,6 +261,16 @@ export const TEAMS = [
   { name: 'Away', kit: 0xd9372b, keeper: 0x2fbf71, outline: 0x5e1410 },
 ] as const;
 export const CONTROL_RING_COLOR = 0xffffff;
+/**
+ * T17 visuals: a slide's wind-up crouch flashes WINDUP_FLASH_COLOR (with an arrow where it will go); a shielding
+ * player shows an arc on the side away from the ball; the controlled players' stamina bar is green, amber when low,
+ * red (blinking) when emptied.
+ */
+export const WINDUP_FLASH_COLOR = 0xff7a1a;
+export const SHIELD_ARC_COLOR = 0xffffff;
+export const STAMINA_BAR_COLOR = 0x4cd964;
+export const STAMINA_LOW_COLOR = 0xffb020;
+export const STAMINA_EMPTY_COLOR = 0xff4040;
 /** Your set piece's aim arrow (T14): colour, and length (px) for a short throw/pass (twice that at full charge). */
 export const SET_PIECE_ARROW_COLOR = 0xffe27a;
 export const SET_PIECE_ARROW_LENGTH = 45;
@@ -315,6 +372,42 @@ export const AI_DANGER_ZONE = 330;
 /** Start a slide tackle when the ball is within this distance (px) and roughly in front. */
 export const AI_TACKLE_RANGE = 62;
 
+/**
+ * How the AI defends against a carrier (T17). Against an AI carrier it uses AI_DEFENDING_VS_AI (the AI_PROFILES as they
+ * are); against a human carrier, the match rules' "AI defending vs humans" level (MatchRules.aiDefending).
+ */
+export type { AiDefending } from './sim/types';
+export interface DefendingProfile {
+  /** Multiplies the AI profile's tackleChance (how often a presser decides to slide in). */
+  tackleChance: number;
+  /** Added to the AI profile's reactionTime while defending (s). */
+  extraReaction: number;
+  /** Chance a standing tackle (body check from the front) wins the ball; a failed one costs STAND_TACKLE_COOLDOWN. */
+  standWin: number;
+  /** Most pressers on the carrier: 1 = one (a second only near our own goal, AI_DANGER_ZONE), 2 = as the AI profile says. */
+  pressers: number;
+  /** A slide's wind-up (s): the telegraph a human can react to. 0 = the slide starts at once (AI vs AI). */
+  windup: number;
+}
+export const AI_DEFENDING_VS_AI: DefendingProfile = { tackleChance: 1, extraReaction: 0, standWin: 1, pressers: 2, windup: 0 };
+export const AI_DEFENDING_VS_HUMAN: Record<AiDefending, DefendingProfile> = {
+  relaxed: { tackleChance: 0.75, extraReaction: 0.08, standWin: 0.62, pressers: 1, windup: 0.28 },
+  normal: { tackleChance: 0.9, extraReaction: 0.04, standWin: 0.78, pressers: 1, windup: 0.25 },
+  tough: { tackleChance: 1, extraReaction: 0, standWin: 0.9, pressers: 2, windup: 0.2 },
+};
+/**
+ * The AI uses the human's tools sparingly (T17): it sprints only with at least AI_SPRINT_MIN_STAMINA left (to recover
+ * into shape, chase a ball it is far from, or carry into open space), starts shielding at AI_SHIELD_RATE (per second)
+ * while a defender is right on it (for AI_SHIELD_TIME), and side-steps a slide being wound up at it with AI_FEINT_CHANCE.
+ */
+export const AI_SPRINT_MIN_STAMINA = 0.6;
+export const AI_SHIELD_RATE = 1.2;
+export const AI_SHIELD_TIME = 0.6;
+export const AI_FEINT_CHANCE = 0.3;
+/** An AI defender within this distance (px) of a carrier's feint is wrong-footed: it stops stepping in for this long (s). */
+export const AI_FEINT_FOOL_RANGE = 120;
+export const AI_FEINT_FOOL_TIME = 0.35;
+
 /** On the ball. Max shooting distance from the goal centre (px). */
 export const AI_SHOOT_RANGE = 400;
 /** Minimum angle (radians) the goal mouth must cover from the shooter's spot. */
@@ -376,6 +469,7 @@ export const MATCH_RULES: Record<RulesPreset, MatchRules> = {
     finesse: true,
     aimLine: true,
     easedDefending: true,
+    aiDefending: 'relaxed',
   },
   classic: {
     preset: 'classic',
@@ -388,6 +482,7 @@ export const MATCH_RULES: Record<RulesPreset, MatchRules> = {
     finesse: false,
     aimLine: false,
     easedDefending: false,
+    aiDefending: 'normal',
   },
 };
 /** The preset a new player starts with (Settings → Match rules), offline and when hosting. */

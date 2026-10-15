@@ -48,6 +48,12 @@ import {
   AI_SHOT_DETECT_TIME,
   AI_SPACE_SEARCH_RADIUS,
   AI_TACKLE_RANGE,
+  AI_FEINT_CHANCE,
+  AI_FEINT_FOOL_RANGE,
+  AI_FEINT_FOOL_TIME,
+  AI_SHIELD_RATE,
+  AI_SHIELD_TIME,
+  AI_SPRINT_MIN_STAMINA,
   AI_TEAMMATE_DIFFICULTY,
   AI_TRANSITION_TIME,
   BALL_DRAG,
@@ -90,7 +96,8 @@ import {
   type AiProfile,
 } from '../config';
 import { angleDiff, CARRY_SPEED } from './dribble';
-import { keeperDifficulty, keeperProfile } from './matchRules';
+import { defendingProfile, keeperDifficulty, keeperProfile } from './matchRules';
+import { nextRandom } from './random';
 import { curledCrossing } from './shooting';
 
 import { kickSpeedForDistance } from './physics';
@@ -127,15 +134,9 @@ function clampToPitch(v: Vec2, margin = AI_EDGE_MARGIN): Vec2 {
   return { x: clamp(v.x, PITCH_LEFT + margin, PITCH_RIGHT - margin), y: clamp(v.y, PITCH_TOP + margin, PITCH_BOTTOM - margin) };
 }
 
-const IDLE: InputFrame = { seq: 0, moveX: 0, moveY: 0, pass: false, shoot: false, tackle: false, switchPlayer: false };
+const IDLE: InputFrame = { seq: 0, moveX: 0, moveY: 0, pass: false, shoot: false, tackle: false, switchPlayer: false, sprint: false, shield: false, feint: false };
 
-/** Seeded PRNG (mulberry32) stored in the state: returns [0, 1) and advances ai.rng. */
-export function nextRandom(ai: AiState): number {
-  let t = (ai.rng = (ai.rng + 0x6d2b79f5) | 0);
-  t = Math.imul(t ^ (t >>> 15), t | 1);
-  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-}
+export { nextRandom };
 
 /** A decision interval around `base` (±30%), so players don't all think on the same tick. */
 function jitter(ai: AiState, base: number): number {
@@ -171,6 +172,29 @@ export function roleOf(p: PlayerState): AiRole {
 
 export function profileOf(state: GameState, team: TeamId): AiProfile {
   return AI_PROFILES[state.ai.difficulty[team]];
+}
+
+/** Is player `id` driven by a human this tick? */
+function isHumanDriven(state: GameState, ctx: AiContext, id: number): boolean {
+  const p = state.players[id];
+  return !!p && ctx.human[p.team] && state.controlled[p.team] === id;
+}
+
+/** Is the ball carried by a human-driven opponent of `team` (T17)? */
+export function humanCarrierAgainst(state: GameState, ctx: AiContext, team: TeamId): boolean {
+  return ctx.owner >= 0 && state.players[ctx.owner].team !== team && isHumanDriven(state, ctx, ctx.owner);
+}
+
+/**
+ * The profile `team`'s players defend with right now (T17): against a human on the ball, the team's AI profile with
+ * the rules' "AI defending vs humans" tackle profile applied (fewer slide decisions, slower reactions, fewer pressers);
+ * otherwise (AI vs AI) the team's own profile, unchanged.
+ */
+export function defendingAiProfile(state: GameState, ctx: AiContext, team: TeamId): AiProfile {
+  const base = profileOf(state, team);
+  if (!humanCarrierAgainst(state, ctx, team)) return base;
+  const d = defendingProfile(state.rules, true);
+  return { ...base, tackleChance: base.tackleChance * d.tackleChance, reactionTime: base.reactionTime + d.extraReaction, pressers: Math.min(base.pressers, d.pressers) };
 }
 
 /** Angle (radians) the goal mouth covers, seen from `pos`, for the goal at x = goalX. */
@@ -242,11 +266,14 @@ function createMemory(p: PlayerState): AiPlayerMemory {
     kickPending: false,
     shotReact: -1,
     saveError: 0,
+    shieldTimer: 0,
+    evadedFrom: -1,
+    fooled: 0,
   };
 }
 
 function createTeamMemory(): AiTeamMemory {
-  return { mode: 'transitioning', modeTimer: 0, lastPossession: -1, passReceiver: -1, passTimer: 0, shotLive: false, passes: 0, shots: 0, tackles: 0, saves: 0 };
+  return { mode: 'transitioning', modeTimer: 0, lastPossession: -1, passReceiver: -1, passTimer: 0, shotLive: false, passes: 0, shots: 0, tackles: 0, saves: 0, duelTries: 0, duelWins: 0, duelTriesHuman: 0, duelWinsHuman: 0 };
 }
 
 /** Fresh AI memory for these players. By default a team with a human uses the teammate difficulty. */
@@ -525,11 +552,12 @@ function findSpace(state: GameState, p: PlayerState, base: Vec2): Vec2 {
 }
 
 /**
- * Who presses the carrier: the quickest to the ball, plus a second when it's dangerous (or on hard). With eased
- * defending (rules.easedDefending, T15) a human on the ball is only ever pressed by one.
+ * Who presses the carrier: the quickest to the ball, plus a second when it's dangerous (or when the profile presses
+ * with two). Against a human on the ball the defending profile (T17) usually allows one, and with eased defending
+ * (rules.easedDefending, T15) a human is only ever pressed by one.
  */
 export function choosePressers(state: GameState, ctx: AiContext, team: TeamId): number[] {
-  const prof = profileOf(state, team);
+  const prof = defendingAiProfile(state, ctx, team);
   const order = state.players
     .filter((p) => p.team === team && p.role !== 'keeper')
     .sort((a, b) => ctx.intercept[a.id].time - ctx.intercept[b.id].time || a.id - b.id);
@@ -671,17 +699,30 @@ function actOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlaye
       const at = carrier ? carrier.pos : ball.pos;
       const g = unit(ownGoal.x - at.x, ownGoal.y - at.y);
       target = { x: at.x + g.x * AI_PRESS_OFFSET, y: at.y + g.y * AI_PRESS_OFFSET };
+      // A carrier's feint close by wrong-foots us (T17): carry on the way we were going for a moment, no tackling.
+      if (carrier && carrier.team !== p.team && carrier.feintTimer > 0 && m.fooled === 0 && dist(p.pos, carrier.pos) < AI_FEINT_FOOL_RANGE) {
+        m.fooled = AI_FEINT_FOOL_TIME;
+        m.tackleArmed = false;
+      }
+      if (m.fooled > 0) {
+        input = moveToward(p, m.target, 8, full);
+        return input;
+      }
       // Close in goal-side and jockey; if this decision says "tackle", go for the ball and slide in.
       const lead = { x: ball.pos.x + ball.vel.x * 0.12, y: ball.pos.y + ball.vel.y * 0.12 };
       const dBall = dist(p.pos, lead);
       if (m.tackleArmed && dBall < AI_TACKLE_RANGE * 1.8) target = lead;
-      // Goal-side and close to a carrier: step in to the ball and win it with the body (a body check from the front).
+      // Goal-side and close to a carrier: step in to the ball and win it with the body (a body check from the front) --
+      // unless a standing tackle just failed (T17): then hold off goal-side for a moment.
       const goalSide = carrier && along(p.pos.x, dir) < along(carrier.pos.x, dir) + 6;
       const keeperBall = !!state.possession && !!carrier && carrier.role === 'keeper'; // can't be challenged
-      if (state.possession && carrier && carrier.team !== p.team && !keeperBall && goalSide && dist(p.pos, carrier.pos) < AI_PRESS_ENGAGE) target = lead;
+      if (state.possession && carrier && carrier.team !== p.team && !keeperBall && goalSide && p.standCooldown === 0 && dist(p.pos, carrier.pos) < AI_PRESS_ENGAGE) target = lead;
       if (keeperBall) m.tackleArmed = false;
       input = moveToward(p, target, 8, full);
-      const d = unit(lead.x - p.pos.x, lead.y - p.pos.y);
+      // Against a human a slide is wound up first (T17): aim it where the ball will be by then, if it carries straight on.
+      const windT = (humanCarrierAgainst(state, ctx, p.team) ? defendingProfile(state.rules, true).windup : 0) + 0.12;
+      const slideAt = { x: ball.pos.x + ball.vel.x * windT, y: ball.pos.y + ball.vel.y * windT };
+      const d = unit(slideAt.x - p.pos.x, slideAt.y - p.pos.y);
       // Only slide in from goal-side in our own half: a tackle from the wrong side knocks it towards our goal.
       const safeAngle = d.x * dir > -0.2 || along(ball.pos.x, dir) > 0.5 * PITCH_WIDTH;
       // A carried ball can't be poked away (only tackled or body-checked); a loose one at the carrier's feet can.
@@ -692,7 +733,7 @@ function actOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlaye
         input = { ...IDLE, moveX: poke.x * 0.3, moveY: poke.y * 0.3, pass: true };
         m.kickPending = true;
         m.tackleArmed = false;
-      } else if (m.tackleArmed && safeAngle && !slideFromBehindInBox(state, p, carrier) && dBall < AI_TACKLE_RANGE && p.tackleCooldown === 0 && p.tackleTimer === 0 && !p.prevTackle) {
+      } else if (m.tackleArmed && safeAngle && !slideFromBehindInBox(state, p, carrier) && dist(p.pos, slideAt) < AI_TACKLE_RANGE && p.tackleCooldown === 0 && p.tackleTimer === 0 && p.windup === 0 && !p.prevTackle) {
         input = { ...IDLE, moveX: d.x * full, moveY: d.y * full, tackle: true };
         m.tackleArmed = false;
         state.ai.teams[p.team].tackles++;
@@ -1139,7 +1180,7 @@ function decideOnBall(state: GameState, p: PlayerState, m: AiPlayerMemory, prof:
     // penalty spot).
     if (runnersInBox(state, p) < AI_CORNER_MIN_RUNNERS && held.timer > AI_CORNER_LATEST) return;
     const t = cornerTarget(state, held, p);
-    const to = t.receiver >= 0 ? state.players[t.receiver].pos : { x: state.ball.pos.x + Math.cos(t.aim) * 300, y: state.ball.pos.y + Math.sin(t.aim) * 300 };
+    const to = t.receiver >= 0 ? t.to : { x: state.ball.pos.x + Math.cos(t.aim) * 300, y: state.ball.pos.y + Math.sin(t.aim) * 300 };
     m.intent = 'pass';
     m.kickTarget = { ...to };
     m.kickSpeed = t.speed;
@@ -1196,8 +1237,10 @@ function isOnBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlayerM
   return onBallIntent && dist(p.pos, state.ball.pos) <= p.radius + state.ball.radius + KICK_REACH + 6;
 }
 
-function outfieldInput(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlayerMemory, prof: AiProfile, dt: number): InputFrame {
-  if (isOnBall(state, ctx, p, m)) return onBallInput(state, p, m, prof, dt);
+function outfieldInput(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlayerMemory, base: AiProfile, dt: number): InputFrame {
+  if (isOnBall(state, ctx, p, m)) return carrierTools(state, p, m, onBallInput(state, p, m, base, dt));
+  // Off the ball against a human carrier, the "AI defending vs humans" profile applies (T17).
+  const prof = defendingAiProfile(state, ctx, p.team);
   if (m.intent === 'dribble' || m.intent === 'pass' || m.intent === 'shoot' || m.intent === 'clear') {
     // Lost the ball (or just kicked it): chase it until the next decision.
     m.intent = 'chase';
@@ -1209,7 +1252,64 @@ function outfieldInput(state: GameState, ctx: AiContext, p: PlayerState, m: AiPl
   }
   const input = actOffBall(state, ctx, p, m, prof);
   if (p.charge > 0) input.shoot = true; // never waste a charge by releasing away from the ball
+  input.sprint = wantsSprint(state, ctx, p, m);
   return input;
+}
+
+/** Keeps sprinting down to this much stamina once started, so the AI doesn't flicker on and off at the threshold. */
+const AI_SPRINT_KEEP_STAMINA = 0.3;
+
+/**
+ * The AI sprints sparingly (T17), only with stamina to spare: to get back into shape from far away, to reach a loose
+ * ball it is far from, or into the box for its corner -- never to press, so a human isn't hunted down at sprint speed.
+ */
+function wantsSprint(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlayerMemory): boolean {
+  if (p.stamina < (p.sprinting ? AI_SPRINT_KEEP_STAMINA : AI_SPRINT_MIN_STAMINA)) return false;
+  const r = state.restart;
+  // Our corner: get into the box before it is crossed. Any other dead ball: jog into position.
+  if (r) return r.type === 'corner' && r.team === p.team && m.intent === 'run' && dist(p.pos, m.offset) > 120;
+  if (m.intent === 'recover') return dist(p.pos, m.target) > 220;
+  if (m.intent === 'chase') return ctx.owner < 0 && dist(p.pos, state.ball.pos) > 180;
+  return false;
+}
+
+/**
+ * The AI carrier's own tools, used sparingly (T17): it side-steps (feints) a slide being wound up at it now and then,
+ * shields when a defender is right on it now and then, and sprints into open space with stamina to spare.
+ */
+function carrierTools(state: GameState, p: PlayerState, m: AiPlayerMemory, input: InputFrame): InputFrame {
+  m.shieldTimer = Math.max(0, m.shieldTimer - SIM_DT);
+  if (state.possession?.player !== p.id || takingRestart(state, p) || p.role === 'keeper') return input;
+  const kicking = input.pass || input.shoot || p.charge > 0;
+  const dir = state.attackDir[p.team];
+  let tackler: PlayerState | null = null;
+  let near: PlayerState | null = null;
+  for (const o of state.players) {
+    if (o.team === p.team) continue;
+    const d = dist(o.pos, p.pos);
+    if (o.windup > 0 && d < 110 && (!tackler || d < dist(tackler.pos, p.pos))) tackler = o;
+    if (!near || d < dist(near.pos, p.pos)) near = o;
+  }
+  // A slide being wound up at us: decide once per tackler whether to side-step it.
+  if (!tackler) m.evadedFrom = -1;
+  else if (m.evadedFrom !== tackler.id) {
+    m.evadedFrom = tackler.id;
+    if (!kicking && p.feintCooldown === 0 && nextRandom(state.ai) < AI_FEINT_CHANCE) {
+      // Step across the tackler's line, to the goal side of it.
+      const t = unit(p.pos.x - tackler.pos.x, p.pos.y - tackler.pos.y);
+      const side = { x: -t.y, y: t.x };
+      const s = (side.x * dir >= 0 ? 1 : -1) * Math.max(0.5, Math.hypot(input.moveX, input.moveY)); // (no faster on the keys than its profile)
+      return { ...input, moveX: side.x * s, moveY: side.y * s, feint: true, shield: false, sprint: false };
+    }
+  }
+  const nd = near ? dist(near.pos, p.pos) : Infinity;
+  // A defender right on us: shield now and then, holding the ball away from them while we look for a pass.
+  if (!kicking && m.shieldTimer === 0 && m.intent === 'dribble' && nd < 46 && m.thinkTimer > 0.15 && nextRandom(state.ai) < AI_SHIELD_RATE * SIM_DT) m.shieldTimer = AI_SHIELD_TIME;
+  if (m.shieldTimer > 0 && !kicking) return { ...input, shield: true };
+  // Open space ahead in their half: sprint into it, while stamina lasts.
+  const open = nd > 140 && along(p.pos.x, dir) > 0.45 * PITCH_WIDTH && along(p.pos.x, dir) < 0.85 * PITCH_WIDTH;
+  const stamina = p.stamina >= (p.sprinting ? AI_SPRINT_KEEP_STAMINA : AI_SPRINT_MIN_STAMINA);
+  return { ...input, sprint: m.intent === 'dribble' && open && stamina && !kicking };
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -1439,6 +1539,7 @@ export function computeAiInputs(
     const m = state.ai.players[p.id];
     m.thinkTimer -= dt;
     m.cooldown = Math.max(0, m.cooldown - dt);
+    m.fooled = Math.max(0, m.fooled - dt);
     m.runTimer = Math.max(0, m.runTimer - dt);
     if (m.kickPending) {
       // Last tick's kick input: a kick starts the player's kick flash, so this confirms the ball was struck. A kick

@@ -43,13 +43,14 @@ describe('settings', () => {
   });
 
   it('rebinds a key, refusing reserved keys and keys already used', () => {
-    const ok = rebind(DEFAULT_BINDINGS, 'pass', 1, 'KeyV');
+    const ok = rebind(DEFAULT_BINDINGS, 'pass', 1, 'KeyB');
     expect(ok.error).toBeUndefined();
-    expect(ok.bindings.pass).toEqual(['KeyX', 'KeyV']);
+    expect(ok.bindings.pass).toEqual(['KeyX', 'KeyB']);
     expect(rebind(DEFAULT_BINDINGS, 'pass', 0, 'Escape').error).toMatch(/reserved/);
     expect(rebind(DEFAULT_BINDINGS, 'pass', 0, 'KeyC').error).toMatch(/Tackle/);
-    // Right Shift counts as Shift.
-    expect(rebind(DEFAULT_BINDINGS, 'tackle', 1, 'ShiftRight').error).toMatch(/Switch/);
+    // Right Shift counts as Shift (sprint, T17).
+    expect(rebind(DEFAULT_BINDINGS, 'tackle', 1, 'ShiftRight').error).toMatch(/Sprint/);
+    expect(rebind(DEFAULT_BINDINGS, 'pass', 1, 'KeyV').error).toMatch(/Shield/);
     // Binding the same key to both slots of one action keeps just one.
     expect(rebind(DEFAULT_BINDINGS, 'pass', 1, 'KeyX').bindings.pass).toEqual(['', 'KeyX']);
   });
@@ -68,12 +69,13 @@ describe('settings', () => {
     expect(normKey('ShiftRight')).toBe('ShiftLeft');
     expect(normKey('KeyA')).toBe('KeyA');
     expect(controlsSummary(DEFAULT_BINDINGS)).toContain('Shoot: Space');
-    expect(ACTIONS).toHaveLength(8);
+    expect(controlsSummary(DEFAULT_BINDINGS)).toContain('Sprint: Shift');
+    expect(ACTIONS).toHaveLength(10);
   });
 
   it('drives the input frame from rebound keys', () => {
-    const b = rebind(rebind(DEFAULT_BINDINGS, 'pass', 0, 'KeyV').bindings, 'up', 0, 'KeyI').bindings;
-    expect(buildInputFrame(new Set(['KeyV']), 0, b).pass).toBe(true);
+    const b = rebind(rebind(DEFAULT_BINDINGS, 'pass', 0, 'KeyB').bindings, 'up', 0, 'KeyI').bindings;
+    expect(buildInputFrame(new Set(['KeyB']), 0, b).pass).toBe(true);
     expect(buildInputFrame(new Set(['KeyX']), 0, b).pass).toBe(false);
     expect(buildInputFrame(new Set(['KeyI']), 0, b)).toMatchObject({ moveY: -1 });
     // An unbound slot ('') never matches.

@@ -44,9 +44,9 @@ describe('keyboard -> InputFrame', () => {
   });
 
   it('cancels opposite directions and maps buttons', () => {
-    const f = buildInputFrame(new Set(['ArrowLeft', 'ArrowRight', 'KeyX', 'Space', 'KeyC', 'ShiftLeft']), 7);
+    const f = buildInputFrame(new Set(['ArrowLeft', 'ArrowRight', 'KeyX', 'Space', 'KeyC', 'KeyZ', 'ShiftLeft', 'KeyV']), 7);
     expect(f).toEqual({
-      seq: 7, moveX: 0, moveY: 0, pass: true, shoot: true, tackle: true, switchPlayer: true,
+      seq: 7, moveX: 0, moveY: 0, pass: true, shoot: true, tackle: true, switchPlayer: true, sprint: true, shield: true, feint: false,
     });
   });
 });

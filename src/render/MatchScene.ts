@@ -37,6 +37,12 @@ import {
   FX_ZOOM_PUNCH,
   PITCH_LEFT,
   PITCH_RIGHT,
+  SHIELD_ARC_COLOR,
+  SPRINT_RESUME,
+  STAMINA_BAR_COLOR,
+  STAMINA_EMPTY_COLOR,
+  STAMINA_LOW_COLOR,
+  WINDUP_FLASH_COLOR,
 } from '../config';
 import { crowdExcitement, eventSound, kickPower, scanEvents, BallCueDetector, KickCueWatcher, type BallCue } from '../audio/cues';
 import { sound } from '../audio/sound';
@@ -411,10 +417,11 @@ export class MatchScene extends Phaser.Scene {
       this.excitementTimer = 0.15;
       sound.setExcitement(crowdExcitement(state.ball.pos.x, Math.hypot(state.ball.vel.x, state.ball.vel.y), PITCH_LEFT, PITCH_RIGHT));
     }
-    // Sliding players kick up dust.
+    // Sliding players kick up dust, sprinters and feints a little.
     for (const p of state.players) {
       const speed = Math.hypot(p.vel.x, p.vel.y);
       if (p.tackleTimer > 0 && speed > 80 && Math.random() < 0.6) this.effects.dust(p.pos.x, p.pos.y, { x: p.vel.x / speed, y: p.vel.y / speed }, 0.2, 1);
+      else if ((p.sprinting || p.feintTimer > 0) && speed > 150 && Math.random() < 0.2) this.effects.dust(p.pos.x, p.pos.y, { x: -p.vel.x / speed, y: -p.vel.y / speed }, 0.1, 1);
     }
   }
 
@@ -568,7 +575,7 @@ export class MatchScene extends Phaser.Scene {
     g.fillStyle(0xffffff, 1);
     for (const post of this.posts) g.fillCircle(post.x, post.y, POST_RADIUS);
     for (const p of state.players) {
-      this.drawPlayer(g, p, state.controlled[p.team] === p.id);
+      this.drawPlayer(g, p, state.controlled[p.team] === p.id, state.possession?.player === p.id ? state.possession.angle : null);
       this.shirtLabels[p.id]?.setPosition(p.pos.x, p.pos.y + 1);
     }
     for (const team of [0, 1] as const) {
@@ -646,15 +653,36 @@ export class MatchScene extends Phaser.Scene {
     }
   }
 
-  private drawPlayer(g: Phaser.GameObjects.Graphics, p: PlayerState, controlled: boolean): void {
+  /** `ballAngle`: where the ball sits round this player when they carry it (null if they don't). */
+  private drawPlayer(g: Phaser.GameObjects.Graphics, p: PlayerState, controlled: boolean, ballAngle: number | null): void {
     const { x, y } = p.pos;
+    // Winding up a slide (T17): crouched (drawn smaller), flashing, with an arrow where the slide will go.
+    const windup = p.windup > 0;
+    const r = windup ? p.radius * 0.82 : p.radius;
     g.fillStyle(0x000000, 0.25);
-    g.fillCircle(x + 2, y + 3, p.radius);
+    g.fillCircle(x + 2, y + 3, r);
     const team = teamStyle(p.team);
     g.fillStyle(p.tackleTimer > 0 ? 0xffffff : p.role === 'keeper' ? team.keeper : team.kit, p.tackleTimer > 0 ? 0.75 : 1);
-    g.fillCircle(x, y, p.radius);
+    g.fillCircle(x, y, r);
     g.lineStyle(2, team.outline, 1);
-    g.strokeCircle(x, y, p.radius);
+    g.strokeCircle(x, y, r);
+    if (windup) {
+      const on = Math.floor(this.time.now / 70) % 2 === 0;
+      g.lineStyle(3, WINDUP_FLASH_COLOR, on ? 1 : 0.45);
+      g.strokeCircle(x, y, p.radius + 3);
+      const ax = Math.cos(p.facing);
+      const ay = Math.sin(p.facing);
+      g.fillStyle(WINDUP_FLASH_COLOR, on ? 0.95 : 0.6);
+      const tip = p.radius + 22;
+      g.fillTriangle(x + ax * tip, y + ay * tip, x + ax * (tip - 10) - ay * 7, y + ay * (tip - 10) + ax * 7, x + ax * (tip - 10) + ay * 7, y + ay * (tip - 10) - ax * 7);
+    }
+    // Shielding (T17): an arc on the side away from the ball, between the ball and whoever is coming.
+    if (p.shielding && ballAngle !== null) {
+      g.lineStyle(4, SHIELD_ARC_COLOR, 0.85);
+      g.beginPath();
+      g.arc(x, y, p.radius + 4, ballAngle + Math.PI - 1.1, ballAngle + Math.PI + 1.1);
+      g.strokePath();
+    }
     if (controlled) {
       g.lineStyle(3, CONTROL_RING_COLOR, 1);
       g.strokeCircle(x, y, p.radius + 5);
@@ -698,6 +726,18 @@ export class MatchScene extends Phaser.Scene {
       g.fillRect(bx - 1, by - 1, w + 2, h + 2);
       g.fillStyle(frac >= 1 ? 0xff4040 : 0xffd23f, 1);
       g.fillRect(bx, by, w * frac, h);
+    }
+    // Sprint stamina (T17) under a controlled player, while it isn't full: emptied = red and blinking until it recovers.
+    if (controlled && p.stamina < 0.999) {
+      const w = 36;
+      const h = 4;
+      const bx = x - w / 2;
+      const by = y + p.radius + (p.charge > 0 ? 15 : 6);
+      const blink = p.sprintLock && Math.floor(this.time.now / 200) % 2 === 0;
+      g.fillStyle(0x000000, 0.55);
+      g.fillRect(bx - 1, by - 1, w + 2, h + 2);
+      g.fillStyle(p.sprintLock ? STAMINA_EMPTY_COLOR : p.stamina < SPRINT_RESUME ? STAMINA_LOW_COLOR : STAMINA_BAR_COLOR, blink ? 0.4 : 1);
+      g.fillRect(bx, by, w * p.stamina, h);
     }
   }
 

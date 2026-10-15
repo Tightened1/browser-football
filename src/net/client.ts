@@ -26,7 +26,8 @@ import {
   NET_STALL_MS,
   SIM_DT,
   SIM_HZ,
-  DRIBBLE_SPEED_FACTOR,
+  FEINT_COOLDOWN,
+  FEINT_TIME,
   KICK_BUFFER_TIME,
   KICK_FLASH_TIME,
   KICK_PLAYER_VEL_FACTOR,
@@ -39,7 +40,7 @@ import { ballBoundary, createMatchState, playerBoundary, shotSpeed, updatePlayer
 import { CLASSIC_RULES, copyRules } from '../sim/matchRules';
 import { assistAim, finesseShot } from '../sim/shooting';
 
-import { advanceHold, heldBallSpot, holdOffLines, rollFreeBall, sharpTurnLosesBall } from '../sim/dribble';
+import { advanceHold, heldBallSpot, holdOffLines, rollFreeBall, sharpTurnLosesBall, shieldHoldAngle, startFeint } from '../sim/dribble';
 import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
 import type { BallState, GameState, InputFrame, MatchEvent, MatchRules, MatchStats, PlayerState, Possession, TeamId } from '../sim/types';
 import { kindForPeerError, netError, type NetErrorKind } from './errors';
@@ -415,6 +416,8 @@ export class GuestMatch implements MatchDriver {
   private predicted: PlayerState | null = null;
   /** The ball held by the predicted player (sticky dribbling), predicted with it. */
   private predictedPoss: Possession | null = null;
+  /** Seqs of our own feints (T17), so a replay knows the feint timers at the host's acked input. */
+  private feintSeqs: number[] = [];
   private kick: LocalKick | null = null;
   /** Shoot still held after our finesse shot (its release kicks nothing), as on the host (T15). */
   private shootSpent = false;
@@ -478,6 +481,7 @@ export class GuestMatch implements MatchDriver {
     this.history.length = 0;
     this.predicted = null;
     this.predictedPoss = null;
+    this.feintSeqs.length = 0;
     this.kick = null;
     this.ballMode = 'host';
     this.ballOffset = { x: 0, y: 0 };
@@ -568,7 +572,23 @@ export class GuestMatch implements MatchDriver {
     const id = snap.controlled[this.localTeam];
     const ps = snap.players[id];
     const base = this.state.players[id];
-    const p: PlayerState = { ...base, pos: { x: ps.x, y: ps.y }, vel: { x: ps.vx, y: ps.vy }, facing: ps.facing, tackleTimer: 0 };
+    // Sprint stamina is the host's (T17); a feint's timers follow from our own last feint the host had applied.
+    const lastFeint = this.feintSeqs.filter((q) => q <= snap.ack).pop() ?? -Infinity;
+    const p: PlayerState = {
+      ...base,
+      pos: { x: ps.x, y: ps.y },
+      vel: { x: ps.vx, y: ps.vy },
+      facing: ps.facing,
+      tackleTimer: 0,
+      windup: 0,
+      stamina: ps.stamina,
+      sprintLock: ps.sprintLock,
+      sprinting: ps.sprinting,
+      shielding: ps.shielding,
+      feintTimer: Math.max(0, FEINT_TIME - (snap.ack - lastFeint) * SIM_DT),
+      feintCooldown: Math.max(0, FEINT_COOLDOWN - (snap.ack - lastFeint) * SIM_DT),
+    };
+    this.feintSeqs = this.feintSeqs.filter((q) => q > snap.ack - SIM_HZ * 2);
     let poss: Possession | null = snap.possession?.player === id ? { ...snap.possession } : null;
     // The host applied our kick but still says we carry the ball: the kick didn't happen there. The host wins.
     if (this.kick && !this.kick.handover && snap.ack >= this.kick.seq && poss) this.kick = null;
@@ -591,13 +611,18 @@ export class GuestMatch implements MatchDriver {
     this.predicted = p;
   }
 
-  /** One frame of our own player, carrying the ball if it has it (the same rules as the host's sim, see sim/dribble.ts). */
+  /**
+   * One frame of our own player, carrying the ball if it has it: feint, sprint, shield and the dribble, by the same rules
+   * as the host's sim (sim/dribble.ts, updatePlayer).
+   */
   private replayFrame(p: PlayerState, poss: Possession | null, prev: InputFrame | undefined, f: InputFrame): Possession | null {
     const kicked = kickEdge(prev, f);
+    if (poss && f.feint && !prev?.feint && startFeint(poss, p, f) && !this.feintSeqs.includes(f.seq)) this.feintSeqs.push(f.seq);
     if (poss && !kicked && sharpTurnLosesBall(p, f)) poss = null;
-    updatePlayer(p, f, SIM_DT, poss ? DRIBBLE_SPEED_FACTOR : 1, playerBoundary(this.state.rules));
+    updatePlayer(p, f, SIM_DT, !!poss, playerBoundary(this.state.rules));
     if (poss) {
-      advanceHold(poss, p, SIM_DT);
+      // (Shielding keeps the ball away from the nearest opponent, as drawn here: close enough, the host wins anyway.)
+      advanceHold(poss, p, SIM_DT, p.shielding ? shieldHoldAngle(this.state.players, p) : p.facing);
       holdOffLines(poss, p, this.state.ball.radius, this.state.rules.goalWidth); // the touchline holds the ball, as on the host
     }
     // A kick from the dribble always fires (there is no kick buffer delay with the ball at your feet), ending it.
@@ -775,6 +800,11 @@ export class GuestMatch implements MatchDriver {
     p.pos = { x: p.pos.x + (px - p.pos.x) * w, y: p.pos.y + (py - p.pos.y) * w };
     p.vel = { x: p.vel.x + (pred.vel.x - p.vel.x) * w, y: p.vel.y + (pred.vel.y - p.vel.y) * w };
     if (w > 0.5) p.facing = pred.facing;
+    // Our own stamina bar, sprint and shield show at once.
+    p.stamina = pred.stamina;
+    p.sprinting = pred.sprinting;
+    p.shielding = pred.shielding;
+    p.feintTimer = pred.feintTimer;
     this.applyBallPrediction(dt, !!this.predictedPoss);
   }
 

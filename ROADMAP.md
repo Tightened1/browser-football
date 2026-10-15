@@ -38,11 +38,12 @@ src/
     types.ts           GameState, PlayerState, BallState, InputFrame…
     physics.ts         Circle movement, friction, collisions, wall bounces
     simulation.ts      step(state, inputs, dt) -> state   (the whole game advances here)
-    dribble.ts         Sticky dribbling: taking, carrying and losing the ball, the touchline holding it (shared with the guest's prediction)
+    dribble.ts         Sticky dribbling: taking, carrying and losing the ball, the touchline holding it, standing tackles, shield and feint (shared with the guest's prediction)
     shooting.ts        Shot speed from charge, aim assist, finesse (curled) shot and curl (shared with the guest's prediction and the aim line)
     matchRules.ts      Match-rules presets (Arcade / Classic): building, validating (network) and reading them; GameState.rules
     setpiece.ts        Set pieces: throw-ins thrown and corners crossed (not dribbled), aim clamped into the pitch, auto-throw / auto-cross, grace period
     rules.ts           Goals, kickoff, out of play, timer, halves
+    random.ts          The seeded PRNG (state lives in GameState.ai.rng): the AI's decisions, standing-tackle and shield rolls
     ai.ts              AI decisions -> produces InputFrames for AI-controlled players
   render/              Phaser scenes that DRAW a GameState (never change it)
     MatchScene.ts
@@ -88,7 +89,10 @@ tests/                 Vitest tests for sim/
 | Pass (tap) / Shoot (hold to charge, release) | `X` / `Space` |
 | Finesse shot (Arcade rules): hold shoot, tap pass | `Space` + `X` |
 | Tackle / slide (no ball) | `C` |
-| Switch player (no ball) | `Z` / `Shift` |
+| Sprint (hold; uses stamina, bigger touches with the ball) | `Shift` |
+| Shield the ball (hold, with the ball: slow, hard to tackle from behind/the side) | `V` |
+| Feint / drag-back (with the ball) | double-tap a move key |
+| Switch player (no ball) | `Z` |
 | AI debug overlay (roles, intents, team modes, last touch) | `F2` / `` ` `` |
 | Network debug overlay (ping, snapshots, buffer, loss) | `F3` / `N` |
 | Pause menu (offline: pauses; online: the match keeps running) / back | `Esc` |
@@ -100,6 +104,8 @@ Throw-ins are thrown: the taker stands still, aims with the move keys (yellow ar
 All of the movement and action keys can be rebound under **Settings** (two keys per action); the table shows the defaults. `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved.
 
 URL options: `?room=CODE` (invite link: joins that room), `?aivsai` (both teams AI, spectate), `?difficulty=easy|normal|hard`, and for testing online play on one machine `?lag=50&jitter=10&loss=0.03` (simulated network, per window) and `?predict=0|1` (guest prediction off/on).
+
+Defending and duels (T17): an AI slide at a human carrier is **telegraphed** (a short crouch and orange flash, committed to its direction: change direction to beat it); standing tackles (body checks from the front) can fail and then cool down (`STAND_TACKLE_COOLDOWN`). Against a human carrier the AI uses the **"AI defending vs humans"** profile (`AI_DEFENDING_VS_HUMAN`: Relaxed / Normal / Tough, in `GameState.rules.aiDefending`; Arcade = Relaxed, Classic = Normal, Settings can fix it); AI vs AI is unchanged (`AI_DEFENDING_VS_AI`). Humans (and, sparingly, the AI) can **sprint** (stamina in `PlayerState`/snapshots), **shield** and **feint**. `npm run simulate -- --human naive|skilled [--defending relaxed|normal|tough]` plays a scripted human dribbler (`scripts/humanBot.ts`) and reports AI tackle success on human vs AI carriers.
 
 Match rules (T15): **Arcade** (default: big goals, easy keepers who parry more, quick charge, aim line, aim assist, finesse shots, gentler AI defending against a human) or **Classic** (the game before T15), chosen under Settings / the team picker; online, the host's choice is used and shown in the lobby. The rules live in `GameState.rules` (presets: `MATCH_RULES` in `config.ts`). Tools: `npm run simulate -- --rules arcade|classic` (AI vs AI) and `npm run shoottest` (scripted shots vs each keeper level).
 
@@ -142,7 +148,7 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T14 | Throw-ins & touchlines: no walking the ball back out | T13 | Sonnet 5.5 | [x] |
 | T15 | Make scoring easier: keepers, shooting & "Arcade" rules preset | T14 | **Opus 5.5** | [x] |
 | T16 | Fix corners (awarded as goal kicks / throw-ins) | T15 | Sonnet 5.5 | [x] |
-| T17 | Fairer AI defending + sprint & shield for humans | T16 | **Opus 5.5** | [ ] |
+| T17 | Fairer AI defending + sprint & shield for humans | T16 | **Opus 5.5** | [x] |
 | T18 | Automated tests in CI: sim regression + two-browser online smoke test | T16 | Sonnet 5.5 | [ ] |
 | T19 | Fouls, free kicks, penalties & penalty shoot-outs | T17 | **Opus 5.5** | [ ] |
 | T21 | Online extras: names, quick chat, series score, MVP | T16 | Sonnet 5.5 | [ ] |
@@ -742,3 +748,4 @@ Finally, mark T23 as [x] in the ROADMAP.md task queue, add a change log entry, c
 - 2026-10-15 — Playtest feedback: added T16 (fix corners), T17 (fairer AI defending, sprint and shield), T18 (CI tests), T19 (fouls, free kicks, penalties, shoot-outs), T20 (gamepad), T21 (online extras), T22 (training mode and tutorial), T23 (goal replays). Backlog B02, B06 and B07 moved into tasks; B08–B10 added.
 - 2026-10-15 — Removed T20 (gamepad) and T22 (training mode and tutorial) at the user's request; gamepad dropped from the backlog.
 - 2026-10-15 — T16 (game 1.3.1): **corners fixed.** Reproduced first (`tests/corners.test.ts`: kick, body deflection, slide, body check, keeper parry and dive, ball at rest by the line, corner flag — both halves; 17 failed on the old code). Causes: (1) `updateTouches` gave the last touch to whoever was merely *within reach* of a slow ball, so a defender's ball rolling out past an attacker became the attacker's (goal kick / throw-in the wrong way) — removed, only real contacts, kicks, slides, body checks and possession count (`TOUCH_MAX_RELATIVE_SPEED` gone); (2) a body check didn't credit the challenger; (3) every keeper touch was forced back out of the goal, so a save could never go behind — a parry heading behind more than `KEEPER_PARRY_WIDE_MARGIN` outside a post is now a corner; (4) by the corner flag a ball over both lines was called on the touchline — now out when no part is on the pitch, on the line it is heading over more directly. Corners are taken like throw-ins (`pendingHeldRestart`, `takeHeldRestart`): aim with the arrow, pass = low cross, shoot = hard cross (`CORNER_*_SPEED`), auto-cross into the box after 3 s (`cornerTarget`); the AI sends three runners to `AI_CORNER_SPOTS` and its taker waits for two in the box (`RESTART_AUTO_DELAY_CORNER`). F2 overlay: last-touch line (host), stats block moved bottom-left. `npm run simulate` reports corners (range, % in 2-6), goal kicks and goals within 8 s of a corner. AI vs AI corners/match before → after: Arcade 7.5/8.2/10.1 → 8.7/10.8/11.6, Classic 8.6/10.9/11.0 → 8.2/10.2/11.0 (already above the rough 2-6 before: the bug mostly hit humans; most AI corners are defenders chasing a ball to their own line — T17); goals Arcade normal 6.70 → 6.05, 0 stuck. Checked online (host + guest tabs): both show CORNER, the guest's arrow and cross work. Details: `docs/PLAYTEST_NOTES.md` (T16).
+- 2026-10-15 — T17 (game 1.4.0, protocol 6): **fairer AI defending, and sprint / shield / feint.** Measured first: `npm run simulate` counts AI tackle duels split by AI vs human carrier, and `--human naive|skilled` plays a scripted human dribbler (`scripts/humanBot.ts`). Before: 97.7% of AI challenges on the human won the ball (172 dispossessions per minute carried) vs 75.5% on AI carriers — a standing body check always won, and slides came without warning. Now, against a human carrier the AI uses the **"AI defending vs humans"** profile (`AI_DEFENDING_VS_HUMAN`, `MatchRules.aiDefending`, Settings: Relaxed / Normal / Tough; Arcade Relaxed, Classic Normal): fewer slide decisions, a little slower, one presser except near its own goal, standing tackles that can fail (`standWin`, then `STAND_TACKLE_COOLDOWN`) and **telegraphed slides** (a 0.2–0.28 s crouch and orange flash, committed to its direction). AI vs AI keeps `AI_DEFENDING_VS_AI` (a wind-up on every slide was tried and took AI-vs-AI goals to ~10). Humans get **sprint** (Shift; stamina in `PlayerState` and snapshots, bigger touches with the ball; switch is now `Z`, saved keys migrated), **shield** (V; slow, ball kept away from the nearest opponent, slides from behind/side win 20%) and a **feint** (double-tap a move key: drag-back and side-step, wrong-foots AI defenders); the AI uses them sparingly, its runners sprint into the box for corners and the cross leads them. New `sim/random.ts` (the seeded PRNG, shared by the AI and the sim's tackle/shield rolls). Network: input bits sprint/shield/feint, snapshots 156 bytes, the guest predicts sprint, stamina, shield and feints. Results (Arcade Relaxed, naive bot): 61.8% of challenges win, 70 per minute carried (skilled bot: 54.8%, 58); AI vs AI goals Arcade 4.85 / 5.05 / 7.08, Classic 3.63 / 4.38 / 5.13, 0 stuck. Tests: `tests/defending.test.ts`. Details and hand-test list: `docs/PLAYTEST_NOTES.md` (T17).

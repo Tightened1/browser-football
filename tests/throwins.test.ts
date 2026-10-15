@@ -209,20 +209,21 @@ describe('auto-throw', () => {
   });
 
   it('prefers an unmarked teammate over a marked one that is closer', () => {
-    const s0 = createInitialState({ humans: [false, true] });
+    // (The marker is a human standing still, so it stays on the near teammate whatever the AI would do.)
+    const s0 = createInitialState({ humans: [true, true] });
     s0.players = [
       createPlayer(0, 0, 520, PITCH_TOP + 140), // marks the near teammate
       createPlayer(1, 1, 300, PITCH_TOP + 100), // taker (nearest the spot)
       createPlayer(2, 1, 500, PITCH_TOP + 130), // near, marked
       createPlayer(3, 1, 420, PITCH_TOP + 300), // further, open
     ];
-    s0.controlled = [-1, 1];
+    s0.controlled = [0, 1];
     s0.ai = createAiState(s0.players, s0.controlled);
     s0.ball.pos = { x: 330, y: PITCH_TOP - BALL_RADIUS - 2 };
     s0.lastTouch = { team: 0, player: 0 };
-    let s = step(s0, [undefined, input()], SIM_DT);
+    let s = step(s0, [input(), input()], SIM_DT);
     expect(s.restart?.taker).toBe(1);
-    s = runAway(s, Math.round(RESTART_AUTO_DELAY_HUMAN / SIM_DT) + 2, () => input());
+    for (let i = 0; i < Math.round(RESTART_AUTO_DELAY_HUMAN / SIM_DT) + 2; i++) s = step(s, [input(), input()], SIM_DT);
     expect(s.restart).toBeNull();
     const dir = Math.atan2(s.ball.vel.y, s.ball.vel.x);
     const to3 = Math.atan2(s.players[3].pos.y - s.ball.pos.y, s.players[3].pos.x - s.ball.pos.x);

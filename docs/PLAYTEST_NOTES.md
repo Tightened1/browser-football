@@ -482,3 +482,82 @@ All stuck/dead-ball checks stay at 0.
 3. Take a corner: does the arrow + low/hard cross feel right? Is the hard cross too fast to control?
    [`CORNER_LOW_SPEED`, `CORNER_HARD_MAX_SPEED`]
 4. Do the AI runners get there in time without the wait feeling long? [`RESTART_AUTO_DELAY_CORNER`, `AI_CORNER_SPOTS`]
+
+# T17: fairer AI defending, sprint, shield and feint (game 1.4.0, protocol 6)
+
+Feedback: "The AI is a bit strong in a multiplayer match with the tackles. But if we lower them, they'll be useless."
+
+## 1. Measured first
+
+`npm run simulate` now counts the AI's tackle duels (`AiTeamMemory.duel*`): every slide an AI starts at an opposing
+carrier and every standing tackle (body check from the front), and how many win the ball, split by whether the carrier
+was an AI or a human. `--human naive|skilled` makes team 0's controlled player a scripted human-like dribbler
+(`scripts/humanBot.ts`: runs at goal weaving a little, shoots from ~260 px, chases and switches without the ball;
+`skilled` also sprints into space, shields with a defender on its back and side-steps a slide being wound up).
+
+Before T17 (Arcade, normal, 30 matches): **97.7%** of AI challenges on the human won the ball (87 a match), **172
+dispossessions per minute** the human carried the ball, 77% of the human's carries ended by an AI tackle. Against AI
+carriers: 75.5%. The cause: a standing body check from the front *always* won the ball, with no cooldown, and the AI
+slid in with no warning; AI carriers swerve round defenders (`dribbleDirection`), a human running straight doesn't.
+
+## 2. What changed (all in `config.ts`)
+
+- **A separate profile against a human carrier** (`AI_DEFENDING_VS_HUMAN`, "AI defending vs humans" in Settings:
+  Relaxed / Normal / Tough; Arcade = Relaxed, Classic = Normal; it travels in `MatchRules.aiDefending`, so online the
+  host's level applies). Each level scales the slide decisions (`tackleChance`), adds reaction time, sets the standing
+  tackle's win chance (`standWin`), the most pressers (1 except near our own goal on Relaxed/Normal) and the slide
+  wind-up. **AI vs AI uses `AI_DEFENDING_VS_AI`: the old behaviour.**
+- **Telegraphed slides:** an AI slide at a human carrier winds up first (0.28 / 0.25 / 0.2 s): the slider crouches,
+  flashes orange with an arrow, slows (`WINDUP_SPEED_FACTOR`) and is committed to its direction. It aims where the ball
+  will be if the human runs straight on, so changing direction beats it. Humans' own slides and keepers' dives start at
+  once. (A wind-up on every AI slide was tried first: AI carriers swerve away, AI tackling collapsed and AI-vs-AI goals
+  went from 6 to 10 a match. The telegraph is for people, so it applies to human carriers.)
+- **Standing tackles can fail:** against a human the body check wins with the level's `standWin` (seeded roll); a
+  failed one locks that challenger out for `STAND_TACKLE_COOLDOWN` (0.7 s) and the AI backs off goal-side meanwhile.
+- **Sprint** (Shift, rebindable; switch is now `Z` only, and saved keys are migrated): x1.25 top speed, drains stamina
+  in ~3.6 s, refills in ~6 s, an emptied bar waits for 30% (`SPRINT_*`). With the ball: bigger touches
+  (`DRIBBLE_SPRINT_ROLL_AMPLITUDE`) and slower turns with it. Stamina bar under your player.
+- **Shield** (V): with the ball, x0.4 speed, the ball is held on the far side of your body from the nearest opponent; a
+  slide from behind/the side wins it 20% of the time, a standing tackle only reaches it from a narrow front cone.
+- **Feint / drag-back** (double-tap a move key within 250 ms): the ball is dragged across that way, you step out at
+  `FEINT_SPEED` for 0.22 s, standing tackles can't win it meanwhile, and nearby AI defenders are wrong-footed for
+  0.35 s. 0.9 s cooldown.
+- **The AI uses the tools sparingly:** it sprints only with stamina to spare (recovering into shape, a loose ball far
+  away, into the box for its corner; never to press), side-steps a wind-up 30% of the time, shields now and then when a
+  defender is right on it, and sprints into open space in the attacking half.
+- Corners: the AI's runners now sprint in, so the cross goes to where a moving runner will be (`cornerTarget` leads
+  them, kept inside the box). The T16 test "two runners in the box" had only been passing thanks to an unrelated
+  throw-in later in the run; it now holds for the corner itself.
+- Network: `sprint` / `shield` / `feint` input bits, stamina (plus sprint-lock, sprint, shield, wind-up and feint flags)
+  in snapshots (156 bytes, was 146), protocol 6. The guest predicts its own sprint, stamina, shield and feints with the
+  same code (`updatePlayer`, `startFeint`, `shieldHoldAngle`); the host still wins.
+
+## 3. Numbers (seed 1, 2 x 3 min, normal difficulty)
+
+AI tackles on the scripted human (30 matches each):
+
+| | before | after, naive bot | after, skilled bot |
+|---|---|---|---|
+| Arcade (Relaxed): AI challenges that win the ball | 97.7% | 61.8% | 54.8% |
+| Arcade (Relaxed): dispossessions per minute carried | 172 | 70 | 58 |
+| Arcade (Relaxed): carries ended by an AI tackle | 77% | 60% | 60% |
+| Arcade: human team goals for / against per match | 4.1 / 4.5 | 8.0 / 3.2 | 8.0 / 2.5 |
+| Classic (Normal): challenges that win / per minute carried | 96.8% / 213 | 74.3% / 98 | |
+
+AI vs AI, 40 matches, goals per match easy / normal / hard: Arcade 4.88 / 6.05 / 6.60 -> **4.85 / 5.05 / 7.08**
+(target 5-9), Classic 4.65 / 4.65 / 4.47 -> **3.63 / 4.38 / 5.13** (target 3-6). AI tackles on AI carriers stay at
+84-89% success. 0 stuck or dead balls. (AI vs AI changes only through the AI's own sprint/shield/feint and corners.)
+
+## 4. Please feel-test by hand (T17), ideally online
+
+1. Run straight at an AI defender: does the orange wind-up give you time to cut away? Too easy or too hard to read?
+   [`AI_DEFENDING_VS_HUMAN.*.windup`, `WINDUP_SPEED_FACTOR`]
+2. Does the AI still feel like it defends (positions, blocks, intercepts, wins the ball now and then) on Relaxed? Try
+   Normal and Tough under Settings -> AI defending vs humans. The bot scores more than before: is Relaxed too kind?
+3. Sprint: is ~3.6 s right? Do the bigger touches make a sprint with the ball risky but worth it?
+   [`SPRINT_DRAIN`, `SPRINT_RECOVER`, `DRIBBLE_SPRINT_ROLL_AMPLITUDE`]
+4. Shield with a defender on your back, then pass: does it hold the ball long enough? [`SHIELD_*`]
+5. Double-tap feint: does 250 ms feel natural, or does it fire when you just change direction quickly?
+   [`FEINT_DOUBLE_TAP_MS`, `FEINT_SPEED`, `FEINT_TIME`]
+6. As the guest (`?lag=100`): sprint, shield and feint feel immediate, with no rubber-banding of the ball.
+7. Old saved keys: switch was `Z` / `Shift`; after updating, Shift should be sprint and V shield.

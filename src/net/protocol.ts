@@ -8,7 +8,7 @@ import { DEFAULT_LOOK, isLook, type Look } from '../teams';
  * Bump whenever any message below changes shape or meaning. The `hello` message itself must never change,
  * so that two different versions can always tell each other apart.
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 /** The game version (package.json). Both players must run the same one; bump it with each task that ships. */
 export const GAME_VERSION: string = packageVersion;
 

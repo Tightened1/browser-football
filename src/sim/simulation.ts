@@ -36,7 +36,14 @@ import {
   PLAYER_MAX_SPEED,
   PLAYER_RADIUS,
   FINESSE_SPEED,
+  FEINT_SPEED,
+  SHIELD_SPEED_FACTOR,
+  SPRINT_DRAIN,
+  SPRINT_RECOVER,
+  SPRINT_RESUME,
+  SPRINT_SPEED_FACTOR,
   STAT_SHOT_MIN_FORWARD,
+  WINDUP_SPEED_FACTOR,
 
   STAT_SHOT_RANGE,
   TACKLE_COOLDOWN,
@@ -58,11 +65,26 @@ import {
 } from './physics';
 import { cloneAiState, computeAiInputs, createAiState, formationPosition } from './ai';
 import { applySwitching, updateTouches } from './control';
-import { advanceHold, canControl, controlSpeed, keeperHoldAngle, loseBall, relativeSpeed, sharpTurnLosesBall, stickyDribbling, takePossession, updatePossession } from './dribble';
+import {
+  advanceHold,
+  canControl,
+  controlSpeed,
+  holdTarget,
+  loseBall,
+  recordDuel,
+  relativeSpeed,
+  sharpTurnLosesBall,
+  shieldBlocksSlide,
+  startFeint,
+  stickyDribbling,
+  takePossession,
+  updatePossession,
+} from './dribble';
 import { isFrozen, updateRules } from './rules';
 import { pendingHeldRestart, restartAim, takeHeldRestart } from './setpiece';
 import { CLASSIC_RULES, copyRules } from './matchRules';
 import { assistAim, curlBall, finesseShot, shotSpeed } from './shooting';
+import { defendingProfile } from './matchRules';
 import type { Boundary } from './physics';
 import type { BallState, Difficulty, GameState, InputFrame, MatchPhase, MatchRules, PlayerRole, PlayerState, TeamId } from './types';
 
@@ -76,6 +98,9 @@ export const NEUTRAL_INPUT: InputFrame = {
   shoot: false,
   tackle: false,
   switchPlayer: false,
+  sprint: false,
+  shield: false,
+  feint: false,
 };
 
 export function createPlayer(
@@ -110,6 +135,15 @@ export function createPlayer(
     prevPass: false,
     prevShoot: false,
     prevTackle: false,
+    prevFeint: false,
+    windup: 0,
+    standCooldown: 0,
+    stamina: 1,
+    sprintLock: false,
+    sprinting: false,
+    shielding: false,
+    feintTimer: 0,
+    feintCooldown: 0,
   };
 }
 
@@ -245,34 +279,69 @@ function distance(a: { pos: { x: number; y: number } }, b: { pos: { x: number; y
   return Math.hypot(b.pos.x - a.pos.x, b.pos.y - a.pos.y);
 }
 
+/** An AI slide started within this distance (px) of an opposing carrier counts as a challenge on them (duel counters). */
+const DUEL_RANGE = 150;
+
 /** True if `p` may kick the ball now: it carries it (sticky), or the ball is loose and within KICK_REACH. */
 export function canKick(state: GameState, p: PlayerState): boolean {
-  if (p.tackleTimer > 0) return false;
+  if (p.tackleTimer > 0 || p.windup > 0) return false;
   const poss = state.possession;
   if (poss) return poss.player === p.id;
   return distance(p, state.ball) <= p.radius + state.ball.radius + KICK_REACH;
 }
 
-/** Start a tackle if requested, off cooldown, and the player is not already on the ball. */
-function maybeStartTackle(state: GameState, p: PlayerState, input: InputFrame): void {
+/**
+ * Start a tackle if requested, off cooldown, and the player is not already on the ball. An AI outfield player's slide at
+ * a human carrier is telegraphed (T17): it winds up first (the rules' DefendingProfile.windup), committed to the
+ * direction it chose (see updatePlayer).
+ */
+function maybeStartTackle(state: GameState, p: PlayerState, input: InputFrame, humanDriven: readonly boolean[]): void {
   const pressed = input.tackle && !p.prevTackle;
-  if (!pressed || p.tackleTimer > 0 || p.tackleCooldown > 0) return;
+  if (!pressed || p.tackleTimer > 0 || p.windup > 0 || p.tackleCooldown > 0) return;
   if (canKick(state, p)) return; // has the ball: shoot/pass instead
   if (Math.hypot(input.moveX, input.moveY) > 1e-6) p.facing = Math.atan2(input.moveY, input.moveX); // slide where steered
-  p.tackleTimer = TACKLE_DURATION;
-  p.tackleCooldown = p.role === 'keeper' ? KEEPER_DIVE_COOLDOWN : TACKLE_COOLDOWN;
+  const held = state.possession;
+  const c = held ? state.players[held.player] : null;
+  const atHuman = !!c && c.team !== p.team && !!humanDriven[c.id];
+  const windup = p.role !== 'keeper' && !humanDriven[p.id] && atHuman ? defendingProfile(state.rules, true).windup : 0;
+  if (windup > 0) p.windup = windup;
+  else p.tackleTimer = TACKLE_DURATION;
+  p.tackleCooldown = (p.role === 'keeper' ? KEEPER_DIVE_COOLDOWN : TACKLE_COOLDOWN) + windup;
   p.kickQueue = 0; // a slide replaces any queued kick
+  if (c && c.team !== p.team && p.role !== 'keeper' && !humanDriven[p.id] && distance(p, c) < DUEL_RANGE) recordDuel(state, p.team, !!humanDriven[c.id], true, false);
 }
 
 /**
- * Movement, facing and timers for one player. Does not touch the ball or other players. `speedFactor` scales the
- * top speed (a player carrying the ball runs at DRIBBLE_SPEED_FACTOR).
+ * Sprint and shield for this tick (T17): who is shielding (carrying, shield held) and sprinting (moving with sprint held,
+ * not shielding, stamina left), and the stamina drained or recovered. Returns the top-speed factor they give.
+ */
+function updateSprint(p: PlayerState, input: InputFrame, dt: number, carrying: boolean, moving: boolean): number {
+  const busy = p.tackleTimer > 0 || p.windup > 0;
+  p.shielding = carrying && !!input.shield && !busy;
+  if (p.stamina <= 0) p.sprintLock = true;
+  else if (p.sprintLock && p.stamina >= SPRINT_RESUME) p.sprintLock = false;
+  p.sprinting = !!input.sprint && moving && !p.shielding && !p.sprintLock && !busy;
+  p.stamina = Math.max(0, Math.min(1, p.stamina + (p.sprinting ? -SPRINT_DRAIN : SPRINT_RECOVER) * dt));
+  return (p.sprinting ? SPRINT_SPEED_FACTOR : 1) * (p.shielding ? SHIELD_SPEED_FACTOR : 1);
+}
+
+/**
+ * Movement, facing and timers for one player. Does not touch the ball or other players. A player `carrying` the ball
+ * runs at DRIBBLE_SPEED_FACTOR; sprinting, shielding and feinting change the top speed (T17), and an AI slide's wind-up
+ * turns into the slide here.
  * Exported for the online guest's prediction of its own player (net/client.ts).
  */
-export function updatePlayer(p: PlayerState, input: InputFrame, dt: number, speedFactor = 1, boundary?: Boundary): void {
+export function updatePlayer(p: PlayerState, input: InputFrame, dt: number, carrying = false, boundary?: Boundary): void {
   p.tackleCooldown = Math.max(0, p.tackleCooldown - dt);
   p.touchTimer = Math.max(0, p.touchTimer - dt);
   p.kickFlash = Math.max(0, p.kickFlash - dt);
+  p.standCooldown = Math.max(0, p.standCooldown - dt);
+  p.feintTimer = Math.max(0, p.feintTimer - dt);
+  p.feintCooldown = Math.max(0, p.feintCooldown - dt);
+  if (p.windup > 0) {
+    p.windup = Math.max(0, p.windup - dt);
+    if (p.windup === 0) p.tackleTimer = TACKLE_DURATION; // wound up: the slide goes, the way it was aimed
+  }
 
   let mx = input.moveX;
   let my = input.moveY;
@@ -282,6 +351,7 @@ export function updatePlayer(p: PlayerState, input: InputFrame, dt: number, spee
     my /= mlen;
   }
   const hasMove = mlen > 1e-6;
+  const speedFactor = (carrying ? DRIBBLE_SPEED_FACTOR : 1) * updateSprint(p, input, dt, carrying, hasMove);
 
   if (p.tackleTimer > 0) {
     // Sliding: committed to the facing direction, decaying speed, steering ignored.
@@ -289,9 +359,14 @@ export function updatePlayer(p: PlayerState, input: InputFrame, dt: number, spee
     const k = 0.35 + 0.65 * (p.tackleTimer / TACKLE_DURATION);
     p.vel.x = Math.cos(p.facing) * TACKLE_SPEED * k;
     p.vel.y = Math.sin(p.facing) * TACKLE_SPEED * k;
+  } else if (p.windup > 0) {
+    // Winding up a slide: crouched, committed to its direction, drifting on slowly (the telegraph a human can read).
+    const top = PLAYER_MAX_SPEED * WINDUP_SPEED_FACTOR;
+    approachVelocity(p.vel, Math.cos(p.facing) * top, Math.sin(p.facing) * top, PLAYER_DECEL * dt);
   } else {
     if (hasMove) p.facing = Math.atan2(my, mx);
-    const top = PLAYER_MAX_SPEED * speedFactor;
+    let top = PLAYER_MAX_SPEED * speedFactor;
+    if (p.feintTimer > 0) top = Math.max(top, FEINT_SPEED); // the feint's side-step
     approachVelocity(p.vel, mx * top, my * top, (hasMove ? PLAYER_ACCEL : PLAYER_DECEL) * dt);
   }
 
@@ -316,7 +391,7 @@ function kickBall(state: GameState, p: PlayerState, speed: number, aim: number, 
  * Charging, kicks (through the kick buffer), tackle knocks and classic dribble touches for one player.
  * Returns whether the player touched the ball, and whether that touch was a shoot-button kick.
  */
-function interactWithBall(state: GameState, p: PlayerState, input: InputFrame, dt: number): { touched: boolean; shot: boolean } {
+function interactWithBall(state: GameState, p: PlayerState, input: InputFrame, dt: number, humanDriven: readonly boolean[]): { touched: boolean; shot: boolean } {
   const { ball } = state;
   const result = { touched: false, shot: false };
   const d = distance(p, ball);
@@ -331,7 +406,19 @@ function interactWithBall(state: GameState, p: PlayerState, input: InputFrame, d
       // Slide hits the ball: knock it away (winning it off a carrier), mostly along the slide, partly towards where it sits.
       const held = state.possession;
       if (held && state.players[held.player].role === 'keeper') return result; // a keeper's ball can't be tackled
-      if (held && held.player !== p.id) loseBall(state);
+      if (held && held.player !== p.id) {
+        const c = state.players[held.player];
+        if (c.team !== p.team && shieldBlocksSlide(state, c, p)) {
+          // Into a shielding carrier from behind or the side: the slide is stopped by the body (T17).
+          p.tackleTimer = 0;
+          p.vel.x *= 0.2;
+          p.vel.y *= 0.2;
+          p.touchTimer = KICK_TOUCH_LOCKOUT;
+          return result;
+        }
+        if (c.team !== p.team && !humanDriven[p.id]) recordDuel(state, p.team, !!humanDriven[c.id], false, true);
+        loseBall(state);
+      }
       const tx = d > 1e-9 ? (ball.pos.x - p.pos.x) / d : Math.cos(p.facing);
       const ty = d > 1e-9 ? (ball.pos.y - p.pos.y) / d : Math.sin(p.facing);
       let kx = Math.cos(p.facing) * 0.6 + tx * 0.4;
@@ -455,7 +542,8 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   // The AI produces InputFrames like a human would; a controlled player with no human input this tick is AI-driven.
   const human: [boolean, boolean] = [next.controlled[0] >= 0 && !!inputs[0], next.controlled[1] >= 0 && !!inputs[1]];
   const ai = computeAiInputs(next, human, dt);
-  const used = next.players.map((p, i) => (human[p.team] && next.controlled[p.team] === p.id ? inputs[p.team]! : ai[i]));
+  const humanDriven = next.players.map((p) => human[p.team] && next.controlled[p.team] === p.id);
+  const used = next.players.map((p, i) => (humanDriven[i] ? inputs[p.team]! : ai[i]));
 
   // When two players touch the ball in the same tick the later one wins, so alternate the order each tick
   // to keep contests fair between the teams (still deterministic).
@@ -470,25 +558,29 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
       p.prevPass = input.pass;
       p.prevShoot = input.shoot;
       p.prevTackle = input.tackle;
+      p.prevFeint = !!input.feint;
       continue;
     }
     const kicking = (input.pass && !p.prevPass) || (!input.shoot && p.prevShoot);
+    // A double-tapped move key with the ball: the feint / drag-back (T17).
+    if (next.possession?.player === p.id && input.feint && !p.prevFeint) startFeint(next.possession, p, input);
     // Turning almost straight back at full speed loses the ball (unless the turn comes with a kick, which wins).
     if (next.possession?.player === p.id && !kicking && sharpTurnLosesBall(p, input)) loseBall(next);
-    maybeStartTackle(next, p, input);
+    maybeStartTackle(next, p, input, humanDriven);
     const carrying = next.possession?.player === p.id;
-    updatePlayer(p, input, dt, carrying ? DRIBBLE_SPEED_FACTOR : 1, playerBoundary(next.rules));
-    if (carrying) advanceHold(next.possession!, p, dt, p.role === 'keeper' ? keeperHoldAngle(next, p) : p.facing);
-    const touch = interactWithBall(next, p, input, dt);
+    updatePlayer(p, input, dt, carrying, playerBoundary(next.rules));
+    if (carrying) advanceHold(next.possession!, p, dt, holdTarget(next, p));
+    const touch = interactWithBall(next, p, input, dt, humanDriven);
     if (touch.touched) next.lastTouch = { team: p.team, player: p.id };
     if (touch.shot && countsAsShot(p, next.attackDir[p.team])) next.stats.shots[p.team] += 1;
     p.prevPass = input.pass;
     p.prevShoot = input.shoot;
     p.prevTackle = input.tackle;
+    p.prevFeint = !!input.feint;
   }
   resolvePlayerCollisions(next.players, playerBoundary(next.rules));
   // Sticky dribbling: body checks, taking control of a loose ball, and steering the held ball to its spot.
-  updatePossession(next);
+  updatePossession(next, humanDriven);
 
   if (!next.possession) applyRollingFriction(ball, dt);
   capSpeed(ball, BALL_MAX_SPEED);

@@ -55,6 +55,20 @@ export interface PlayerState extends CircleBody {
   prevPass: boolean;
   prevShoot: boolean;
   prevTackle: boolean;
+  prevFeint: boolean;
+  /** Seconds left of a slide's wind-up (T17, AI slides only): the slide starts when it reaches 0. */
+  windup: number;
+  /** Seconds until this player may try another standing tackle after a failed one (T17). */
+  standCooldown: number;
+  /** Sprint stamina, 0..1 (T17); `sprintLock` = emptied, waiting for SPRINT_RESUME. */
+  stamina: number;
+  sprintLock: boolean;
+  /** Sprinting / shielding the ball this tick (T17). */
+  sprinting: boolean;
+  shielding: boolean;
+  /** Seconds left of a feint (T17), and until the next one is allowed. */
+  feintTimer: number;
+  feintCooldown: number;
 }
 
 /** One tick of input for one human controller; inputs[team] drives that team's controlled player. */
@@ -68,9 +82,18 @@ export interface InputFrame {
   shoot: boolean;
   tackle: boolean;
   switchPlayer: boolean;
+  /** T17: run faster while held (uses stamina). */
+  sprint?: boolean;
+  /** T17: with the ball, held: shield it (slow, ball kept away from the nearest opponent). */
+  shield?: boolean;
+  /** T17: a double-tapped move key (one frame): with the ball, drag it across that way (feint). */
+  feint?: boolean;
 }
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
+
+/** How hard the AI defends against a human on the ball (T17): AI_DEFENDING_VS_HUMAN in config.ts. */
+export type AiDefending = 'relaxed' | 'normal' | 'tough';
 
 /** Match-rules presets (T15): 'arcade' makes scoring easier, 'classic' is the game as it was before T15. */
 export type RulesPreset = 'arcade' | 'classic';
@@ -101,6 +124,8 @@ export interface MatchRules {
   aimLine: boolean;
   /** Against a human on the ball the AI presses with one player, and doesn't slide in from behind in its box. */
   easedDefending: boolean;
+  /** "AI defending vs humans" (T17): the AI's tackle profile against a human carrier. AI vs AI is unaffected. */
+  aiDefending: AiDefending;
 }
 
 /** What a whole team is doing: has the ball, hasn't, or it just changed hands / is loose. */
@@ -162,6 +187,11 @@ export interface AiPlayerMemory {
   shotReact: number;
   /** Keeper: how far off (px) it has misjudged the current shot's line. */
   saveError: number;
+  /** T17: seconds left of shielding the ball; the tackler whose wind-up we already decided about (-1 = none). */
+  shieldTimer: number;
+  evadedFrom: number;
+  /** T17: seconds left of being wrong-footed by a feint. */
+  fooled: number;
 }
 
 export interface AiTeamMemory {
@@ -180,6 +210,14 @@ export interface AiTeamMemory {
   shots: number;
   tackles: number;
   saves: number;
+  /**
+   * Tackle duels (T17, for tuning: `npm run simulate`): this team's AI players' challenges on an opposing carrier
+   * (slides started at them, standing tackles) and how many won the ball, against an AI carrier and a human one.
+   */
+  duelTries: number;
+  duelWins: number;
+  duelTriesHuman: number;
+  duelWinsHuman: number;
 }
 
 export interface AiState {

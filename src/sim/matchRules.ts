@@ -1,15 +1,36 @@
 // Match-rules presets (T15): building them, checking them (they arrive over the network) and reading them. Pure.
-import { AI_PROFILES, GOAL_WIDTH, GOAL_WIDTH_BIG, KEEPER_PROFILES, MATCH_RULES, SHOT_MAX_CHARGE_TIME, type AiProfile } from '../config';
-import type { Difficulty, GameState, KeeperLevel, MatchRules, RulesPreset, TeamId } from './types';
+import {
+  AI_DEFENDING_VS_AI,
+  AI_DEFENDING_VS_HUMAN,
+  AI_PROFILES,
+  GOAL_WIDTH,
+  GOAL_WIDTH_BIG,
+  KEEPER_PROFILES,
+  MATCH_RULES,
+  SHOT_MAX_CHARGE_TIME,
+  type AiProfile,
+  type DefendingProfile,
+} from '../config';
+import type { AiDefending, Difficulty, GameState, KeeperLevel, MatchRules, RulesPreset, TeamId } from './types';
 
 export const RULES_PRESETS: readonly RulesPreset[] = ['arcade', 'classic'];
 export const KEEPER_LEVELS: readonly KeeperLevel[] = ['team', 'easy', 'normal', 'hard'];
+export const AI_DEFENDING_LEVELS: readonly AiDefending[] = ['relaxed', 'normal', 'tough'];
 
-/** A preset's rules, optionally with the keepers' skill overridden (Settings → Keepers; 'rules' = the preset's own). */
-export function rulesFor(preset: RulesPreset, keepers: KeeperLevel | 'rules' = 'rules'): MatchRules {
+/**
+ * A preset's rules, optionally with the keepers' skill (Settings → Keepers) and the AI's defending against humans
+ * (Settings → AI defending vs humans, T17) overridden; 'rules' = the preset's own.
+ */
+export function rulesFor(preset: RulesPreset, keepers: KeeperLevel | 'rules' = 'rules', aiDefending: AiDefending | 'rules' = 'rules'): MatchRules {
   const r = { ...MATCH_RULES[preset] };
   if (keepers !== 'rules') r.keeperDifficulty = keepers;
+  if (aiDefending !== 'rules') r.aiDefending = aiDefending;
   return r;
+}
+
+/** How the AI tackles a carrier (T17): the rules' "vs humans" level for a human carrier, else the AI-vs-AI profile. */
+export function defendingProfile(rules: MatchRules, humanCarrier: boolean): DefendingProfile {
+  return humanCarrier ? AI_DEFENDING_VS_HUMAN[rules.aiDefending] ?? AI_DEFENDING_VS_AI : AI_DEFENDING_VS_AI;
 }
 
 /** The game as it was before T15 (the sim's default, so older tests and tools are unchanged). */
@@ -32,7 +53,8 @@ export function isMatchRules(v: unknown): v is MatchRules {
     isBool(r.aimAssist) &&
     isBool(r.finesse) &&
     isBool(r.aimLine) &&
-    isBool(r.easedDefending)
+    isBool(r.easedDefending) &&
+    AI_DEFENDING_LEVELS.includes(r.aiDefending as AiDefending)
   );
 }
 
@@ -49,6 +71,7 @@ export function copyRules(r: MatchRules): MatchRules {
     finesse: r.finesse,
     aimLine: r.aimLine,
     easedDefending: r.easedDefending,
+    aiDefending: r.aiDefending,
   };
 }
 
@@ -62,6 +85,11 @@ export function keeperDifficulty(state: GameState, team: TeamId): Difficulty {
 export function keeperProfile(state: GameState, team: TeamId): Pick<AiProfile, 'keeperReaction' | 'keeperError' | 'keeperSpeed'> {
   const k = state.rules.keeperDifficulty;
   return k === 'team' ? AI_PROFILES[state.ai.difficulty[team]] : KEEPER_PROFILES[k];
+}
+
+/** "Relaxed" / "Normal" / "Tough", for menus. */
+export function defendingLabel(level: AiDefending): string {
+  return level[0].toUpperCase() + level.slice(1);
 }
 
 /** Short names for menus and the lobby. */
@@ -78,5 +106,6 @@ export function rulesSummary(r: MatchRules): string {
   if (r.aimAssist) parts.push('aim assist');
   if (r.shotChargeTime < SHOT_MAX_CHARGE_TIME) parts.push('quick charge');
   if (r.finesse) parts.push('finesse shots');
+  parts.push(`${r.aiDefending} AI defending`);
   return parts.join(', ');
 }

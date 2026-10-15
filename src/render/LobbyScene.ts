@@ -178,7 +178,7 @@ export class LobbyScene extends Phaser.Scene {
     if (!(this.lobby instanceof HostLobby)) return;
     const next = this.lobby.view.lobby.rules.preset === 'arcade' ? 'classic' : 'arcade';
     updateSettings({ rules: next });
-    this.lobby.setRules(rulesFor(next, settings.keepers));
+    this.lobby.setRules(rulesFor(next, settings.keepers, settings.aiDefending));
   }
 
   private changeName(): void {
