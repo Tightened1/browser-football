@@ -13,6 +13,7 @@ import {
   PITCH_TOP,
   CENTRE_CIRCLE_RADIUS,
   RESTART_AUTO_DELAY,
+  RESTART_AUTO_DELAY_CORNER,
   RESTART_AUTO_DELAY_HUMAN,
   RESTART_CLEAR_RADIUS,
   RESTART_INSET,
@@ -132,7 +133,8 @@ function setRestart(state: GameState, type: RestartType, team: TeamId, pos: Vec2
   state.lastTouch = { team, player: taker.id };
   // A human taker gets longer to aim before it is played for them (see autoPlayRestart).
   const human = state.controlled[team] === taker.id;
-  state.restart = { type, team, pos: { ...pos }, taker: taker.id, timer: human ? RESTART_AUTO_DELAY_HUMAN : RESTART_AUTO_DELAY };
+  const timer = human ? RESTART_AUTO_DELAY_HUMAN : type === 'corner' ? RESTART_AUTO_DELAY_CORNER : RESTART_AUTO_DELAY;
+  state.restart = { type, team, pos: { ...pos }, taker: taker.id, timer };
   resetAiPlans(state.ai);
   if (type !== 'kickoff') pushEvent(state, type, { team });
 }
@@ -267,18 +269,23 @@ function checkBall(state: GameState): void {
   // The whole ball over a line is out. A ball that has come to rest with its centre beyond a line is out too: in a
   // corner pocket it can sit just short of "whole ball" where no player can reach it (players stay inside the lines).
   const resting = Math.hypot(ball.vel.x, ball.vel.y) < OUT_REST_SPEED;
+  // How far the ball's centre is beyond the end lines (ex) and the touchlines (ey).
+  const ex = Math.max(PITCH_LEFT - ball.pos.x, ball.pos.x - PITCH_RIGHT, 0);
+  const ey = Math.max(PITCH_TOP - ball.pos.y, ball.pos.y - PITCH_BOTTOM, 0);
+  if (ex === 0 && ey === 0) return;
+  // Which line it goes over: the one its centre is beyond -- by the corner flag, where it is beyond both, the one it is
+  // heading over more directly (T16: these were all throw-ins), or the end line for a ball at rest in the corner pocket.
+  const endLine = ey === 0 || (ex > 0 && (resting || Math.abs(ball.vel.x) >= Math.abs(ball.vel.y)));
   const inGoalMouth = Math.abs(ball.pos.y - MID_Y) <= halfGoal;
-  const wholeX = ball.pos.x < PITCH_LEFT - r || ball.pos.x > PITCH_RIGHT + r;
-  const restX = resting && !inGoalMouth && (ball.pos.x < PITCH_LEFT || ball.pos.x > PITCH_RIGHT);
-  if (wholeX || restX) {
+  const whole = Math.hypot(ex, ey) > r; // no part of the ball is on the pitch
+  if (!whole && !(resting && !(endLine && inGoalMouth))) return;
+  if (endLine) {
     const side = ball.pos.x < PITCH_LEFT ? -1 : 1;
     if (inGoalMouth) scoreGoal(state, side);
     else if (state.grace) retake(state);
     else goalLineOut(state, side);
-  } else if (ball.pos.y < PITCH_TOP - r || ball.pos.y > PITCH_BOTTOM + r || (resting && (ball.pos.y < PITCH_TOP || ball.pos.y > PITCH_BOTTOM))) {
-    if (state.grace) retake(state);
-    else throwIn(state);
-  }
+  } else if (state.grace) retake(state);
+  else throwIn(state);
 }
 
 /** Advances the match flow by dt. Called by step() after the physics. */

@@ -21,6 +21,8 @@ const PRESET = opt('rules', 'classic') as RulesPreset;
 const RULES = rulesFor(PRESET);
 /** Goals-per-match target range for the rules (T11 for Classic, T15 for Arcade). */
 const TARGET: [number, number] = PRESET === 'arcade' ? [5, 9] : [3, 6];
+/** Corners-per-match target range (T16). */
+const CORNER_TARGET: [number, number] = [2, 6];
 
 /** The ball counts as stuck when, in open play, it stays within STUCK_RADIUS of one spot for this long (s). */
 const STUCK_RADIUS = 45;
@@ -39,6 +41,8 @@ interface MatchResult {
   throwIns: number;
   goalKicks: number;
   corners: number;
+  /** Goals scored within 8 s of a corner being taken. */
+  cornerGoals: number;
   stuckEpisodes: number;
   deadEpisodes: number;
   longestStill: number;
@@ -70,6 +74,8 @@ function playMatch(difficulty: Difficulty, seed: number): MatchResult {
   let sinceKick = 99;
   let quick = 0;
   let lastGoals = 0;
+  let sinceCorner = 99;
+  let cornerGoals = 0;
   let lastId = 0;
   const counts: Record<string, number> = {};
   const maxTicks = Math.ceil((HALF * 2 + 30) / SIM_DT) * 3;
@@ -83,8 +89,11 @@ function playMatch(difficulty: Difficulty, seed: number): MatchResult {
       }
     }
     const goals = s.score[0] + s.score[1];
+    if (s.restart?.type === 'corner') sinceCorner = 0;
+    else sinceCorner += SIM_DT;
     if (goals > lastGoals) {
       if (sinceKick < 8) quick++;
+      if (sinceCorner < 8) cornerGoals++;
       lastGoals = goals;
     }
     if (s.phase === 'playing' && !s.restart) {
@@ -121,6 +130,7 @@ function playMatch(difficulty: Difficulty, seed: number): MatchResult {
     throwIns: counts['throw-in'] ?? 0,
     goalKicks: counts['goal-kick'] ?? 0,
     corners: counts['corner'] ?? 0,
+    cornerGoals,
     stuckEpisodes: stuck,
     deadEpisodes: dead,
     longestStill: longestStill,
@@ -168,6 +178,10 @@ for (const d of difficulties) {
     throwIns: avg(rs.map((r) => r.throwIns)),
     goalKicks: avg(rs.map((r) => r.goalKicks)),
     corners: avg(rs.map((r) => r.corners)),
+    cornersMin: Math.min(...rs.map((r) => r.corners)),
+    cornersMax: Math.max(...rs.map((r) => r.corners)),
+    pctCornersInTarget: (100 * rs.filter((r) => r.corners >= CORNER_TARGET[0] && r.corners <= CORNER_TARGET[1]).length) / MATCHES,
+    goalsFromCorners: avg(rs.map((r) => r.cornerGoals)),
     tacklesPerMatch: avg(rs.map((r) => r.tackles)),
     passesPerMatch: avg(rs.map((r) => r.passes)),
     ownGoalsPerMatch: avg(rs.map((r) => r.ownGoals)),
@@ -189,6 +203,7 @@ for (const d of difficulties) {
   console.log(`keeper saves       ${f1(out.savesPerMatch)}/match   save rate ${f1(out.saveRate * 100)}%   goals per shot decision ${f1(out.conversion * 100)}%`);
   console.log(`possession         home ${f1(out.homePossession * 100)}%   avg gap ${f1(out.possessionGap * 100)} pts`);
   console.log(`out of play        ${f1(out.outOfPlayPerMatch)}/match (throw-ins ${f1(out.throwIns)}, goal kicks ${f1(out.goalKicks)}, corners ${f1(out.corners)})`);
+  console.log(`corners            ${f1(out.corners)}/match (min ${out.cornersMin}, max ${out.cornersMax}; ${f1(out.pctCornersInTarget)}% of matches in ${CORNER_TARGET[0]}-${CORNER_TARGET[1]})   goal kicks ${f1(out.goalKicks)}/match   goals within 8 s of a corner ${f2(out.goalsFromCorners)}/match`);
   console.log(`passes / tackles   ${f1(out.passesPerMatch)} / ${f1(out.tacklesPerMatch)}   own goals ${f2(out.ownGoalsPerMatch)}`);
   console.log(`stuck ball (>${STUCK_SECONDS}s within ${STUCK_RADIUS}px)  ${f2(out.stuckEpisodesPerMatch)}/match, ${out.matchesWithStuck}/${MATCHES} matches affected, longest ${f1(out.longestStillSeconds)}s`);
   const bad = rs.filter((r) => r.stuckEpisodes > 0);

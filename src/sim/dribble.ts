@@ -197,8 +197,9 @@ export function takePossession(state: GameState, p: PlayerState): void {
  */
 export function updatePossession(state: GameState): void {
   if (!stickyDribbling()) return;
-  // (Nobody can pick up a throw-in: it is thrown.)
-  if (state.phase !== 'playing' || state.restart?.type === 'throw-in') {
+  // (Nobody can pick up a throw-in or a corner: it is thrown / crossed from its spot.)
+  const held = state.restart?.type === 'throw-in' || state.restart?.type === 'corner';
+  if (state.phase !== 'playing' || held) {
     state.possession = null;
     return;
   }
@@ -224,6 +225,8 @@ export function updatePossession(state: GameState): void {
         ball.vel.x = (c.vel.x + o.vel.x) / 2 - (uy / ul) * side * DRIBBLE_CHECK_KNOCK_SPEED;
         ball.vel.y = (c.vel.y + o.vel.y) / 2 + (ux / ul) * side * DRIBBLE_CHECK_KNOCK_SPEED;
         loseBall(state);
+        // The challenger's touch knocked it loose: if it runs out of play, it's off them (T16).
+        state.lastTouch = { team: o.team, player: o.id };
         break;
       }
     }

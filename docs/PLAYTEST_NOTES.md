@@ -423,3 +423,62 @@ so the T11 target (3-6) still holds.
 5. Keepers now parry most shots: fun scrambles, or too many cheap tap-ins? [`KEEPER_CATCH_SPEED_ARCADE`]
 6. Lobby: the host switches Classic/Arcade; the guest's line updates and both have to press Ready again.
 7. Do the bigger goals look right (nets, posts, a ball going in off the post)?
+
+# T16: corners (game 1.3.1)
+
+Bug: "Corners aren't happening — when a defender puts the ball over their own goal line it turns into a goal kick, or a
+throw-in to the other team."
+
+## 1. Causes (reproduced first: `tests/corners.test.ts` failed 17 of its cases on the old code)
+
+1. **Ghost touches** (main cause). `updateTouches` (sim/control.ts, from T11) gave the last touch to whoever was
+   closest *within reach* of a slow ball, without any contact. A defender's clearance rolling out past an attacker (or
+   an attacker chasing it, or standing by the line where it stopped) became the attacker's touch: a goal kick instead of
+   a corner, a throw-in to the defenders instead of the attackers. In AI-vs-AI matches this flipped the last-touch team
+   ~34 times a match. Removed: only contacts, kicks, slides, body checks and possession are touches now
+   (`TOUCH_MAX_RELATIVE_SPEED` is gone).
+2. **Body checks weren't credited** (sim/dribble.ts). A defender knocking the ball off a carrier left the carrier as the
+   last toucher, so an attacker driving at the byline and dispossessed there got a goal kick against them.
+3. **Saves could never go behind.** Every keeper touch forced the ball out of the goal at `KEEPER_CLEAR_SPEED`, so a
+   shot turned round the post came back into play. Now a parry/dive heading behind more than `KEEPER_PARRY_WIDE_MARGIN`
+   outside a post is left alone: a corner. (Anything heading for the goal mouth is still pushed out, as before.)
+4. **By the corner flag** a ball over both lines was called on the touchline first (y was only checked "whole ball").
+   Now: the ball is out when no part of it is on the pitch (distance to the pitch rectangle), and in the corner region
+   the line is the one it is heading over more directly (a ball at rest there: the end line).
+
+Ruled out: `defenderOf()` after half-time (tests run in both halves), the grace period, the snapshot (corner restarts
+and events round-trip; the guest's label comes from the restart type).
+
+## 2. Corners worth having
+
+- Corners are taken like throw-ins (`pendingHeldRestart`): the taker stands over the ball, aims with the yellow arrow,
+  pass = low cross (`CORNER_LOW_SPEED`), hold/release shoot = hard cross (`CORNER_HARD_MIN/MAX_SPEED`). Idle for 3 s: it
+  is crossed into the box for you (`cornerTarget`). Nobody can dribble a corner any more.
+- AI: the attacking team's outfield players run to `AI_CORNER_SPOTS` (near post, far post, penalty spot); the AI taker
+  waits (up to `RESTART_AUTO_DELAY_CORNER`) for `AI_CORNER_MIN_RUNNERS` in the box, then crosses to the most open one.
+- F2 overlay: a "last touch: Team #n (GK)   restart: …" line (host only; the guest isn't sent the last touch). The
+  team-stats block moved to the bottom-left, out from under the score bar.
+
+## 3. Numbers (AI vs AI, 40 matches, seed 1, 2 x 3 min; corners per match)
+
+| | before | after |
+|---|---|---|
+| Arcade easy / normal / hard | 7.5 / 8.2 / 10.1 | 8.7 / 10.8 / 11.6 |
+| Classic easy / normal / hard | 8.6 / 10.9 / 11.0 | 8.2 / 10.2 / 11.0 |
+| Arcade goals per match | 4.67 / 6.70 / 6.88 | 4.88 / 6.05 / 6.60 |
+| Classic goals per match | 4.25 / 4.15 / 4.42 | 4.65 / 4.65 / 4.47 |
+| Arcade goals within 8 s of a corner | 1.25 / 1.23 / 1.30 | 1.13 / 1.60 / 1.88 |
+
+AI-vs-AI already had plenty of corners before (the AI rarely stands idle next to a rolling ball, so the ghost touch hit
+humans hardest) — above the rough 2–6 target both before and after. Most AI corners now come from a defender chasing a
+ball towards its own line and knocking it behind (~6 of ~11 a match on Arcade normal); keepers turning it round the post
+~1.8. Fewer AI corners is a defending-AI question for T17 (approach a ball running to the line from the goal side).
+All stuck/dead-ball checks stay at 0.
+
+## 4. Please feel-test by hand (T16)
+
+1. Defend: clear or deflect the ball behind your own line — the AI gets a corner every time (F2 shows the last touch).
+2. Attack: get dispossessed by the byline, or have a shot parried wide — your corner.
+3. Take a corner: does the arrow + low/hard cross feel right? Is the hard cross too fast to control?
+   [`CORNER_LOW_SPEED`, `CORNER_HARD_MAX_SPEED`]
+4. Do the AI runners get there in time without the wait feeling long? [`RESTART_AUTO_DELAY_CORNER`, `AI_CORNER_SPOTS`]

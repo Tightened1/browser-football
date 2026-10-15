@@ -1,4 +1,5 @@
-// Presentation helpers for the results screen. Pure.
+// Presentation helpers for the results screen (and the debug overlay). Pure.
+import type { GameState, TeamId } from './sim/types';
 
 export function formatTime(seconds: number): string {
   const s = Math.floor(seconds);
@@ -11,4 +12,18 @@ export function possessionPercent(possession: readonly [number, number]): [numbe
   if (total <= 0) return [50, 50];
   const home = Math.round((possession[0] / total) * 100);
   return [home, 100 - home];
+}
+
+const RESTART_NAMES = { kickoff: 'kickoff', 'throw-in': 'throw-in', 'goal-kick': 'goal kick', corner: 'corner' } as const;
+
+/**
+ * Debug overlay line (T16): who touched the ball last -- team, shirt number and role -- and the restart waiting to be
+ * taken, if any. `teamName` gives each team's display name.
+ */
+export function lastTouchText(state: GameState, teamName: (team: TeamId) => string): string {
+  const t = state.lastTouch;
+  const p = t ? state.players[t.player] : undefined;
+  const who = t && p ? `${teamName(t.team)} #${p.number}${p.role === 'keeper' ? ' (GK)' : ''}` : 'nobody';
+  const r = state.restart;
+  return `last touch: ${who}${r ? `   restart: ${RESTART_NAMES[r.type]} to ${teamName(r.team)}` : ''}`;
 }

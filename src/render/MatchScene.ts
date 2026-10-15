@@ -48,7 +48,8 @@ import { matchRulesSetting } from '../settings';
 import { randomOpponent, type Look } from '../teams';
 import { setTeamLooks, teamStyle } from './teamStyle';
 import { roleOf } from '../sim/ai';
-import { pendingThrowIn, restartAim } from '../sim/setpiece';
+import { lastTouchText } from '../matchStats';
+import { pendingHeldRestart, restartAim } from '../sim/setpiece';
 import { assistAim, attackedGoalX, inShootingRange, yAtGoalLine } from '../sim/shooting';
 import type { Difficulty, GameState, InputFrame, MatchEvent, MatchRules, MatchStats, PlayerState, TeamId, Vec2 } from '../sim/types';
 import { GuestLobby, GuestMatch } from '../net/client';
@@ -517,7 +518,8 @@ export class MatchScene extends Phaser.Scene {
     for (let i = 0; i < this.driver.state.players.length; i++) {
       this.debugLabels.push(this.add.text(0, 0, '', style).setOrigin(0.5, 0).setDepth(21).setVisible(false));
     }
-    this.debugTeams = this.add.text(8, 6, '', { ...style, fontSize: '13px' }).setDepth(21).setVisible(false);
+    // Bottom-left, clear of the score bar (above the online label and the controls line).
+    this.debugTeams = this.add.text(8, GAME_HEIGHT - PITCH_MARGIN / 2 - 12, '', { ...style, fontSize: '13px' }).setOrigin(0, 1).setDepth(21).setVisible(false);
     const toggle = (): void => {
       this.debugAi = !this.debugAi;
     };
@@ -525,7 +527,7 @@ export class MatchScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-BACKTICK', toggle);
   }
 
-  /** Read-only: role, intent and target of every AI player, and each team's mode and counters. */
+  /** Read-only: role, intent and target of every AI player, each team's mode and counters, and who touched the ball last. */
   private drawDebugOverlay(state: GameState): void {
     const g = this.debugGfx;
     g.clear();
@@ -553,7 +555,9 @@ export class MatchScene extends Phaser.Scene {
       const t = state.ai.teams;
       const line = (i: 0 | 1): string =>
         `${teamStyle(i).name} [${state.ai.difficulty[i]}] ${t[i].mode.padEnd(13)} passes ${t[i].passes}  shots ${t[i].shots}  tackles ${t[i].tackles}  saves ${t[i].saves}`;
-      this.debugTeams.setText(`${line(0)}\n${line(1)}\nAI debug (F2)`);
+      // (Host only, like the rest: the guest isn't sent the last touch.)
+      const touch = lastTouchText(state, (team) => teamStyle(team).name);
+      this.debugTeams.setText(`${line(0)}\n${line(1)}\n${touch}\nAI debug (F2)`);
     }
   }
 
@@ -623,7 +627,7 @@ export class MatchScene extends Phaser.Scene {
     const id = state.controlled[team];
     if (this.aiVsAi || !state.rules.aimLine || id < 0 || state.phase !== 'playing') return;
     const p = state.players[id];
-    if (!(this.lastInput.shoot || p.charge > 0) || pendingThrowIn(state)?.taker === id) return;
+    if (!(this.lastInput.shoot || p.charge > 0) || pendingHeldRestart(state)?.taker === id) return;
     const { ball } = state;
     const mine = state.possession ? state.possession.player === id : Math.hypot(ball.pos.x - p.pos.x, ball.pos.y - p.pos.y) <= p.radius + ball.radius + 10;
     if (!mine || !inShootingRange(state, team, ball.pos)) return;
@@ -686,7 +690,7 @@ export class MatchScene extends Phaser.Scene {
       const w = 36;
       const h = 6;
       // (A long throw charges like the Classic shot; a shot takes the rules' charge time.)
-      const full = pendingThrowIn(this.driver.state)?.taker === p.id ? SHOT_MAX_CHARGE_TIME : this.driver.state.rules.shotChargeTime;
+      const full = pendingHeldRestart(this.driver.state)?.taker === p.id ? SHOT_MAX_CHARGE_TIME : this.driver.state.rules.shotChargeTime;
       const frac = Math.min(1, p.charge / full);
       const bx = x - w / 2;
       const by = y + p.radius + 6;

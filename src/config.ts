@@ -24,6 +24,8 @@ export const GOAL_DEPTH = 36;
 export const CENTRE_CIRCLE_RADIUS = 80;
 export const PENALTY_BOX_WIDTH = 150;
 export const PENALTY_BOX_HEIGHT = 300;
+/** Where a corner is crossed to when nobody is in the box (px out from the goal line, on the goal's centre line). */
+export const PENALTY_SPOT_DISTANCE = 110;
 export const LINE_THICKNESS = 4;
 /** Mown stripes across the pitch. */
 export const PITCH_STRIPES = 14;
@@ -127,9 +129,6 @@ export const KICK_BUFFER_TIME = 0.25;
 /** "Kick fired" flash (s). For this long after a kick the ball also passes through the kicker's own body (a kick behind you). */
 export const KICK_FLASH_TIME = 0.15;
 
-/** A ball that is merely within reach of a player only counts as touched by them if it moves slower than this relative to them (px/s). */
-export const TOUCH_MAX_RELATIVE_SPEED = 90;
-
 /** Kicks (ball launch speed, px/s). */
 export const PASS_SPEED = 450;
 /** A tap of shoot, or a minimal charge. */
@@ -195,8 +194,13 @@ export const KEEPER_ARRIVE_RADIUS = 30;
 export const KEEPER_BALL_RESTITUTION = 0.15;
 /** Inverse mass of the keeper vs the ball (small = a hard shot barely moves the keeper). */
 export const KEEPER_INV_MASS = 0.1;
-/** After touching a keeper the ball always leaves at least this fast, away from the goal (px/s). */
+/**
+ * After touching a keeper the ball leaves at least this fast, away from the goal (px/s) -- unless the touch sends it
+ * behind wide of the goal (more than KEEPER_PARRY_WIDE_MARGIN px outside the posts where it crosses the line): a save
+ * turned round the post goes out for a corner (T16).
+ */
 export const KEEPER_CLEAR_SPEED = 240;
+export const KEEPER_PARRY_WIDE_MARGIN = 20;
 /**
  * Sticky dribbling: a keeper inside its own penalty box catches (holds) a ball arriving at up to this relative speed
  * (px/s); harder shots are parried as before. A keeper holding the ball can't be tackled or body-checked.
@@ -442,6 +446,8 @@ export const HALF_TIME_PAUSE = 4;
  * ball (a throw-in, which can't be dribbled, is then thrown to a teammate automatically).
  */
 export const RESTART_AUTO_DELAY = 1;
+/** An AI's corner gets this long (s), so its attackers can get into the box (T16); it is crossed for it when it runs out. */
+export const RESTART_AUTO_DELAY_CORNER = 3;
 /** ...and one taken by a human gets this long (s) before it is thrown / passed to the nearest unmarked teammate for them (T14). */
 export const RESTART_AUTO_DELAY_HUMAN = 3;
 /**
@@ -452,12 +458,32 @@ export const RESTART_GRACE_TIME = 1;
 /**
  * Throw-ins (T14) are thrown, not dribbled: the taker stands still, aims with the move keys (clamped into the pitch:
  * at least THROW_AIM_EDGE rad off the line) and throws with pass (short) or shoot (long, charged like a shot).
- * Corners and goal kicks are kicked as usual, but their aim is clamped into the pitch the same way.
+ * Goal kicks are kicked as usual, but their aim is clamped into the pitch the same way.
  */
 export const THROW_SHORT_SPEED = 380;
 export const THROW_LONG_MIN_SPEED = 460;
 export const THROW_LONG_MAX_SPEED = 720;
 export const THROW_AIM_EDGE = 0.2;
+/**
+ * Corners (T16) are taken like throw-ins (the taker stands over the ball and aims the cross with the arrow) but kicked:
+ * pass is a low cross, shoot a hard cross charged over SHOT_MAX_CHARGE_TIME (px/s).
+ */
+export const CORNER_LOW_SPEED = 480;
+export const CORNER_HARD_MIN_SPEED = 600;
+export const CORNER_HARD_MAX_SPEED = 900;
+/**
+ * Where the AI's attackers go for their corner (the taker's teammates, front-most first): dx px out from the goal line,
+ * dy px from the goal's centre towards the corner's side (negative = far side). Near post, far post, penalty spot.
+ */
+export const AI_CORNER_SPOTS: readonly { dx: number; dy: number }[] = [
+  { dx: 55, dy: -55 },
+  { dx: 45, dy: 50 },
+  { dx: PENALTY_SPOT_DISTANCE, dy: 0 },
+];
+/** The AI's corner taker crosses once this many teammates are in the box (or when its corner is about to be auto-crossed). */
+export const AI_CORNER_MIN_RUNNERS = 2;
+/** ...the corner is crossed anyway with this little (s) of its RESTART_AUTO_DELAY_CORNER left. */
+export const AI_CORNER_LATEST = 0.5;
 /** Auto-throw / auto-pass target (T14): a teammate counts as marked with an opponent this close (px). */
 export const THROW_MARKED_DISTANCE = 60;
 /**

@@ -171,17 +171,17 @@ describe('player collisions', () => {
 });
 
 describe('last touch', () => {
-  it('a ball merely flying past a player within reach is not touched by them; a resting or colliding one is', () => {
+  it('a ball merely within reach of a player is not touched by them, flying past or at rest (T16); a colliding one is', () => {
     const s = place([626, midY], { 6: [600, midY], 1: [200, PITCH_TOP + 20], 2: [200, PITCH_BOTTOM - 20] });
     s.lastTouch = { team: 0, player: 1 };
     // 26 px from player 6's centre: inside reach (14 + 9 + 8 = 31) but not touching (23), moving fast across it.
     s.ball.vel = { x: 0, y: 500 };
     updateTouches(s);
     expect(s.lastTouch).toEqual({ team: 0, player: 1 });
-    // The same spot with the ball at rest next to the player: they have it.
+    // The same spot with the ball at rest next to the player: still not theirs (being near it is not a touch).
     s.ball.vel = { x: 0, y: 0 };
     updateTouches(s);
-    expect(s.lastTouch).toEqual({ team: 1, player: 6 });
+    expect(s.lastTouch).toEqual({ team: 0, player: 1 });
     // A fast ball that really hits a player (step runs the collision) is theirs.
     const hit = place([600, midY - 40], { 6: [600, midY], 1: [200, PITCH_TOP + 20], 2: [200, PITCH_BOTTOM - 20] });
     hit.ball.vel = { x: 0, y: 400 };

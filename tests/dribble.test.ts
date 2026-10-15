@@ -146,9 +146,13 @@ describe('sticky dribbling', () => {
     s = step(s, [input(), input()], SIM_DT);
     expect(s.possession?.player).toBe(0);
     s = step(s, [input(), input({ tackle: true, moveX: -1 })], SIM_DT);
-    for (let i = 0; i < 20; i++) s = step(s, [input(), input()], SIM_DT);
+    let slideTouched = false;
+    for (let i = 0; i < 20; i++) {
+      s = step(s, [input(), input()], SIM_DT);
+      if (s.lastTouch?.player === 1) slideTouched = true;
+    }
     expect(s.possession?.player).not.toBe(0);
-    expect(s.lastTouch?.team).toBe(1);
+    expect(slideTouched).toBe(true); // (the knocked ball may then bounce off the carrier's body: their touch)
   });
 
   it('an opponent body-checking from the front takes it; one behind the carrier is shielded', () => {

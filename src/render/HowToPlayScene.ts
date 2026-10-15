@@ -23,7 +23,7 @@ export class HowToPlayScene extends Phaser.Scene {
       ['Finesse shot (Arcade rules): hold shoot, tap pass -- curled and placed by a post', `${keysText(b, 'shoot')}  +  ${keysText(b, 'pass')}`],
       ['Tackle / slide (when you have no ball)', keysText(b, 'tackle')],
       ['Switch player (when you have no ball)', keysText(b, 'switch')],
-      ['AI debug overlay (roles, intents, team modes)', 'F2  /  `'],
+      ['AI debug overlay (roles, intents, team modes, last touch)', 'F2  /  `'],
       ['Network debug overlay (ping, snapshots, buffer, loss)', 'F3  /  N'],
       ['Pause menu / leave', 'Esc'],
     ];
@@ -41,7 +41,7 @@ export class HowToPlayScene extends Phaser.Scene {
       'You control the ringed player; the AI plays the rest. Run into a loose ball to take it.',
       'The ball stays at your feet. A slide, a player in your way or a U-turn at full speed loses it.',
       'Kick just before the ball reaches you and it fires when it arrives (amber ring = waiting).',
-      'Throw-ins are thrown: aim with the move keys (yellow arrow), then pass = short throw, shoot = long.',
+      'Throw-ins and corners: aim with the move keys (yellow arrow), then pass = short throw / low cross, shoot = long / hard.',
       `A throw always goes into the pitch (wait ${RESTART_AUTO_DELAY_HUMAN} s: to a free teammate). You can't dribble over a line.`,
       'Match rules (Settings): Arcade = big goals, quick charge, aim line, aim assist towards the corners, kinder keepers.',
       "Classic = the original game. Online, the host's rules are used (shown in the lobby). Line up your shot: keys aim in 8 directions.",

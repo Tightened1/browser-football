@@ -41,7 +41,7 @@ src/
     dribble.ts         Sticky dribbling: taking, carrying and losing the ball, the touchline holding it (shared with the guest's prediction)
     shooting.ts        Shot speed from charge, aim assist, finesse (curled) shot and curl (shared with the guest's prediction and the aim line)
     matchRules.ts      Match-rules presets (Arcade / Classic): building, validating (network) and reading them; GameState.rules
-    setpiece.ts        Set pieces: throw-ins thrown not dribbled, aim clamped into the pitch, auto-throw, grace period
+    setpiece.ts        Set pieces: throw-ins thrown and corners crossed (not dribbled), aim clamped into the pitch, auto-throw / auto-cross, grace period
     rules.ts           Goals, kickoff, out of play, timer, halves
     ai.ts              AI decisions -> produces InputFrames for AI-controlled players
   render/              Phaser scenes that DRAW a GameState (never change it)
@@ -89,13 +89,13 @@ tests/                 Vitest tests for sim/
 | Finesse shot (Arcade rules): hold shoot, tap pass | `Space` + `X` |
 | Tackle / slide (no ball) | `C` |
 | Switch player (no ball) | `Z` / `Shift` |
-| AI debug overlay (roles, intents, team modes) | `F2` / `` ` `` |
+| AI debug overlay (roles, intents, team modes, last touch) | `F2` / `` ` `` |
 | Network debug overlay (ping, snapshots, buffer, loss) | `F3` / `N` |
 | Pause menu (offline: pauses; online: the match keeps running) / back | `Esc` |
 
 With the ball (sticky dribbling) it stays at your feet; passes and shots go where the move keys point at release, and a kick pressed just before the ball arrives is held for 0.25 s and fires when it does.
 
-Throw-ins are thrown: the taker stands still, aims with the move keys (yellow arrow) and presses pass (short throw) or holds and releases shoot (long throw); the aim is always clamped into the pitch, and after 3 s of nothing it goes to a free teammate. Corners and goal kicks are kicked, also clamped into the pitch. A dribbled ball can't be carried over a line (`TOUCHLINE_HOLDS_DRIBBLE`).
+Throw-ins are thrown: the taker stands still, aims with the move keys (yellow arrow) and presses pass (short throw) or holds and releases shoot (long throw); the aim is always clamped into the pitch, and after 3 s of nothing it goes to a free teammate. Corners (T16) are taken the same way but kicked: pass = low cross, shoot = hard cross (after 3 s, crossed into the box for you). Goal kicks are kicked, also clamped into the pitch. A dribbled ball can't be carried over a line (`TOUCHLINE_HOLDS_DRIBBLE`).
 
 All of the movement and action keys can be rebound under **Settings** (two keys per action); the table shows the defaults. `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved.
 
@@ -141,6 +141,12 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T13 | Sticky dribbling & fix shooting | T12 | **Opus 5.5** | [x] |
 | T14 | Throw-ins & touchlines: no walking the ball back out | T13 | Sonnet 5.5 | [x] |
 | T15 | Make scoring easier: keepers, shooting & "Arcade" rules preset | T14 | **Opus 5.5** | [x] |
+| T16 | Fix corners (awarded as goal kicks / throw-ins) | T15 | Sonnet 5.5 | [x] |
+| T17 | Fairer AI defending + sprint & shield for humans | T16 | **Opus 5.5** | [ ] |
+| T18 | Automated tests in CI: sim regression + two-browser online smoke test | T16 | Sonnet 5.5 | [ ] |
+| T19 | Fouls, free kicks, penalties & penalty shoot-outs | T17 | **Opus 5.5** | [ ] |
+| T21 | Online extras: names, quick chat, series score, MVP | T16 | Sonnet 5.5 | [ ] |
+| T23 | Goal replays & highlights | T19 | **Opus 5.5** | [ ] |
 
 ### Which model, and why
 
@@ -556,17 +562,164 @@ Finally, mark T15 as [x] in the ROADMAP.md task queue, add a change log entry, c
 
 ---
 
+### T16 — Fix corners (awarded as goal kicks / throw-ins)
+**Model:** Sonnet 5.5 (a focused rules bug in pure, testable code; switch to Opus 5.5 if the cause still isn't found after the reproduction steps below)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture and golden rules exactly. You are doing task T16, a bug fix from playtesting.
+
+Bug: "Corners aren't happening — when a defender puts the ball over their own goal line it turns into a goal kick, or a throw-in to the other team."
+
+The decision is made in src/sim/rules.ts: checkBall() → goalLineOut() gives a corner when state.lastTouch.team is the defending team (defenderOf), otherwise a goal kick; the touchline check (throw-in) runs if the end-line check didn't fire. On a read-through, the corner logic itself looks right, so the cause is probably upstream. Suspects to check:
+- Touches that don't update state.lastTouch: keeper dives/blocks while sliding, keeper parries (KEEPER_CLEAR_SPEED path), keeper catch/hold and release, body deflections off a defender, slide-tackle knocks, ball-held-by-the-line logic from T14, the T15 aim-assist/finesse paths, or the AI's own kick paths.
+- A deflection near the corner flag being classified as over the touchline first (ball crossing both lines in one tick, or the "resting" rules).
+- defenderOf() after teams swap ends at half-time.
+- The T14 grace period (retake) or touchline-holds-dribble rule interfering.
+- Online only: the guest's prediction or snapshot decode showing a different restart than the host.
+
+Do the following:
+1. Reproduce first with failing Vitest tests: a defender's touch (kick, body deflection, slide, keeper parry, keeper dive) sends the ball over their own goal line outside the posts → corner for the attackers, in both halves. Also: the ball crossing the end line near the corner flag → corner/goal kick, not a throw-in.
+2. Add corner and goal-kick counts to `npm run simulate`. In AI-vs-AI matches there should be a reasonable number of corners (roughly 2–6 per match); report before and after.
+3. Fix the root cause(s). Don't just patch symptoms.
+4. Corners should be worth having: make sure the AI attacking team moves players into the box for a corner, and the human taker can aim the cross (same aim arrow as throw-ins) with pass = low cross, shoot = hard cross.
+5. Add an optional debug overlay line (behind the existing debug toggle) showing the last-touch team/player, so this is easy to verify by eye.
+6. Check it in an online match too (host and guest both see "CORNER").
+
+Done when: defenders putting the ball behind gives a corner every time, the tests pass, and simulate shows corners happening. `npm test` and `npm run build` pass.
+Finally, mark T16 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
+### T17 — Fairer AI defending + sprint & shield for humans
+**Model:** Opus 5.5 (AI behaviour and game balance across the AI, controls and online play; needs judgment so the AI stays useful)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture and golden rules exactly. You are doing task T17, based on playtest feedback.
+
+Feedback: "The AI is a bit strong in a multiplayer match with the tackles. But if we lower them, they'll be useless."
+Goal: the AI should still defend well (position, intercept, block shots, cover space), but tackling a human ball carrier should feel fair and beatable, and humans should get tools to beat a defender. Don't just lower numbers across the board.
+
+Do the following:
+1. Measure first: add to `npm run simulate` (or a scripted test) how often an AI tackle wins the ball from a carrier, split by "carrier is human-controlled" vs "AI". For humans, use a simple scripted human-like dribbler.
+2. Telegraphed tackles: before an AI slide tackle there's a short, visible wind-up (~0.2–0.3 s, a small crouch/flash) the human can react to by changing direction. Standing tackles (poking the ball) have a short cooldown after a failed attempt.
+3. Fair pressure on humans: when the ball carrier is human-controlled, the AI uses a separate tackle profile (lower tackleChance, slightly longer reaction, max one presser unless near its own goal). Keep the normal profile for AI vs AI. Add an "AI defending vs humans" setting: Relaxed / Normal / Tough (default Relaxed for Arcade, Normal for Classic).
+4. Human tools to beat defenders:
+   - Sprint (hold a key, e.g. Shift; rebind the current switch key if needed and update the defaults sensibly): faster running with a stamina bar that drains and recovers. Sprinting with the ball makes it slightly harder to control (bigger touches).
+   - Shield: holding a key while standing or walking with the ball protects it — tackles from behind or the side are much less likely to win the ball, but you move slowly.
+   - A quick feint/drag-back (double-tap a direction away from the defender) that shifts the ball sideways.
+   - Give the AI the same tools sparingly, so it remains a fair contest.
+5. Keep it all network-safe: new input bits in InputFrame, stamina in GameState/snapshots, bump the protocol version; the guest's prediction must handle sprint.
+6. Update How-to-play, the controls table in ROADMAP.md, Settings rebinding and docs/PLAYTEST_NOTES.md.
+7. Tests (Vitest): tackle wind-up delay; the human-carrier profile is used when the carrier is human; stamina drains/recovers; shield reduces tackle success from behind.
+8. Re-run simulate: AI-vs-AI goals stay within the T11/T15 targets; report the human-carrier tackle success before/after (target: roughly halved on Relaxed).
+
+Done when: in a multiplayer match the AI still defends well but we can beat a tackle with skill (sprint, shield, feint, reacting to the wind-up). `npm test` and `npm run build` pass.
+Finally, mark T17 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
+### T18 — Automated tests in CI: sim regression + two-browser online smoke test
+**Model:** Sonnet 5.5 (standard test and CI tooling with a clear spec)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first. You are doing task T18. The game changes a lot from task to task, and bugs like broken corners slip through, so we want automatic checks on every push.
+
+Do the following:
+1. GitHub Actions: run `npm test` and `npm run build` on every push and pull request. Deploy to Pages only if they pass (update the existing workflow).
+2. Sim regression check: a fast version of `npm run simulate` (fixed seeds, a few AI-vs-AI matches with Arcade and Classic rules) that fails the build if key stats leave safe ranges: goals per match, corners, throw-ins, stalemates, shots. Keep the ranges in one config file so they're easy to adjust when we intentionally change balance.
+3. Determinism check: the same seed and inputs give an identical final state (catches accidental Math.random/Date use in sim/).
+4. Playwright smoke test (headless Chromium): start the Vite preview server, open two browser pages, host on one, join with the room code on the other, start a match, simulate a few seconds of key presses on both, and check that both pages show the same score/clock and no console errors. If the public PeerJS broker isn't reliable in CI, add a local PeerJS server for tests only (dev dependency, configured via an env var), and document it.
+5. Snapshot/protocol round-trip tests for every message type.
+6. Add `npm run test:e2e` and document all test commands in README.md.
+
+Done when: a push runs all checks automatically, a deliberately broken rule (try one locally, then revert) makes CI fail, and the deploy only happens on green. Tell me how long the CI run takes.
+Finally, mark T18 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push.
+```
+
+---
+
+### T19 — Fouls, free kicks, penalties & penalty shoot-outs
+**Model:** Opus 5.5 (new rules plus AI and online sync; set pieces touch many systems)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture and golden rules exactly. You are doing task T19.
+
+Goal: tackles carry risk, and set pieces add excitement. Keep it arcade, not a full rulebook.
+
+Do the following:
+1. Fouls: a slide tackle that hits the player before the ball, or from behind, is a foul. Mistimed standing tackles are fouls only if clearly late. Configurable strictness (Off / Lenient / Strict); Arcade = Lenient, Classic = Strict. "Off" keeps the current behaviour.
+2. Free kick at the spot of the foul: the opposition is kept back (a wall of 1–2 AI players forms automatically if it's within shooting range). The taker aims with the arrow and uses pass/shoot like other set pieces (reuse the T14/T16 aim code).
+3. Penalty for a foul inside the box: a penalty mode where the taker aims and shoots, and the defending human controls the keeper (dive left/centre/right with move + tackle key). The AI takes and saves penalties on difficulty-based odds.
+4. Cards (optional, Lenient = none): a yellow card for a reckless slide, shown on the HUD and in results stats; two yellows = sent off for the rest of the half (team plays a player down). Make this a setting.
+5. Penalty shoot-out for drawn matches (setting: Off / Shoot-out / Golden goal extra time). Best of 5 then sudden death, alternating takers, with a shoot-out scoreboard.
+6. The AI: commits fewer slide tackles inside its own box (fear of penalties), and forms walls.
+7. Network: new restart types, events and snapshot fields (protocol version bump); the guest controls its own penalty taker/keeper with prediction kept simple.
+8. Results screen: fouls, cards, penalty results. Sounds: referee whistle for fouls.
+9. Tests (Vitest): foul detection cases, free kick placement and wall distance, penalty → goal/save, shoot-out scoring and sudden death, card logic.
+10. Re-run simulate and report fouls per match (target: ~2–5 on Lenient) and confirm goals stay in target.
+
+Done when: in online and offline matches, reckless tackles give free kicks/penalties, penalties are playable by both humans, and a draw can go to a shoot-out. `npm test` and `npm run build` pass.
+Finally, mark T19 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
+### T21 — Online extras: names, quick chat, series score, MVP
+**Model:** Sonnet 5.5 (UI and small protocol additions with a clear spec)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture exactly. You are doing task T21: making online sessions with a friend more social.
+
+Do the following:
+1. Player names: entered on the title screen (saved in localStorage, wrapped in try/catch), shown in the lobby, HUD and results, sent in the handshake. Limit the length and strip unsafe characters.
+2. Quick chat / emotes: number keys 1–6 send preset messages ("Nice goal!", "Unlucky", "What a save!", "Rematch?", "😂", "GG"). Show them as a brief bubble above the sender's controlled player and in a small feed. Rate-limit them, and add a mute option. No free-text chat.
+3. Series score: rematches in the same session keep a running series score (e.g. "Series 3–2") shown in the lobby and results screen, with a "reset series" button.
+4. Results screen: man of the match (based on goals, assists, saves, tackles won), plus a per-player stat line for the human players.
+5. Reconnect improvements: if the guest refreshes during the lobby or a match, it rejoins the same room automatically via the room code in the URL.
+6. Protocol version bump; tests for the name sanitising, series counting and MVP scoring.
+
+Done when: playing several matches online with a friend shows names, emotes, a running series score and an MVP. `npm test` and `npm run build` pass.
+Finally, mark T21 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
+### T23 — Goal replays & highlights
+**Model:** Opus 5.5 (recording and playback of state, kept in sync for both players)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture exactly (rendering only reads GameState). You are doing task T23.
+
+Do the following:
+1. Keep a rolling buffer of the last ~6 seconds of game states/snapshots (memory-efficient: reuse the binary snapshot encoding). It works on the host, the guest and offline.
+2. After a goal, offer an instant replay of the build-up (skippable by either player with any key; online, either player skipping ends it for both, or each sees it independently — choose and explain). Include slow motion for the last second and a camera that follows the ball.
+3. Highlights: at full time, show a highlights reel of every goal from the match (and big saves if easy to detect), skippable.
+4. The match clock doesn't run during replays; the next kickoff waits until the replay ends.
+5. A "REPLAY" banner, and a setting to turn replays Off / Goals only / Goals + highlights.
+6. Tests for the ring buffer and replay timing.
+
+Done when: every goal can be watched again, online and offline, and the full-time highlights work. `npm test` and `npm run build` pass.
+Finally, mark T23 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
 ## 6. Backlog (after v1)
 
 | # | Idea | Suggested model |
 |---|---|---|
 | B01 | Pixel-art sprites & animations for players | Sonnet 5.5 |
-| B02 | Gamepad support (browser Gamepad API) | Sonnet 5.5 |
+| B02 | ~~Gamepad support~~ — dropped | — |
 | B03 | Mobile touch controls (virtual joystick) | Sonnet 5.5 |
 | B04 | 2v2 humans online (more peers, more controlled players per team) | Opus 5.5 |
 | B05 | Switch to a Node/Socket.io server if P2P is unreliable (plan: `docs/RELAY_SERVER_OPTION.md`) | Opus 5.5 |
-| B06 | Penalty shoot-out after a draw | Sonnet 5.5 |
-| B07 | Replays of goals (record snapshots) | Opus 5.5 |
+| B06 | ~~Penalty shoot-out after a draw~~ → moved to T19 | — |
+| B07 | ~~Replays of goals~~ → moved to T23 | — |
+| B08 | Team tactics: Defensive / Balanced / Attacking switch mid-match | Opus 5.5 |
+| B09 | Pitch & weather variety (wet pitch = faster ball, night lighting) | Sonnet 5.5 |
+| B10 | Mini tournament / league vs AI teams with saved progress | Sonnet 5.5 |
 
 ---
 
@@ -586,3 +739,6 @@ Finally, mark T15 as [x] in the ROADMAP.md task queue, add a change log entry, c
 - 2026-10-14 — T14 (game 1.2.0, protocol unchanged at 4): **throw-ins are thrown, and the ball can't be walked off the pitch.** Cause confirmed by failing tests first: the taker (or anyone) could walk onto the restart ball, pick it up with a sticky dribble and carry it back over the line, and nothing stopped a held ball crossing any line. New `sim/setpiece.ts`: during a throw-in the ball is held on its spot and nobody can take possession; the taker stands still, aims with the move keys and throws with pass (`THROW_SHORT_SPEED`) or a charged shoot (`THROW_LONG_*`); every restart's aim is clamped into the pitch (an outward aim is mirrored back in, then kept `THROW_AIM_EDGE` off the line), and a yellow arrow shows a human taker's aim (drawn from local keys, so the online guest sees it at once; the guest's copy of the restart now names the taker). Auto-play: a human taker gets `RESTART_AUTO_DELAY_HUMAN` (3 s), then it is thrown/passed to the nearest unmarked teammate (`THROW_MARKED_DISTANCE`); an AI throw-in goes within `RESTART_AUTO_DELAY` (1 s) and the AI only throws to a teammate it can reach. **Arcade touchline** (`TOUCHLINE_HOLDS_DRIBBLE`, on): a carried ball stays wholly inside the touchlines and goal lines (not the goal mouth: you can still walk it in); the carrier is held off the line and slides along it at `TOUCHLINE_HOLD_SPEED_FACTOR`. **Grace period** (`RESTART_GRACE_TIME` 1 s): a restart that goes straight back out before anyone but the taker touches it is retaken by the same team. Online: the guest's prediction runs the same touchline rule (`holdOffLines`, `heldBallSpot`); prediction stays off during set pieces, so the host decides every throw. Simulation (40 matches, seed 1): Normal 4.15 goals (was 5.08), 72.5% of matches in 3-6 (was 65%), Easy 4.25, Hard 4.42, 0 stuck or dead balls; holdout seed 7 (100 matches): Normal 4.72, 73% in 3-6, 0 stuck. Tests: `tests/throwins.test.ts`, two online cases in `tests/guestPrediction.test.ts` (100 ms one way, 3% loss). Details: `docs/PLAYTEST_NOTES.md` (T14 section).
 - 2026-10-14 — T15 (game 1.3.0, protocol 5): **easier scoring, and Arcade / Classic match rules.** Measured first with a new shooting test (`npm run shoottest`: ~7,000 scripted shots per keeper level from 5 spots × charge × aim × with/without a defender). Main causes: keyboard aim has only 8 directions, so from central spots a human could only shoot at the keeper (penalty spot 0%, edge of the box 0-3% with key aims); keepers smothered a shooter standing within 110 px while the 0.8 s charge ran; a defender tackled every half/full charge; most shots under pressure were caught (850 px/s). New `GameState.rules` (`sim/matchRules.ts`, presets `MATCH_RULES` in `config.ts`), carried in `LobbyState.rules` and the `start` message (validated), so the guest plays the host's rules; Settings has Match rules and Keepers, the team picker and lobby show them (the host can switch in the lobby, which clears ready). **Classic** reproduces 1.2.0 exactly (simulate numbers identical). **Arcade** (default): 180 px goals (`GOAL_WIDTH_BIG`; boundaries per goal width, `boundaryFor`), easy keepers from their own `KEEPER_PROFILES` (`KEEPER_DIFFICULTY`) with flaws (slower on easy/normal, later to far-side shots, random reaction spread, short of the post, smother only within 70 px), catch speed 480 (parries → rebounds), 0.5 s charge, aim assist (`sim/shooting.ts`: bends towards the nearer open corner, never onto it), finesse shot (hold shoot + tap pass: 800 px/s, curled with a new `ball.spin`, placed by a post; keepers read the curl), a dotted aim line while charging in range, and eased AI defending against a human carrier (one presser, no slides from behind in the box). The guest predicts its own finesse/assisted kicks with the same functions. Chip shot skipped (needs a real ball height; write-up in the notes). Results: Arcade edge-of-box full-charge keyboard shot 60% (was 0-3%), penalty spot 95% (was 0%), keepers save 59% of shots; AI vs AI goals per match easy 4.55 / normal 6.72 / hard 6.90 (holdout seed 7: 4.97 / 5.87 / 6.52), 0 stuck; Classic 4.25 / 4.15 / 4.42 unchanged. Tests: `tests/matchRules.test.ts`. Details and the hand-test list: `docs/PLAYTEST_NOTES.md` (T15 section).
 
+- 2026-10-15 — Playtest feedback: added T16 (fix corners), T17 (fairer AI defending, sprint and shield), T18 (CI tests), T19 (fouls, free kicks, penalties, shoot-outs), T20 (gamepad), T21 (online extras), T22 (training mode and tutorial), T23 (goal replays). Backlog B02, B06 and B07 moved into tasks; B08–B10 added.
+- 2026-10-15 — Removed T20 (gamepad) and T22 (training mode and tutorial) at the user's request; gamepad dropped from the backlog.
+- 2026-10-15 — T16 (game 1.3.1): **corners fixed.** Reproduced first (`tests/corners.test.ts`: kick, body deflection, slide, body check, keeper parry and dive, ball at rest by the line, corner flag — both halves; 17 failed on the old code). Causes: (1) `updateTouches` gave the last touch to whoever was merely *within reach* of a slow ball, so a defender's ball rolling out past an attacker became the attacker's (goal kick / throw-in the wrong way) — removed, only real contacts, kicks, slides, body checks and possession count (`TOUCH_MAX_RELATIVE_SPEED` gone); (2) a body check didn't credit the challenger; (3) every keeper touch was forced back out of the goal, so a save could never go behind — a parry heading behind more than `KEEPER_PARRY_WIDE_MARGIN` outside a post is now a corner; (4) by the corner flag a ball over both lines was called on the touchline — now out when no part is on the pitch, on the line it is heading over more directly. Corners are taken like throw-ins (`pendingHeldRestart`, `takeHeldRestart`): aim with the arrow, pass = low cross, shoot = hard cross (`CORNER_*_SPEED`), auto-cross into the box after 3 s (`cornerTarget`); the AI sends three runners to `AI_CORNER_SPOTS` and its taker waits for two in the box (`RESTART_AUTO_DELAY_CORNER`). F2 overlay: last-touch line (host), stats block moved bottom-left. `npm run simulate` reports corners (range, % in 2-6), goal kicks and goals within 8 s of a corner. AI vs AI corners/match before → after: Arcade 7.5/8.2/10.1 → 8.7/10.8/11.6, Classic 8.6/10.9/11.0 → 8.2/10.2/11.0 (already above the rough 2-6 before: the bug mostly hit humans; most AI corners are defenders chasing a ball to their own line — T17); goals Arcade normal 6.70 → 6.05, 0 stuck. Checked online (host + guest tabs): both show CORNER, the guest's arrow and cross work. Details: `docs/PLAYTEST_NOTES.md` (T16).

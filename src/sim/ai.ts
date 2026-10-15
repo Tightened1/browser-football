@@ -70,8 +70,10 @@ import {
   KICK_FLASH_TIME,
   PASS_SPEED,
   THROW_LONG_MAX_SPEED,
-  THROW_SHORT_SPEED,
   PENALTY_BOX_HEIGHT,
+  AI_CORNER_SPOTS,
+  AI_CORNER_LATEST,
+  AI_CORNER_MIN_RUNNERS,
   PITCH_BOTTOM,
   PITCH_HEIGHT,
   PITCH_LEFT,
@@ -92,7 +94,7 @@ import { keeperDifficulty, keeperProfile } from './matchRules';
 import { curledCrossing } from './shooting';
 
 import { kickSpeedForDistance } from './physics';
-import { inwardDirection, pendingThrowIn, restartTarget, throwChargeFor } from './setpiece';
+import { cornerTarget, heldShortSpeed, inwardDirection, pendingHeldRestart, pendingThrowIn, restartTarget, throwChargeFor } from './setpiece';
 import type {
   AiIntent,
   AiPlayerMemory,
@@ -564,6 +566,31 @@ function markAssignment(state: GameState, ctx: AiContext, team: TeamId, exclude:
   return result;
 }
 
+/**
+ * Where `p` goes for its team's corner taken from `from`: the AI_CORNER_SPOTS in order, front-most outfield player first
+ * (the taker excluded); anyone left over hangs back at the edge of the box.
+ */
+function cornerSpot(state: GameState, p: PlayerState, from: Vec2): Vec2 {
+  const dir = state.attackDir[p.team];
+  const goalX = ownGoalX(-dir);
+  const side = from.y < MID_Y ? -1 : 1; // the corner's side of the goal
+  const takerId = state.restart?.taker ?? -1;
+  const order = state.players
+    .filter((t) => t.team === p.team && t.role !== 'keeper' && t.id !== takerId)
+    .sort((a, b) => b.slot - a.slot || a.id - b.id);
+  const i = order.findIndex((t) => t.id === p.id);
+  const s = AI_CORNER_SPOTS[i] ?? { dx: PENALTY_BOX_WIDTH + 40, dy: -side * 40 };
+  return clampToPitch({ x: goalX - dir * s.dx, y: MID_Y + side * s.dy });
+}
+
+/** How many of the taker's outfield teammates are in the box they attack. */
+function runnersInBox(state: GameState, taker: PlayerState): number {
+  const dir = state.attackDir[taker.team];
+  return state.players.filter(
+    (t) => t.team === taker.team && t.id !== taker.id && t.role !== 'keeper' && along(t.pos.x, -dir) <= PENALTY_BOX_WIDTH && Math.abs(t.pos.y - MID_Y) <= PENALTY_BOX_HEIGHT / 2,
+  ).length;
+}
+
 function thinkOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlayerMemory, prof: AiProfile): void {
   const { ai } = state;
   const team = p.team;
@@ -572,6 +599,13 @@ function thinkOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPla
     m.intent = intent;
   };
   m.tackleArmed = false;
+
+  const r = state.restart;
+  if (r?.type === 'corner' && r.team === team && r.taker !== p.id) {
+    // Our corner (T16): get into the box -- near post, far post, penalty spot.
+    m.offset = cornerSpot(state, p, r.pos);
+    return set('run');
+  }
 
   if (ctx.possTeam === team) {
     // Attacking: support the carrier, find space, make runs.
@@ -1013,16 +1047,18 @@ function executeKick(state: GameState, p: PlayerState, m: AiPlayerMemory, speed:
   const ang = Math.atan2(m.kickTarget.y - ball.pos.y, m.kickTarget.x - ball.pos.x) + m.kickError;
   // The kick adds some of the player's own velocity: aim off to cancel it.
   const face = unit(Math.cos(ang) * m.kickSpeed - p.vel.x * KICK_PLAYER_VEL_FACTOR, Math.sin(ang) * m.kickSpeed - p.vel.y * KICK_PLAYER_VEL_FACTOR);
-  if (pendingThrowIn(state)?.taker === p.id) {
-    // Taking a throw-in: aim with the move keys and throw, short (pass) or long (charged shoot). The sim keeps it in play.
+  const held = pendingHeldRestart(state);
+  if (held?.taker === p.id) {
+    // Taking a throw-in or a corner: aim with the move keys and play it, short / low (pass) or long / hard (charged
+    // shoot). The sim keeps it in play.
     m.target = m.kickTarget;
     const aimInput = { ...IDLE, moveX: face.x * 0.3, moveY: face.y * 0.3 };
-    if (m.kickSpeed <= THROW_SHORT_SPEED * 1.15) {
+    if (m.kickSpeed <= heldShortSpeed(held.type) * 1.15) {
       if (p.prevPass) return aimInput;
       m.kickPending = true;
       return { ...aimInput, pass: true };
     }
-    if (p.charge + SIM_DT * 0.5 < throwChargeFor(m.kickSpeed)) return { ...aimInput, shoot: true };
+    if (p.charge + SIM_DT * 0.5 < throwChargeFor(m.kickSpeed, held.type)) return { ...aimInput, shoot: true };
     m.kickPending = true;
     return aimInput;
   }
@@ -1097,6 +1133,21 @@ function takingRestart(state: GameState, p: PlayerState): boolean {
 
 function decideOnBall(state: GameState, p: PlayerState, m: AiPlayerMemory, prof: AiProfile): void {
   const { ai } = state;
+  const held = pendingHeldRestart(state);
+  if (held?.type === 'corner' && held.taker === p.id) {
+    // Taking a corner (T16): wait for teammates to get into the box, then cross it to the most open one (or the
+    // penalty spot).
+    if (runnersInBox(state, p) < AI_CORNER_MIN_RUNNERS && held.timer > AI_CORNER_LATEST) return;
+    const t = cornerTarget(state, held, p);
+    const to = t.receiver >= 0 ? state.players[t.receiver].pos : { x: state.ball.pos.x + Math.cos(t.aim) * 300, y: state.ball.pos.y + Math.sin(t.aim) * 300 };
+    m.intent = 'pass';
+    m.kickTarget = { ...to };
+    m.kickSpeed = t.speed;
+    m.receiver = t.receiver;
+    m.kickTimer = 0;
+    m.kickError = (nextRandom(ai) * 2 - 1) * prof.aimError * 0.6;
+    return;
+  }
   const throwIn = pendingThrowIn(state)?.taker === p.id;
   const dec = evaluateOnBall(state, p, () => nextRandom(ai), prof.decisionNoise, !takingRestart(state, p), throwIn);
   m.intent = dec.action;

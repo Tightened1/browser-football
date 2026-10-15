@@ -11,6 +11,7 @@ import {
   DRIBBLE_TOUCH_INTERVAL,
   KEEPER_BALL_RESTITUTION,
   KEEPER_CLEAR_SPEED,
+  KEEPER_PARRY_WIDE_MARGIN,
   KEEPER_INV_MASS,
   KEEPER_RADIUS,
   HALF_LENGTH_SECONDS,
@@ -59,11 +60,11 @@ import { cloneAiState, computeAiInputs, createAiState, formationPosition } from 
 import { applySwitching, updateTouches } from './control';
 import { advanceHold, canControl, controlSpeed, keeperHoldAngle, loseBall, relativeSpeed, sharpTurnLosesBall, stickyDribbling, takePossession, updatePossession } from './dribble';
 import { isFrozen, updateRules } from './rules';
-import { pendingThrowIn, restartAim, takeThrowIn } from './setpiece';
+import { pendingHeldRestart, restartAim, takeHeldRestart } from './setpiece';
 import { CLASSIC_RULES, copyRules } from './matchRules';
 import { assistAim, curlBall, finesseShot, shotSpeed } from './shooting';
 import type { Boundary } from './physics';
-import type { Difficulty, GameState, InputFrame, MatchPhase, MatchRules, PlayerRole, PlayerState, TeamId } from './types';
+import type { BallState, Difficulty, GameState, InputFrame, MatchPhase, MatchRules, PlayerRole, PlayerState, TeamId } from './types';
 
 export { shotSpeed };
 
@@ -377,7 +378,7 @@ function interactWithBall(state: GameState, p: PlayerState, input: InputFrame, d
     result.shot = p.queuedShot;
     const r = state.restart;
     if (r && r.taker === p.id) {
-      // A set piece (corner, goal kick) always goes into the pitch.
+      // A kicked set piece (goal kick, kickoff) always goes into the pitch.
       kickBall(state, p, p.queuedSpeed, restartAim(r, { moveX: Math.cos(p.queuedAim), moveY: Math.sin(p.queuedAim) }, p.facing));
     } else if (p.queuedFinesse) {
       const f = finesseShot(state, p.team, state.ball.pos, p.queuedAim);
@@ -413,6 +414,17 @@ function countsAsShot(p: PlayerState, attackDir: number): boolean {
   if (p.role === 'keeper') return false;
   const goalX = attackDir > 0 ? PITCH_LEFT + PITCH_WIDTH : PITCH_LEFT;
   return Math.abs(goalX - p.pos.x) <= STAT_SHOT_RANGE && Math.cos(p.facing) * attackDir > STAT_SHOT_MIN_FORWARD;
+}
+
+/**
+ * A keeper's touch sends the ball behind its own goal line (dir: the keeper's attacking direction) clear of the goal:
+ * where it crosses the line it is more than KEEPER_PARRY_WIDE_MARGIN outside a post.
+ */
+function parriedWide(state: GameState, ball: BallState, dir: number): boolean {
+  if (ball.vel.x * dir >= 0) return false; // not heading for the goal line
+  const lineX = dir > 0 ? PITCH_LEFT : PITCH_LEFT + PITCH_WIDTH;
+  const y = ball.pos.y + (ball.vel.y * (lineX - ball.pos.x)) / ball.vel.x;
+  return Math.abs(y - (PITCH_TOP + PITCH_HEIGHT / 2)) > state.rules.goalWidth / 2 + KEEPER_PARRY_WIDE_MARGIN;
 }
 
 /** Soft pushing: separate overlapping players (no overlap afterwards) and exchange a little momentum. */
@@ -452,9 +464,9 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   for (const i of order) {
     const p = next.players[i];
     const input = used[i];
-    if (pendingThrowIn(next)?.taker === p.id) {
-      // A throw-in is thrown, not dribbled: the taker stands still, aims and throws (sim/setpiece.ts).
-      if (takeThrowIn(next, p, input, dt)) next.lastTouch = { team: p.team, player: p.id };
+    if (pendingHeldRestart(next)?.taker === p.id) {
+      // A throw-in is thrown and a corner crossed, not dribbled: the taker stands still, aims and plays it (sim/setpiece.ts).
+      if (takeHeldRestart(next, p, input, dt)) next.lastTouch = { team: p.team, player: p.id };
       p.prevPass = input.pass;
       p.prevShoot = input.shoot;
       p.prevTackle = input.tackle;
@@ -481,8 +493,8 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   if (!next.possession) applyRollingFriction(ball, dt);
   capSpeed(ball, BALL_MAX_SPEED);
 
-  // A throw-in not yet thrown: the ball stays on its spot (in the taker's hands); players can't move it.
-  const held = pendingThrowIn(next);
+  // A throw-in or corner not yet taken: the ball stays on its spot (in the taker's hands / at their feet); players can't move it.
+  const held = pendingHeldRestart(next);
   if (held) {
     ball.pos = { ...held.pos };
     ball.vel = { x: 0, y: 0 };
@@ -518,7 +530,8 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
         } else if (collideCircles(p, ball, KEEPER_BALL_RESTITUTION, KEEPER_INV_MASS, 1)) {
           ball.spin = 0;
           const dir = next.attackDir[p.team];
-          if (ball.vel.x * dir < KEEPER_CLEAR_SPEED) ball.vel.x = dir * KEEPER_CLEAR_SPEED;
+          // Pushed out of the goal -- unless the save turns it behind, wide of the posts (a corner, T16).
+          if (ball.vel.x * dir < KEEPER_CLEAR_SPEED && !parriedWide(next, ball, dir)) ball.vel.x = dir * KEEPER_CLEAR_SPEED;
           next.lastTouch = { team: p.team, player: p.id };
         }
         continue;

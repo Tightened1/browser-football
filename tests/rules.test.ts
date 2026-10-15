@@ -235,7 +235,8 @@ describe('out of play', () => {
   });
 
   it('releases a kicked restart as soon as the ball is played', () => {
-    let s = step(playing(PITCH_RIGHT + BALL_RADIUS + 2, PITCH_BOTTOM - 80, 1), [], SIM_DT); // a corner
+    let s = step(playing(PITCH_RIGHT + BALL_RADIUS + 2, PITCH_BOTTOM - 80, 0), [], SIM_DT); // a goal kick
+    expect(s.restart?.type).toBe('goal-kick');
     s.ball.pos.x += 20; // someone kicked it away from the spot
     s = step(s, [], SIM_DT);
     expect(s.restart).toBeNull();
