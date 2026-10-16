@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH } from '../config';
+import { controlsText, padPrompts } from '../input/pad';
 import { controlsSummary, settings } from '../settings';
 import type { MatchScene } from './MatchScene';
 import { button, Focus, label, UI_COLORS } from './ui';
@@ -31,13 +32,16 @@ export class PauseScene extends Phaser.Scene {
       .setText(this.online ? "The match is still running — your friend is still playing" : 'The match is paused')
       .setWordWrapWidth(580);
 
+    const notice = match.padNoticeText();
+    if (notice) label(this, CX, GAME_HEIGHT / 2 - 82, 18, UI_COLORS.bad, true).setText(notice);
+
     const resume = button(this, CX, GAME_HEIGHT / 2 - 40, 'Resume', () => match.closePause(), { width: 320 });
     const quit = button(this, CX, GAME_HEIGHT / 2 + 40, 'Quit to menu', () => match.quit(), { width: 320, secondary: true });
     new Focus(this, [{ button: resume }, { button: quit }]);
 
-    label(this, CX, GAME_HEIGHT / 2 + 120, 15, UI_COLORS.muted).setText(controlsSummary(settings.bindings)).setWordWrapWidth(600);
+    label(this, CX, GAME_HEIGHT / 2 + 120, 15, UI_COLORS.muted).setText(controlsText(controlsSummary(settings.bindings))).setWordWrapWidth(600);
     label(this, CX, GAME_HEIGHT / 2 + 180, 16, UI_COLORS.muted).setText(
-      this.online ? 'Quitting ends the match for both players' : 'Esc: resume',
+      this.online ? 'Quitting ends the match for both players' : padPrompts() ? 'Menu or B: resume' : 'Esc: resume',
     );
   }
 }

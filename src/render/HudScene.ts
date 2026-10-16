@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GOAL_PAUSE, GAME_WIDTH, HALVES, SHOOTOUT_KICKS, SIM_HZ } from '../config';
+import { anyKeyPrompt, confirmPrompt, padLabel, padPrompts } from '../input/pad';
+import { PAD } from '../input/gamepad';
 import { keyLabel, settings, type ActionId } from '../settings';
 import { matchMinute } from '../matchStats';
 import { playerName, playerNameById, readableColor, shirtNumber, squadPlayerById, teamStyle } from './teamStyle';
@@ -263,7 +265,7 @@ export class HudScene extends Phaser.Scene {
     if (net) {
       this.netTitle.setText(net.title);
       this.netBody.setText(net.body);
-      this.netHint.setText(net.ended ? 'Press Enter or Esc to return to the menu' : 'Esc: menu');
+      this.netHint.setText(net.ended ? (padPrompts() ? `Press ${confirmPrompt('Enter')} or ${padLabel(PAD.B)} to return to the menu` : 'Press Enter or Esc to return to the menu') : padPrompts() ? `${padLabel(PAD.START)}: menu` : 'Esc: menu');
     }
   }
 
@@ -291,7 +293,8 @@ export class HudScene extends Phaser.Scene {
     g.fillStyle(0xffffff, 0.9);
     g.fillRect(0, 50, 230 * view.progress, 4);
     const online = this.match()?.isOnline() ?? false;
-    this.replayHint.setText(reel ? 'Press any key to skip the highlights' : online ? 'Press any key to skip the replay (for both players)' : 'Press any key to skip the replay');
+    const any = anyKeyPrompt();
+    this.replayHint.setText(reel ? `Press ${any} to skip the highlights` : online ? `Press ${any} to skip the replay (for both players)` : `Press ${any} to skip the replay`);
   }
 
   /** The last few quick-chat messages, bottom left, fading as they age. */
@@ -348,8 +351,9 @@ export class HudScene extends Phaser.Scene {
     const me = this.match()?.localTeam() ?? null;
     let hint = '';
     if (r?.type === 'penalty' && me !== null) {
-      const key = (a: ActionId): string => keyLabel(settings.bindings[a][0] || settings.bindings[a][1]);
-      const across = `${key('up')} / ${key('down')}`;
+      const usePad = padPrompts();
+      const key = (a: ActionId): string => (usePad && a in settings.padBindings ? padLabel(settings.padBindings[a as keyof typeof settings.padBindings]) : keyLabel(settings.bindings[a][0] || settings.bindings[a][1]));
+      const across = usePad ? 'stick up / down' : `${key('up')} / ${key('down')}`;
       if (r.team === me) hint = `Penalty: aim ${across} (neither: the middle)  ·  ${key('pass')} placed  ·  hold ${key('shoot')} for power`;
       else if (s.controlled[me] >= 0 && s.players[s.controlled[me]]?.role === 'keeper') hint = `You're in goal: dive ${across} + ${key('tackle')} (or stand still for the middle)`;
     }

@@ -53,6 +53,8 @@ import { crowdExcitement, eventSound, kickPower, scanEvents, BallCueDetector, Ki
 import { sound } from '../audio/sound';
 import { approach, ballLift, cameraTarget, netBox, netGrid, Effects } from './effects';
 import { KeyboardInput } from '../input/keyboard';
+import { mergeFrames, type PadEvent } from '../input/gamepad';
+import { controlsText, pad } from '../input/pad';
 import { controlsSummary, settings, updateSettings } from '../settings';
 import { emoteForKey, QUICK_CHAT } from '../social';
 import { ballBoundary, NEUTRAL_INPUT } from '../sim/simulation';
@@ -148,6 +150,12 @@ export class MatchScene extends Phaser.Scene {
   private posts: Vec2[] = [];
   /** The pause menu is open (offline this also stops the match; online the match carries on without your input). */
   private pauseOpen = false;
+  /** T20: the controls strip as drawn, and the notice about an unplugged controller. */
+  private controlsLabel?: Phaser.GameObjects.Text;
+  private controlsShown = '';
+  private padNotice?: Phaser.GameObjects.Text;
+  private padNoticeUntil = 0;
+  private wasSliding = false;
   private frozen = false;
   private resultsShown = false;
   private fullTimeFor = 0;
@@ -250,7 +258,12 @@ export class MatchScene extends Phaser.Scene {
 
     this.keyboard = new KeyboardInput(settings.bindings);
     this.scene.launch('HudScene');
+    pad.start();
+    const stopDisconnect = pad.onDisconnect((inUse) => this.onPadUnplugged(inUse));
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      stopDisconnect();
+      pad.setMatchActive(false);
+      pad.startKey = 'Enter';
       this.keyboard.dispose();
       for (const key of ['HudScene', 'PauseScene', 'ResultsScene']) this.scene.stop(key);
       if (!this.toLobbyNow) this.online?.leave();
@@ -268,18 +281,24 @@ export class MatchScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown', (e: KeyboardEvent) => this.onSkipKey(e));
     // Esc: the pause menu (or, once the match is over for good, back to the menu).
     this.input.keyboard?.on('keydown-ESC', (e: KeyboardEvent) => {
-      if (e.repeat || this.resultsShown) return; // the results screen has its own Esc
-      if (this.driver.overlay(performance.now())?.ended) this.quit();
-      else if (this.pauseOpen) this.closePause();
-      else this.openPause();
+      if (e.repeat) return;
+      this.togglePause();
     });
     if (settings.showControls) {
       const controls = this.add
-        .text(GAME_WIDTH / 2, GAME_HEIGHT - 14, controlsSummary(settings.bindings), { fontFamily: 'sans-serif', fontSize: '14px', color: '#d8e4dc', stroke: '#000000', strokeThickness: 3 })
+        .text(GAME_WIDTH / 2, GAME_HEIGHT - 14, controlsText(controlsSummary(settings.bindings)), { fontFamily: 'sans-serif', fontSize: '14px', color: '#d8e4dc', stroke: '#000000', strokeThickness: 3 })
         .setOrigin(0.5)
         .setDepth(30);
       ui.push(controls);
+      this.controlsLabel = controls;
+      this.controlsShown = controls.text;
     }
+    this.padNotice = this.add
+      .text(GAME_WIDTH / 2, 110, '', { fontFamily: 'sans-serif', fontSize: '24px', fontStyle: 'bold', color: '#ffd23f', backgroundColor: '#000000c0', padding: { x: 12, y: 6 } })
+      .setOrigin(0.5)
+      .setDepth(60)
+      .setVisible(false);
+    ui.push(this.padNotice);
     this.onlineLabel = this.online
       ? this.add
           .text(PITCH_MARGIN, GAME_HEIGHT - PITCH_MARGIN / 2 - 8, '', { fontFamily: 'sans-serif', fontSize: '15px', color: '#ffffff', backgroundColor: '#000000a0', padding: { x: 6, y: 3 } })
@@ -400,9 +419,45 @@ export class MatchScene extends Phaser.Scene {
     this.scene.start('MenuScene');
   }
 
+  /** Esc or the pad's Start: the pause menu (or, once the match is over for good, back to the menu). */
+  private togglePause(): void {
+    if (this.resultsShown) return; // the results screen has its own Esc
+    if (this.driver.overlay(performance.now())?.ended) this.quit();
+    else if (this.pauseOpen) this.closePause();
+    else this.openPause();
+  }
+
+  /** T20: the controller you were playing with was unplugged. Offline the match pauses; online it goes on, on the keyboard. */
+  private onPadUnplugged(inUse: boolean): void {
+    if (!inUse || this.resultsShown) return;
+    const online = this.driver.online;
+    this.padNotice?.setText(online ? 'Controller disconnected — playing with the keyboard' : 'Controller disconnected — paused').setVisible(true);
+    this.padNoticeUntil = performance.now() + 6000;
+    if (!online) this.openPause();
+  }
+
+  /** T20: the unplugged-controller notice, while it is fresh (the pause menu shows it too). */
+  padNoticeText(): string {
+    return this.padNotice?.visible ? this.padNotice.text : '';
+  }
+
+  /** T20: what the pad does besides the frame: pause, quick chat, mute, skip a replay. */
+  private handlePadEvents(events: PadEvent[]): void {
+    for (const e of events) {
+      if (e.type === 'pause') this.togglePause();
+      else if (e.type === 'chat') this.online?.sendEmote(e.id);
+      else if (e.type === 'mute' && this.online) {
+        const muted = !settings.muteChat;
+        updateSettings({ muteChat: muted });
+        this.online.setChatMuted(muted);
+      } else if (e.type === 'skip' && this.driver.replay()) this.driver.skipReplay();
+    }
+  }
+
   /** Local input for one tick: nothing while a menu is open (the keys belong to the menu then). */
   private sampleInput(): InputFrame {
-    const frame = this.keyboard.sample();
+    const kb = this.keyboard.sample();
+    const frame = pad.connected ? mergeFrames(kb, pad.sample(kb.seq)) : kb;
     this.lastInput = this.pauseOpen || this.resultsShown ? { ...NEUTRAL_INPUT, seq: frame.seq } : frame;
     return this.lastInput;
   }
@@ -445,6 +500,11 @@ export class MatchScene extends Phaser.Scene {
   update(_time: number, delta: number): void {
     const now = performance.now();
     const dt = Math.min(0.1, delta / 1000);
+    // T20: a live match is on the controller; the pause menu, results and the "match over" panel are menus for it.
+    pad.setMatchActive(!this.pauseOpen && !this.resultsShown && !this.driver.overlay(now)?.ended);
+    pad.startKey = this.pauseOpen ? 'Escape' : 'Enter';
+    this.handlePadEvents(pad.takeEvents());
+    this.updatePadUi(now);
     if (!this.frozen) this.driver.advance(delta / 1000, () => this.sampleInput(), now);
     this.watchFullTime(delta / 1000);
     // T23: during a replay the replay's own state is drawn; the live match (held, or over) waits behind it.
@@ -467,6 +527,18 @@ export class MatchScene extends Phaser.Scene {
     this.drawBubbles(state);
     this.netText.setVisible(this.debugNet);
     if (this.debugNet) this.netText.setText(this.driver.debugLines(now).join('\n'));
+  }
+
+  /** The controls strip follows the device in use; the unplugged-controller notice fades. */
+  private updatePadUi(now: number): void {
+    if (this.controlsLabel) {
+      const text = controlsText(controlsSummary(settings.bindings));
+      if (text !== this.controlsShown) {
+        this.controlsShown = text;
+        this.controlsLabel.setText(text);
+      }
+    }
+    if (this.padNotice?.visible && now > this.padNoticeUntil) this.padNotice.setVisible(false);
   }
 
   /**
@@ -500,10 +572,16 @@ export class MatchScene extends Phaser.Scene {
     const me = mine >= 0 ? state.players[mine] : undefined;
     const kickCue = me ? this.kickCues.update(me.id, me.kickQueue > 0, me.kickFlash > 0) : null;
     if (kickCue === 'fired') {
-      sound.kick(kickPower(Math.hypot(state.ball.vel.x, state.ball.vel.y)));
+      const power = kickPower(Math.hypot(state.ball.vel.x, state.ball.vel.y));
+      sound.kick(power);
+      pad.rumble(0.25 + 0.6 * power, 90);
       this.detector.heard();
     } else if (kickCue === 'queued') sound.queued();
     else if (kickCue === 'expired') sound.whiff();
+    // Your slide.
+    const sliding = !!me && me.tackleTimer > 0;
+    if (sliding && !this.wasSliding) pad.rumble(0.45, 140);
+    this.wasSliding = sliding;
     const cue = this.detector.update(state.ball, dt, this.posts);
     if (cue) this.onBallCue(cue);
     this.excitementTimer -= dt;
@@ -522,6 +600,11 @@ export class MatchScene extends Phaser.Scene {
   private onEvent(e: MatchEvent, state: GameState): void {
     const id = eventSound(e);
     if (id) sound.playId(id);
+    // T20: rumble for your goals (and the ones against you, lighter) and your keeper's saves.
+    if (!this.aiVsAi) {
+      if (e.type === 'goal') pad.rumble(e.team === this.humanTeam ? 1 : 0.5, 500);
+      else if (e.type === 'save' && e.team === this.humanTeam) pad.rumble(0.6, 200);
+    }
     // A shoot-out goal (T19) is cheered like a goal, though the score doesn't change. (In a match, the goal event does it.)
     const shootoutGoal = e.type === 'penalty-result' && e.scored && !!state.shootout;
     if (shootoutGoal) sound.playId('goal');

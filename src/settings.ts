@@ -5,6 +5,7 @@ import { AI_DEFENDING_LEVELS, DRAW_RULES, FOUL_LEVELS, KEEPER_LEVELS, RULES_PRES
 import type { AiDefending, Difficulty, DrawRule, FoulStrictness, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
 import { sanitizeName } from './social';
 import { REPLAY_MODES, type ReplayMode } from './net/replay';
+import { DEFAULT_PAD_BINDINGS, PAD_DEAD_ZONE, PAD_TRIGGER, sanitizePadBindings, sanitizePadNumber, type PadBindings } from './input/gamepad';
 import { DEFAULT_LOOK, sanitizeLook, type Look } from './teams';
 
 export type ActionId = 'up' | 'down' | 'left' | 'right' | 'pass' | 'shoot' | 'tackle' | 'sprint' | 'shield' | 'switch';
@@ -94,12 +95,17 @@ export interface Settings {
   muteChat: boolean;
   /** T23: instant replays after goals, and the highlights at full time. */
   replays: ReplayMode;
+  /** T20: controller buttons for the actions, the stick dead zone, how far a trigger counts as held, and vibration. */
+  padBindings: PadBindings;
+  padDeadZone: number;
+  padTrigger: number;
+  rumble: boolean;
 }
 
 export function defaultSettings(): Settings {
   const bindings = {} as Bindings;
   for (const a of ACTIONS) bindings[a.id] = [...DEFAULT_BINDINGS[a.id]] as [string, string];
-  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, rules: DEFAULT_RULES_PRESET, keepers: 'rules', aiDefending: 'rules', fouls: 'rules', cards: 'rules', draws: 'rules', volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK }, playerName: '', muteChat: false, replays: 'all' };
+  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, rules: DEFAULT_RULES_PRESET, keepers: 'rules', aiDefending: 'rules', fouls: 'rules', cards: 'rules', draws: 'rules', volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK }, playerName: '', muteChat: false, replays: 'all', padBindings: { ...DEFAULT_PAD_BINDINGS }, padDeadZone: PAD_DEAD_ZONE.def, padTrigger: PAD_TRIGGER.def, rumble: true };
 }
 
 /** Left and right Shift (Ctrl, Alt) count as one key. */
@@ -170,6 +176,10 @@ export function sanitizeSettings(raw: unknown): Settings {
     playerName: sanitizeName(r.playerName),
     muteChat: typeof r.muteChat === 'boolean' ? r.muteChat : d.muteChat,
     replays: REPLAYS_OPTIONS.includes(r.replays as ReplayMode) ? (r.replays as ReplayMode) : d.replays,
+    padBindings: sanitizePadBindings(r.padBindings),
+    padDeadZone: sanitizePadNumber(r.padDeadZone, PAD_DEAD_ZONE),
+    padTrigger: sanitizePadNumber(r.padTrigger, PAD_TRIGGER),
+    rumble: typeof r.rumble === 'boolean' ? r.rumble : d.rumble,
   };
 }
 

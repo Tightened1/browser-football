@@ -55,9 +55,32 @@ Both players must be running the same version of the game. If you see a "differe
 
 **Fouls, free kicks and penalties:** a slide that hits the player instead of the ball, or comes in from behind, is a foul (and so is a clearly late challenge after someone has passed). The referee whistles at once and the fouled team gets a free kick on the spot, taken like a corner: aim with the arrow, pass = pass, hold and release shoot = shot. Near goal the AI puts one or two players in a wall. A foul inside the box is a **penalty**: aim up or down (or neither, for the middle), pass for a placed kick or hold shoot for a power kick. Facing one, you're the keeper: you stay on your line until you dive with up or down + tackle (or stand still to cover the middle). How strict the referee is comes from the match rules (Arcade: Lenient, no cards; Classic: Strict, with cards: a reckless slide is a yellow, two yellows and the player is off for the rest of the half), and Settings can change it (Fouls: Off / Lenient / Strict; Cards: on / off). **A draw** goes to a penalty shoot-out under Arcade (best of five, then sudden death), stays a draw under Classic, or goes to golden-goal extra time first (Settings: A draw).
 
-Move, pass, shoot, tackle, sprint, shield and switch can all be rebound under **Settings** (two keys per action). `Esc`, `Enter`, `Tab`, the F-keys, `` ` ``, `N`, `M` and `1`–`6` are reserved. **How to play** on the title screen shows the same table.
+Move, pass, shoot, tackle, sprint, shield and switch can all be rebound under **Settings** (two keys per action; the controller's buttons under Settings → Controller…). `Esc`, `Enter`, `Tab`, the F-keys, `` ` ``, `N`, `M` and `1`–`6` are reserved. **How to play** on the title screen shows the same table.
 
 In menus, use the arrow keys or the mouse. `Enter` or `Space` selects.
+
+### Xbox / PlayStation controller
+
+Plug in or pair a controller (any browser "standard" gamepad: Xbox, PlayStation, Switch Pro and most others) and press a button once so the browser notices it. It works **alongside the keyboard**; whichever you used last decides the on-screen prompts ("Press A" / "Press ✕" / "Press Enter"). Xbox or PlayStation labels are chosen from the controller's name (Xbox when unsure).
+
+| Action | Xbox | PlayStation |
+|---|---|---|
+| Move / aim (walk to run by how far you push; set pieces and penalties aim exactly where it points) | Left stick or d-pad | Left stick or d-pad |
+| Pass (tap) | A | ✕ |
+| Shoot (hold to charge, release) / long throw / hard cross | X | □ |
+| Tackle or slide; keeper dive at a penalty (with the stick up / down) | B | ○ |
+| Sprint (analogue: counts past the trigger threshold, default 30%) | RT | R2 |
+| Shield the ball | LT | L2 |
+| Switch player | LB | L1 |
+| Feint / drag-back | flick the stick twice | flick the stick twice |
+| Quick chat 1–4 (online): hold RB / R1 and press | A B X Y | ✕ ○ □ △ |
+| Quick chat 5–6 (online): hold RB / R1 and press | d-pad ↑ ↓ | d-pad ↑ ↓ |
+| Mute the other player's chat | RB + View | R1 + Share |
+| Pause menu | Menu | Options |
+| Skip a replay or the highlights | A B X Y | ✕ ○ □ △ |
+| Menus: move / choose / back | d-pad or stick / A / B | d-pad or stick / ✕ / ○ |
+
+Every menu (title, club and kit picker, lobby, settings, pause, results) works with the d-pad or stick, `A`/`✕` and `B`/`○`. The one thing a controller can't do is type a room code on the join screen (use the invite link, or the keyboard). **Settings → Controller…** shows which controller is connected and its type, lets you rebind the six action buttons (picking a button another action uses swaps the two), and sets the stick dead zone, the trigger threshold and vibration. Vibration (kicks, your slides, goals, your keeper's saves) works where the browser supports it (Chrome and Edge) and can be turned off. If the controller is unplugged mid-match, an offline match pauses with a notice; online, the match carries on and you play with the keyboard.
 
 **Replays and highlights:** after a goal you see it again — the build-up, the last second in slow motion, with the camera following the ball — before the kickoff (the match clock waits). Press any key to skip it; online, either player skipping ends it for both of you, since the kickoff waits for it. At full time every goal of the match (and the big saves) plays as a highlights reel before the results; each player watches and skips their own. Settings → Replays: Off / Goals only / Goals + full-time highlights (online, the host's setting decides whether goal replays happen, and a guest with replays off skips them).
 

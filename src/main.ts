@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { sound } from './audio/sound';
+import { pad } from './input/pad';
+import { ControllerScene } from './render/ControllerScene';
 import { awardFoul } from './sim/rules';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config';
 import { DiagnosticsScene } from './render/DiagnosticsScene';
@@ -16,6 +18,8 @@ import { TeamPickScene } from './render/TeamPickScene';
 
 // Sound can only start after the first click or key press (browser autoplay rules).
 sound.attachUnlock();
+// T20: listens for a controller from the start, so the menus work with one too.
+pad.start();
 
 const game = new Phaser.Game({
   // The e2e build (T18) draws with the 2D canvas: the CI runner has no GPU, and Chromium's software WebGL there gives
@@ -33,7 +37,7 @@ const game = new Phaser.Game({
   dom: { createContainer: true },
   // The first scene starts automatically.
   // Order matters for drawing: later scenes are drawn on top (the pause menu and results go over the match and HUD).
-  scene: [MenuScene, SettingsScene, HowToPlayScene, JoinScene, TeamPickScene, LobbyScene, MatchScene, HudScene, PauseScene, ResultsScene, DiagnosticsScene],
+  scene: [MenuScene, SettingsScene, ControllerScene, HowToPlayScene, JoinScene, TeamPickScene, LobbyScene, MatchScene, HudScene, PauseScene, ResultsScene, DiagnosticsScene],
 });
 
 // Dev only (and the e2e build, T18): lets the browser console and the Playwright tests inspect the running game, and

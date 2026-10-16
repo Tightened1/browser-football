@@ -1,4 +1,5 @@
 // Keyboard -> InputFrame.
+import { SYNTHETIC_KEY } from './gamepad';
 import { FEINT_DOUBLE_TAP_MS } from '../config';
 import { DEFAULT_BINDINGS, MOVE_ACTIONS, normKey, type ActionId, type Bindings } from '../settings';
 import type { InputFrame } from '../sim/types';
@@ -68,6 +69,7 @@ export class KeyboardInput {
   private feint = false;
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
+    if ((e as unknown as Record<string, unknown>)[SYNTHETIC_KEY]) return; // a menu key the gamepad sent
     const code = normKey(e.code);
     if (!this.allKeys.has(code)) return;
     e.preventDefault(); // stop arrows/space scrolling the page

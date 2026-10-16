@@ -76,7 +76,7 @@ export class MenuScene extends Phaser.Scene {
     this.message = label(this, CX, 665, 22, UI_COLORS.warn).setWordWrapWidth(900);
     if (data.message) this.message.setText(data.message);
 
-    label(this, CX, GAME_HEIGHT - 70, 18, UI_COLORS.muted).setText('↑ ↓ ← → to move · Enter to choose · or just click');
+    label(this, CX, GAME_HEIGHT - 70, 18, UI_COLORS.muted).setText('↑ ↓ ← → to move · Enter to choose · or just click · controller: d-pad / stick, A or ✕ to choose, B or ○ to go back');
     label(this, CX, GAME_HEIGHT - 40, 15, '#7f9488').setText(`v${GAME_VERSION}`);
 
     this.handleUrlOnce();

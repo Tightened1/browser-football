@@ -123,11 +123,12 @@ export class SettingsScene extends Phaser.Scene {
       }
     });
 
-    const reset = button(this, CX - 130, 774, 'Reset keys', () => this.resetKeys(), { size: 22, width: 210, secondary: true });
-    const back = button(this, CX + 130, 774, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 210 });
-    items.push({ button: reset }, { button: back });
+    const reset = button(this, CX - 250, 774, 'Reset keys', () => this.resetKeys(), { size: 22, width: 210, secondary: true });
+    const controller = button(this, CX, 774, 'Controller…', () => this.scene.start('ControllerScene'), { size: 22, width: 210, secondary: true });
+    const back = button(this, CX + 250, 774, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 210 });
+    items.push({ button: reset }, { button: controller }, { button: back });
     this.message = label(this, CX, 742, 18, UI_COLORS.warn).setWordWrapWidth(1000);
-    label(this, CX, GAME_HEIGHT - 14, 14, UI_COLORS.muted).setText('Esc: back · reserved keys (Esc, Enter, Tab, F-keys, `, N, M, 1-6) cannot be bound');
+    label(this, CX, GAME_HEIGHT - 14, 14, UI_COLORS.muted).setText('Esc / B: back · reserved keys (Esc, Enter, Tab, F-keys, `, N, M, 1-6) cannot be bound');
 
     this.focus = new Focus(this, items);
     this.input.keyboard?.on('keydown-ESC', () => {

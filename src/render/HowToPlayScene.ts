@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, RESTART_AUTO_DELAY_HUMAN } from '../config';
+import { PAD, padButtonLabel, type PadActionId } from '../input/gamepad';
+import { padPrompts } from '../input/pad';
 import { keysText, settings } from '../settings';
 import { button, drawBackdrop, Focus, heading, label, UI_COLORS } from './ui';
 
@@ -11,13 +13,32 @@ export class HowToPlayScene extends Phaser.Scene {
     super('HowToPlayScene');
   }
 
-  create(): void {
+  create(data: { controller?: boolean } = {}): void {
     drawBackdrop(this, GAME_WIDTH, GAME_HEIGHT);
-    heading(this, CX, 60, 'HOW TO PLAY');
+    // The controller's table when one is the device in use (or was asked for), else the keyboard's.
+    const showPad = data.controller ?? padPrompts();
+    heading(this, CX, 60, showPad ? 'HOW TO PLAY — CONTROLLER' : 'HOW TO PLAY');
 
     const b = settings.bindings;
     const move = (['up', 'down', 'left', 'right'] as const).map((a) => keysText(b, a)).join('   ');
-    const rows: [string, string][] = [
+    const kindLabel = (a: PadActionId): string => `${padButtonLabel(settings.padBindings[a], 'xbox')} / ${padButtonLabel(settings.padBindings[a], 'playstation')}`;
+    const both = (i: number): string => `${padButtonLabel(i, 'xbox')} / ${padButtonLabel(i, 'playstation')}`;
+    const padRows: [string, string][] = [
+      ['Move: the stick steers, and how far you push it sets walk to run (also the d-pad)', 'Left stick / d-pad'],
+      ['Pass (tap)', kindLabel('pass')],
+      ['Shoot (hold to charge, release), aimed with the stick; long throw / hard cross at set pieces', kindLabel('shoot')],
+      ['Finesse shot (Arcade rules): hold shoot, tap pass', `${kindLabel('shoot')}  +  ${kindLabel('pass')}`],
+      ['Tackle / slide (no ball); in goal at a penalty: dive, with the stick up / down', kindLabel('tackle')],
+      ['Sprint (hold, analogue: past the trigger threshold in Settings)', kindLabel('sprint')],
+      ['Shield the ball (hold; analogue trigger)', kindLabel('shield')],
+      ['Feint / drag-back (with the ball): flick the stick twice, away from the defender', 'flick the stick twice'],
+      ['Switch player (when you have no ball)', kindLabel('switch')],
+      ['Online quick chat: hold RB / R1 and press A B X Y (1-4), d-pad up / down (5-6)', 'RB + A B X Y / ↑ ↓'],
+      ["Mute (or unmute) the other player's quick chat", `RB + ${both(PAD.BACK)}`],
+      ['Pause menu (offline: pauses); in menus, A / ✕ chooses and B / ○ goes back', both(PAD.START)],
+      ['Skip a goal replay (online: for both of you) or the full-time highlights', 'A / B / X / Y'],
+    ];
+    const rows: [string, string][] = showPad ? padRows : [
       ['Move', `${move}`],
       ['Pass (tap) / Shoot (hold to charge, release), aimed with the move keys', `${keysText(b, 'pass')}   /   ${keysText(b, 'shoot')}`],
       ['Finesse shot (Arcade rules): hold shoot, tap pass -- curled and placed by a post', `${keysText(b, 'shoot')}  +  ${keysText(b, 'pass')}`],
@@ -57,11 +78,19 @@ export class HowToPlayScene extends Phaser.Scene {
       'Clubs: any Premier League club, with its real players and numbers (cosmetic: all clubs play the same). Unofficial fan game, not affiliated with the Premier League or any club.',
       'Change any key under Settings. The pause menu does not stop an online match, since your friend is still playing.',
     ];
-    notes.forEach((n, i) => label(this, CX, 490 + i * 23, 15, UI_COLORS.muted).setText(n).setWordWrapWidth(1120));
+    const padNotes = [
+      "Controllers use the browser's Gamepad API (Xbox, PlayStation and other 'standard' pads); press any button once so the browser notices it.",
+      'Keyboard and controller work together; the one you used last decides the on-screen prompts.',
+      'The stick is analogue: a gentle push walks, a full push runs. Throw-ins, corners, free kicks and penalties aim exactly where the stick points.',
+      'Settings > Controller: rebind the buttons, set the dead zone and trigger threshold, and turn vibration on or off.',
+      'Unplug mid-match: offline the match pauses; online you carry on with the keyboard. Joining a room by typing its code needs a keyboard (invite links do not).',
+    ];
+    (showPad ? padNotes : notes).forEach((n, i) => label(this, CX, (showPad ? 540 : 490) + i * 23, 15, UI_COLORS.muted).setText(n).setWordWrapWidth(1120));
 
-    const back = button(this, CX, 765, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 220 });
+    const back = button(this, CX + 130, 765, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 220 });
+    const toggle = button(this, CX - 130, 765, showPad ? 'Show keyboard' : 'Show controller', () => this.scene.restart({ controller: !showPad }), { size: 22, width: 260, secondary: true });
 
-    new Focus(this, [{ button: back }]);
+    new Focus(this, [{ button: toggle }, { button: back }], 1);
     this.input.keyboard?.on('keydown-ESC', () => this.scene.start('MenuScene'));
   }
 }
