@@ -8,6 +8,8 @@ const PEER_PORT = Number(process.env.PEER_PORT ?? 9000);
 export default defineConfig({
   testDir: 'e2e',
   timeout: 180_000,
+  // One at a time: each test runs two browsers and a match, and in parallel they starve each other on a CI runner.
+  workers: 1,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
