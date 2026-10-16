@@ -938,3 +938,26 @@ export const SESSION_REJOIN_MS = 10 * 60 * 1000;
 /** Automatic retries of a rejoin that failed (the host may not have noticed the old connection closing yet). */
 export const REJOIN_RETRIES = 5;
 export const REJOIN_RETRY_MS = 2000;
+
+/* ---------------------------------------------------------------------------------------------
+ * Replays and highlights (T23)
+ * ------------------------------------------------------------------------------------------- */
+
+/** The rolling replay buffer keeps this many seconds of encoded snapshots (one every NET_SNAPSHOT_INTERVAL_TICKS). */
+export const REPLAY_BUFFER_SECONDS = 6.5;
+/** A goal's replay: this much build-up before the ball crosses the line, and this much after it. */
+export const REPLAY_BUILDUP_SECONDS = 5;
+export const REPLAY_TAIL_SECONDS = 1;
+/** A big save's clip (highlights only): build-up and tail. */
+export const REPLAY_SAVE_BUILDUP_SECONDS = 3.5;
+export const REPLAY_SAVE_TAIL_SECONDS = 1;
+/** Slow motion: the last this-many seconds before the moment (goal / save), and this long after it, at this speed. */
+export const REPLAY_SLOWMO_SECONDS = 1;
+export const REPLAY_SLOWMO_AFTER_SECONDS = 0.3;
+export const REPLAY_SLOWMO_SPEED = 0.35;
+/** A keeper's save of a shot at least this fast (px/s) is a "big save" (a `save` event; highlights). */
+export const BIG_SAVE_SPEED = 600;
+/** The replay camera follows the ball at this zoom, whatever the camera setting. */
+export const REPLAY_CAMERA_ZOOM = 1.6;
+/** At most this many clips are kept for the full-time highlights (the oldest saves go first). */
+export const REPLAY_MAX_CLIPS = 24;

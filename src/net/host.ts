@@ -39,6 +39,7 @@ import {
   type StartInfo,
 } from './peer';
 import { decodeInputs, encodeSnapshot, mergeInputs, PACKET_INPUTS, packetType, takeSnapshot } from './snapshot';
+import { Replays, type ReplayMode, type ReplayView } from './replay';
 import { LossMeter, RateMeter } from './stats';
 import {
   canStart,
@@ -75,6 +76,8 @@ export class HostLobby implements Lobby {
   /** Mid-match, the guest came back: `lastEvent` is the newest event id it had received. */
   onRejoin: (lastEvent: number) => void = () => {};
   onBackToLobby: () => void = () => {};
+  /** Match messages from the guest (T23: skipping a replay). */
+  onMatchMessage: (msg: Message) => void = () => {};
   private readonly chat = new QuickChat('host');
 
   private peer: Peer | null = null;
@@ -264,6 +267,9 @@ export class HostLobby implements Lobby {
         break;
       case 'lobby-back':
         this.backToLobby();
+        break;
+      case 'replay-skip':
+        this.onMatchMessage(msg);
         break;
       default:
         break; // inputs and snapshots arrive on the fast channel, see HostMatch
@@ -491,6 +497,8 @@ export interface HostMatchOptions {
   lobby?: HostLobby;
   /** Match rules (T15; default classic). */
   rules?: MatchRules;
+  /** T23: instant replays after goals (and the full-time highlights); default off. Online, the host's setting decides. */
+  replays?: ReplayMode;
 }
 
 /**
@@ -519,6 +527,9 @@ export class HostMatch implements MatchDriver {
   private readonly inputLoss = new LossMeter(1);
   private readonly snapRate = new RateMeter();
   private snapBytes = 0;
+  /** T23: the replay buffer and clips; `replayed` is the tick of the last goal looked at for a replay. */
+  private readonly replays = new Replays();
+  private replayed = -1;
 
   constructor(private readonly opts: HostMatchOptions) {
     this.online = !!opts.lobby;
@@ -527,6 +538,9 @@ export class HostMatch implements MatchDriver {
     if (opts.lobby) {
       opts.lobby.onRejoin = (lastEvent) => this.onRejoin(lastEvent);
       opts.lobby.onRestart = (seed) => this.restart(seed);
+      opts.lobby.onMatchMessage = (msg) => {
+        if (msg.t === 'replay-skip' && msg.moment === this.replayed) this.endReplay();
+      };
     }
   }
 
@@ -544,10 +558,62 @@ export class HostMatch implements MatchDriver {
     this.statsSent = false;
     this.queue = [];
     this.lastRemote = null;
+    this.replays.clear();
+    this.replayed = -1;
   }
 
   stats(): MatchStats | null {
     return this.state.stats;
+  }
+
+  replay(): ReplayView | null {
+    return this.replays.view();
+  }
+
+  skipReplay(): void {
+    if (this.replays.playingMode === 'replay') this.endReplay();
+    else this.replays.stop();
+  }
+
+  startHighlights(): boolean {
+    return this.state.phase === 'full-time' && this.replays.startHighlights(this.state);
+  }
+
+  /** Is the match held for an instant replay? */
+  get replaying(): boolean {
+    return this.replays.playingMode === 'replay';
+  }
+
+  /**
+   * Is it time for an instant replay? Just before the goal pause would end (so the kickoff waits for it), once per goal,
+   * if replays are on and the goal's clip was recorded. Returns the goal's tick.
+   */
+  private replayDue(): number | null {
+    const s = this.state;
+    if ((this.opts.replays ?? 'off') === 'off' || s.phase !== 'goal-scored' || s.phaseTimer > SIM_DT + 1e-6) return null;
+    const goal = [...s.events].reverse().find((e) => e.type === 'goal');
+    if (!goal || goal.tick === this.replayed) return null;
+    this.replayed = goal.tick; // looked at once, whether or not there is a clip
+    return this.replays.clipFor(goal.tick) ? goal.tick : null;
+  }
+
+  private startReplay(moment: number): void {
+    if (this.replays.startReplay(moment, this.state)) this.link?.send({ t: 'replay', on: true, moment });
+  }
+
+  /** Ends the instant replay (skipped by either player). */
+  private endReplay(): void {
+    if (!this.replaying) return;
+    this.replays.stop();
+    this.replayEnded();
+  }
+
+  /** The instant replay is over: play resumes with the kickoff. */
+  private replayEnded(): void {
+    this.link?.send({ t: 'replay', on: false, moment: this.replayed });
+    // Whatever the guest pressed during the replay isn't played afterwards.
+    this.queue = [];
+    this.lastRemote = null;
   }
 
   rematch(): { mine: boolean; theirs: boolean } | null {
@@ -566,23 +632,32 @@ export class HostMatch implements MatchDriver {
   advance(dt: number, sample: () => InputFrame, nowMs: number): void {
     this.bindLink();
     this.updatePause(nowMs);
+    // T23: a replay plays in real time while the match is held (the clock doesn't run, the kickoff waits).
+    const wasReplaying = this.replaying;
+    this.replays.update(Math.min(dt, 0.25));
+    if (wasReplaying && !this.replaying) this.replayEnded();
     // Fixed 60 Hz timestep; clamp so a stalled tab doesn't cause a spiral of catch-up steps.
     this.acc += Math.min(dt, 0.25);
     while (this.acc >= SIM_DT) {
       this.acc -= SIM_DT;
       this.frames++;
       const local = sample();
-      const running = !this.paused && !this.ended;
+      if (!this.paused && !this.ended && !this.replaying) {
+        const moment = this.replayDue();
+        if (moment !== null) this.startReplay(moment);
+      }
+      const running = !this.paused && !this.ended && !this.replaying;
       if (running) {
         const inputs: (InputFrame | undefined)[] = [undefined, undefined];
         if (this.opts.localTeam !== null) inputs[this.opts.localTeam] = local;
         if (this.online) inputs[this.remoteTeam] = this.nextRemote();
         this.state = step(this.state, inputs, SIM_DT);
         this.sendEvents();
+        this.replays.note(this.state.events);
       }
-      // Snapshots on even ticks while playing; while paused, at the same rate with the frozen tick.
+      // Snapshots on even ticks while playing; while paused (or held for a replay), at the same rate with the frozen tick.
       const due = running ? this.state.tick % NET_SNAPSHOT_INTERVAL_TICKS === 0 : this.frames % NET_SNAPSHOT_INTERVAL_TICKS === 0;
-      if (due) this.sendSnapshot(nowMs);
+      if (due) this.sendSnapshot(nowMs, running);
     }
   }
 
@@ -640,11 +715,14 @@ export class HostMatch implements MatchDriver {
     return this.lastRemote ?? NEUTRAL_INPUT;
   }
 
-  private sendSnapshot(nowMs: number): void {
+  /** Encodes a snapshot: kept in the replay buffer if it is a new tick (`live`; also offline), and sent to the guest. */
+  private sendSnapshot(nowMs: number, live: boolean): void {
     const link = this.link;
-    if (!link) return;
+    if (!link && !live) return;
     const resumeIn = this.paused && this.resumeAt !== null ? Math.max(0, (this.resumeAt - nowMs) / 1000) : 0;
     const bytes = encodeSnapshot(takeSnapshot(this.state, { ack: this.lastAppliedSeq, paused: this.paused, resumeIn }));
+    if (live) this.replays.record(this.state.tick, bytes);
+    if (!link) return;
     this.snapBytes = bytes.length;
     this.snapRate.record(nowMs);
     link.sendFast(bytes);
@@ -673,6 +751,7 @@ export class HostMatch implements MatchDriver {
     this.inputLoss.reset();
     for (const event of this.state.events) if (event.id > lastEvent) this.link?.send({ t: 'event', event });
     if (this.state.phase === 'full-time') this.link?.send({ t: 'stats', stats: this.state.stats });
+    if (this.replaying) this.link?.send({ t: 'replay', on: true, moment: this.replayed });
   }
 
   overlay(nowMs: number): NetOverlay | null {
@@ -705,7 +784,7 @@ export class HostMatch implements MatchDriver {
       `channel       ${link ? (link.hasFastChannel ? 'unreliable' : 'reliable fallback') : 'none'}`,
       `route         ${link?.route ? describeRoute(link.route) : '…'}`,
       `simulated     ${link ? describeConditions(link.conditioner.conditions) : '-'}`,
-      `state         ${this.paused ? 'paused' : 'running'} · tick ${this.state.tick}`,
+      `state         ${this.paused ? 'paused' : this.replaying ? 'replay' : 'running'} · tick ${this.state.tick}`,
     ];
   }
 }

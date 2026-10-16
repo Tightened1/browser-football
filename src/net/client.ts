@@ -55,6 +55,7 @@ import { QuickChat } from './chat';
 import { clearSession, saveSession, setRoomInUrl } from './session';
 import { applySnapshot, decodeSnapshot, encodeInputs, PACKET_SNAPSHOT, packetType, quantizeInput, type Snapshot } from './snapshot';
 import { LossMeter, RateMeter } from './stats';
+import { Replays, type ReplayMode, type ReplayView } from './replay';
 
 /** `lastEvent` of a rejoin after a page refresh: "I have seen everything", so the host resends no old events. */
 const ALL_EVENTS_SEEN = 1e9;
@@ -312,6 +313,7 @@ export class GuestLobby implements Lobby {
         break;
       case 'event':
       case 'stats':
+      case 'replay':
         this.onMatchMessage(msg);
         break;
       case 'rematch':
@@ -500,6 +502,9 @@ export class GuestMatch implements MatchDriver {
   private predictedShown = false;
   private lastCorrection = 0;
   private blend = 0;
+  /** T23: the replay buffer (fed with the snapshots received) and clips; the goal tick of the host's replay running, or null. */
+  private readonly replays = new Replays();
+  private hostReplay: number | null = null;
 
   constructor(
     private readonly lobby: GuestLobby,
@@ -508,6 +513,8 @@ export class GuestMatch implements MatchDriver {
     seed?: number,
     /** The host's match rules (T15), from the lobby / `start` message. */
     private readonly rules: MatchRules = CLASSIC_RULES,
+    /** T23: this player's replays setting ('off' skips the host's instant replays, which ends them for both). */
+    private readonly replayMode: ReplayMode = 'off',
   ) {
     // Static player data (teams, roles, radii, numbers) comes from our own copy; snapshots fill in the rest.
     this.state = createMatchState({ humans: [true, true], seed, halfLength, rules });
@@ -532,6 +539,32 @@ export class GuestMatch implements MatchDriver {
     this.lobby.requestRematch(want);
   }
 
+  replay(): ReplayView | null {
+    return this.replays.view();
+  }
+
+  /** Skipping the instant replay ends it for both players (the host holds the kickoff until it ends); highlights are ours. */
+  skipReplay(): void {
+    if (this.hostReplay !== null) this.link?.send({ t: 'replay-skip', moment: this.hostReplay });
+    this.replays.stop();
+  }
+
+  startHighlights(): boolean {
+    return this.state.phase === 'full-time' && this.replays.startHighlights(this.state);
+  }
+
+  /** The host's instant replay starts (we play the same goal from our own buffer) or ends. */
+  private onReplay(on: boolean, moment: number): void {
+    if (!on) {
+      this.hostReplay = null;
+      if (this.replays.playingMode === 'replay') this.replays.stop();
+      return;
+    }
+    this.hostReplay = moment;
+    if (this.replayMode === 'off') this.link?.send({ t: 'replay-skip', moment });
+    else if (this.replays.playingMode !== 'replay') this.replays.startReplay(moment, this.state);
+  }
+
   /** The host started a rematch: forget the old match completely. */
   private reset(seed: number): void {
     this.staleFrom = this.newest ? this.newest.tick : Infinity;
@@ -554,6 +587,8 @@ export class GuestMatch implements MatchDriver {
     this.renderSnap = null;
     this.predictedShown = false;
     this.offset = { x: 0, y: 0 };
+    this.replays.clear();
+    this.hostReplay = null;
   }
 
   advance(dt: number, sample: () => InputFrame, nowMs: number): void {
@@ -572,6 +607,7 @@ export class GuestMatch implements MatchDriver {
         this.kick.age += SIM_DT;
       }
     }
+    this.replays.update(Math.min(dt, 0.25));
     this.render(dt, nowMs);
   }
 
@@ -587,11 +623,16 @@ export class GuestMatch implements MatchDriver {
       this.finalStats = msg.stats;
       return;
     }
+    if (msg.t === 'replay') {
+      this.onReplay(msg.on, msg.moment);
+      return;
+    }
     if (msg.t !== 'event') return;
     // Reliable and ordered, but after a reconnect the host may resend some: each id is used once only.
     if (msg.event.id <= this.lastEventId) return;
     this.lastEventId = msg.event.id;
     this.pending.push(msg.event);
+    this.replays.note([msg.event]);
   }
 
   private onFast(bytes: Uint8Array): void {
@@ -608,6 +649,7 @@ export class GuestMatch implements MatchDriver {
     const isNewest = !this.newest || snap.tick >= this.newest.tick;
     if (isNewest) this.newest = snap; // also picks up pause flags from repeats of the same (frozen) tick
     if (!this.buffer.push(snap)) return;
+    this.replays.record(snap.tick, bytes);
     this.clock.onSnapshot(snap.tick, now);
     if (isNewest) this.reconcile(snap);
   }
@@ -882,8 +924,8 @@ export class GuestMatch implements MatchDriver {
   private render(dt: number, nowMs: number): void {
     let tick = this.clock.update(nowMs);
     if (tick < 0 || !this.newest) return; // nothing yet: the kickoff formation from our own copy is drawn
-    // While paused, hold on the newest snapshot rather than extrapolating past it.
-    if (this.paused(nowMs)) tick = Math.min(tick, this.newest.tick);
+    // While paused (or held for the host's replay), hold on the newest snapshot rather than extrapolating past it.
+    if (this.paused(nowMs) || this.hostReplay !== null) tick = Math.min(tick, this.newest.tick);
     const sample = this.buffer.sample(tick);
     if (!sample) return;
     this.renderTick = tick;

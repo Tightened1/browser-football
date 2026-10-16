@@ -1,5 +1,6 @@
 // What MatchScene drives each frame: the host's authoritative match (also used offline) or the guest's replica.
 import type { GameState, InputFrame, MatchStats } from '../sim/types';
+import type { ReplayView } from './replay';
 
 /** A message covering the pitch: connection trouble, or why the match ended. */
 export interface NetOverlay {
@@ -25,6 +26,12 @@ export interface MatchDriver {
   /** Online: who wants a rematch; null offline. */
   rematch(): { mine: boolean; theirs: boolean } | null;
   setRematch(want: boolean): void;
+  /** T23: the instant replay or highlights clip being shown (draw its `state` instead of `state`), or null. */
+  replay(): ReplayView | null;
+  /** T23: skip the instant replay (online it ends for both players) or the whole highlights reel (just for you). */
+  skipReplay(): void;
+  /** T23: start the full-time highlights reel (for this player only). False if there is nothing to show. */
+  startHighlights(): boolean;
 }
 
 export const seconds = (ms: number): number => Math.max(0, Math.ceil(ms / 1000));

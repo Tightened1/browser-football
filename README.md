@@ -39,6 +39,7 @@ Both players must be running the same version of the game. If you see a "differe
 | Feint / drag-back (with the ball) | double-tap a move key |
 | Switch player (when you don't have the ball) | `Z` |
 | Pause menu / back | `Esc` |
+| Skip a replay or the highlights | any other key |
 | Network overlay (ping, route, rates) | `F3` or `N` |
 | AI debug overlay | `F2` or `` ` `` |
 
@@ -56,6 +57,8 @@ Both players must be running the same version of the game. If you see a "differe
 Move, pass, shoot, tackle, sprint, shield and switch can all be rebound under **Settings** (two keys per action). `Esc`, `Enter`, `Tab`, the F-keys, `` ` ``, `N`, `M` and `1`–`6` are reserved. **How to play** on the title screen shows the same table.
 
 In menus, use the arrow keys or the mouse. `Enter` or `Space` selects.
+
+**Replays and highlights:** after a goal you see it again — the build-up, the last second in slow motion, with the camera following the ball — before the kickoff (the match clock waits). Press any key to skip it; online, either player skipping ends it for both of you, since the kickoff waits for it. At full time every goal of the match (and the big saves) plays as a highlights reel before the results; each player watches and skips their own. Settings → Replays: Off / Goals only / Goals + full-time highlights (online, the host's setting decides whether goal replays happen, and a guest with replays off skips them).
 
 **Online pause:** pressing `Esc` in an online match opens the menu, but the match keeps running for your friend. Only offline matches freeze.
 

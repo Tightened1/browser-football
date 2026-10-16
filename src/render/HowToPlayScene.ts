@@ -29,9 +29,10 @@ export class HowToPlayScene extends Phaser.Scene {
       ['AI debug overlay (roles, intents, team modes, last touch)', 'F2  /  `'],
       ['Network debug overlay (ping, snapshots, buffer, loss)', 'F3  /  N'],
       ['Pause menu / leave', 'Esc'],
+      ['Skip a goal replay (online: for both of you) or the full-time highlights', 'any other key'],
     ];
     const top = 120;
-    const rowH = 33;
+    const rowH = 30;
     const g = this.add.graphics();
     g.fillStyle(0x000000, 0.4);
     g.fillRoundedRect(CX - 500, top - 18, 1000, rows.length * rowH + 16, 12);

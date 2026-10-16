@@ -4,6 +4,7 @@ import { AI_DIFFICULTY, CAMERA_DEFAULT_MODE, DEFAULT_RULES_PRESET, type CameraMo
 import { AI_DEFENDING_LEVELS, DRAW_RULES, FOUL_LEVELS, KEEPER_LEVELS, RULES_PRESETS, rulesFor } from './sim/matchRules';
 import type { AiDefending, Difficulty, DrawRule, FoulStrictness, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
 import { sanitizeName } from './social';
+import { REPLAY_MODES, type ReplayMode } from './net/replay';
 import { DEFAULT_LOOK, sanitizeLook, type Look } from './teams';
 
 export type ActionId = 'up' | 'down' | 'left' | 'right' | 'pass' | 'shoot' | 'tackle' | 'sprint' | 'shield' | 'switch';
@@ -62,6 +63,8 @@ export type CardsSetting = 'rules' | 'on' | 'off';
 export const CARDS_OPTIONS: readonly CardsSetting[] = ['rules', 'on', 'off'];
 export type DrawsSetting = DrawRule | 'rules';
 export const DRAWS_OPTIONS: readonly DrawsSetting[] = ['rules', ...DRAW_RULES];
+/** T23: replays Off / Goals only / Goals + full-time highlights. */
+export const REPLAYS_OPTIONS: readonly ReplayMode[] = REPLAY_MODES;
 
 export interface Settings {
   /** Minutes per half. */
@@ -89,12 +92,14 @@ export interface Settings {
   playerName: string;
   /** T21: ignore the other player's quick chat. */
   muteChat: boolean;
+  /** T23: instant replays after goals, and the highlights at full time. */
+  replays: ReplayMode;
 }
 
 export function defaultSettings(): Settings {
   const bindings = {} as Bindings;
   for (const a of ACTIONS) bindings[a.id] = [...DEFAULT_BINDINGS[a.id]] as [string, string];
-  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, rules: DEFAULT_RULES_PRESET, keepers: 'rules', aiDefending: 'rules', fouls: 'rules', cards: 'rules', draws: 'rules', volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK }, playerName: '', muteChat: false };
+  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, rules: DEFAULT_RULES_PRESET, keepers: 'rules', aiDefending: 'rules', fouls: 'rules', cards: 'rules', draws: 'rules', volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK }, playerName: '', muteChat: false, replays: 'all' };
 }
 
 /** Left and right Shift (Ctrl, Alt) count as one key. */
@@ -164,6 +169,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     look: sanitizeLook(r.look),
     playerName: sanitizeName(r.playerName),
     muteChat: typeof r.muteChat === 'boolean' ? r.muteChat : d.muteChat,
+    replays: REPLAYS_OPTIONS.includes(r.replays as ReplayMode) ? (r.replays as ReplayMode) : d.replays,
   };
 }
 

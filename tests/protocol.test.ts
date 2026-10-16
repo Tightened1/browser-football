@@ -51,6 +51,8 @@ const SAMPLES: Record<MessageType, Message> = {
   rematch: { t: 'rematch', want: true },
   restart: { t: 'restart', seed: 99 },
   rejoin: { t: 'rejoin', token: 'abc123', lastEvent: 7 },
+  replay: { t: 'replay', on: true, moment: 4321 },
+  'replay-skip': { t: 'replay-skip', moment: 4321 },
   fast: { t: 'fast', b: toBase64(new Uint8Array([1, 2, 3, 250, 255])) },
 };
 
@@ -63,7 +65,7 @@ describe('protocol messages', () => {
   }
 
   it('has a sample for every validator (no message type is untested)', () => {
-    expect(Object.keys(SAMPLES).length).toBe(20);
+    expect(Object.keys(SAMPLES).length).toBe(22);
     for (const t of Object.keys(SAMPLES)) expect(decode(JSON.parse(JSON.stringify(SAMPLES[t as MessageType])))?.t).toBe(t);
   });
 
@@ -79,6 +81,9 @@ describe('protocol messages', () => {
     // T21: quick chat is a preset index, never text; a lobby needs a valid series; stats need their tallies.
     for (const id of [6, -1, 1.5, '0', null]) expect(decode({ t: 'emote', id })).toBeNull();
     expect(decode({ t: 'emote', text: 'hello' })).toBeNull();
+    // T23: replay messages need their goal's tick.
+    expect(decode({ t: 'replay', on: 'yes', moment: 1 })).toBeNull();
+    expect(decode({ t: 'replay-skip' })).toBeNull();
     expect(decode({ ...SAMPLES.lobby, lobby: { ...lobby, series: { host: -1, guest: 0, draws: 0 } } })).toBeNull();
     expect(decode({ ...SAMPLES.lobby, lobby: { ...lobby, series: undefined } })).toBeNull();
     expect(decode({ ...SAMPLES.stats, stats: { ...stats, players: [{ goals: 'x' }] } })).toBeNull();

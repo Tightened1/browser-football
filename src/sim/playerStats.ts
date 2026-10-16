@@ -1,7 +1,8 @@
 // T21: per-player statistics (goals, assists, saves, tackles won, shots) for the results screen's man of the match
 // and the human players' stat lines. Worked out by watching what changed between two ticks (`trackStats`), so none of
 // the rules code has to know about it. Pure.
-import { ASSIST_WINDOW, SIM_HZ } from '../config';
+import { ASSIST_WINDOW, BIG_SAVE_SPEED, SIM_HZ } from '../config';
+import { pushEvent } from './rules';
 import type { GameState, PlayerTally, TeamId } from './types';
 
 export const emptyTally = (): PlayerTally => ({ goals: 0, assists: 0, saves: 0, tackles: 0, shots: 0 });
@@ -20,7 +21,8 @@ function credit(state: GameState, player: number, what: keyof PlayerTally): void
  * `next.stats.humans` and `next.track`.
  *
  * - shot: the shot count of a team went up; the player who touched the ball last struck it (and it stays "live").
- * - save: a keeper touches the ball while an opponent's shot is live.
+ * - save: a keeper touches the ball while an opponent's shot is live. A save of a shot at BIG_SAVE_SPEED or more is also a
+ *   `save` event (T23: the highlights show it).
  * - tackle won: the ball carrier's touch is taken over by an opponent in open play.
  * - goal / assist: a goal was recorded; the scorer is the last toucher (not an own goal), and the assist goes to the
  *   toucher before them if on the same side and within ASSIST_WINDOW seconds (never from a penalty).
@@ -48,7 +50,10 @@ export function trackStats(prev: GameState, next: GameState): void {
     track.liveShot = { team: touch.team, player: touch.player };
   } else if (track.liveShot && changed && touch) {
     const keeper = next.players[touch.player]?.role === 'keeper';
-    if (keeper && touch.team !== track.liveShot.team) credit(next, touch.player, 'saves');
+    if (keeper && touch.team !== track.liveShot.team) {
+      credit(next, touch.player, 'saves');
+      if (Math.hypot(prev.ball.vel.x, prev.ball.vel.y) >= BIG_SAVE_SPEED) pushEvent(next, 'save', { team: touch.team, player: touch.player });
+    }
     if (touch.player !== track.liveShot.player) track.liveShot = null;
   }
   if (!live) track.liveShot = null;

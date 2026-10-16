@@ -445,16 +445,18 @@ export interface RestartGrace {
 export type MatchEventType =
   | 'kickoff' | 'goal' | 'throw-in' | 'goal-kick' | 'corner' | 'half-time' | 'second-half' | 'full-time'
   // T19
-  | 'foul' | 'yellow-card' | 'red-card' | 'free-kick' | 'penalty' | 'penalty-result' | 'extra-time' | 'shootout';
+  | 'foul' | 'yellow-card' | 'red-card' | 'free-kick' | 'penalty' | 'penalty-result' | 'extra-time' | 'shootout'
+  // T23: a keeper's save of a hard shot (BIG_SAVE_SPEED), for the highlights
+  | 'save';
 
 export interface MatchEvent {
   /** Increasing; never reused within a match. */
   id: number;
   tick: number;
   type: MatchEventType;
-  /** goal: scoring team. Restarts and kickoff: the team taking it. foul and cards: the offender's team. penalty-result: the taking team. */
+  /** goal: scoring team. Restarts and kickoff: the team taking it. foul and cards: the offender's team. penalty-result: the taking team. save: the keeper's team. */
   team?: TeamId;
-  /** goal: player who touched the ball last (-1 if unknown). foul / cards: the offender. penalty-result: the taker. */
+  /** goal: player who touched the ball last (-1 if unknown). foul / cards: the offender. penalty-result: the taker. save: the keeper. */
   player?: number;
   ownGoal?: boolean;
   /** penalty-result: scored, or (if not) saved by the keeper rather than missed. */

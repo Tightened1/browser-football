@@ -12,6 +12,7 @@ import {
   MATCH_LENGTH_OPTIONS,
   KEEPERS_OPTIONS,
   RULES_OPTIONS,
+  REPLAYS_OPTIONS,
   keyLabel,
   normKey,
   rebind,
@@ -47,11 +48,12 @@ const KEEPERS_LABEL = { rules: 'As the match rules say', team: 'Same as the AI',
 const DEFENDING_LABEL = { rules: 'As the match rules say', relaxed: 'Relaxed', normal: 'Normal', tough: 'Tough' } as const;
 const FOULS_LABEL = { rules: 'As the match rules say', off: 'Off (no fouls)', lenient: 'Lenient', strict: 'Strict' } as const;
 const CARDS_LABEL = { rules: 'As the match rules say', on: 'On', off: 'Off' } as const;
+const REPLAYS_LABEL = { off: 'Off', goals: 'Goals only', all: 'Goals + full-time highlights' } as const;
 const DRAWS_LABEL = { rules: 'As the match rules say', off: 'Stay a draw', shootout: 'Penalty shoot-out', 'golden-goal': 'Golden goal, then penalties' } as const;
 
 /**
  * Settings: match length, AI difficulty, match rules, keepers, AI defending vs humans, fouls, cards, draws, volume,
- * camera, controls overlay and key rebinding. Saved on every change.
+ * camera, replays, controls overlay and key rebinding. Saved on every change.
  */
 export class SettingsScene extends Phaser.Scene {
   private focus!: Focus;
@@ -69,6 +71,7 @@ export class SettingsScene extends Phaser.Scene {
   private overlay!: Button;
   private chat!: Button;
   private camera!: Button;
+  private replays!: Button;
   private readonly slots = new Map<string, Button>();
   private capturing: { action: ActionId; slot: 0 | 1 } | null = null;
 
@@ -95,6 +98,7 @@ export class SettingsScene extends Phaser.Scene {
     this.keepers = left(3, (d) => this.set({ keepers: step(KEEPERS_OPTIONS, settings.keepers, d) }));
     this.defending = left(4, (d) => this.set({ aiDefending: step(DEFENDING_OPTIONS, settings.aiDefending, d) }));
     this.fouls = left(5, (d) => this.set({ fouls: step(FOULS_OPTIONS, settings.fouls, d) }));
+    this.replays = left(6, (d) => this.set({ replays: step(REPLAYS_OPTIONS, settings.replays, d) }));
     this.cards = right(0, (d) => this.set({ cards: step(CARDS_OPTIONS, settings.cards, d) }));
     this.draws = right(1, (d) => this.set({ draws: step(DRAWS_OPTIONS, settings.draws, d) }));
     this.volume = right(2, (d) => {
@@ -149,6 +153,7 @@ export class SettingsScene extends Phaser.Scene {
     this.rulesInfo.setText(`${rulesLabel(settings.rules)}: ${rulesSummary(matchRulesSetting())}. Online, the host's rules are used.`);
     this.volume.setLabel(`Sound volume:   ◀  ${settings.volume}%  ▶`);
     this.camera.setLabel(`Camera:   ◀  ${CAMERA_LABEL[settings.camera]}  ▶`);
+    this.replays.setLabel(`Replays:   ◀  ${REPLAYS_LABEL[settings.replays]}  ▶`);
     this.overlay.setLabel(`Controls overlay:   ◀  ${settings.showControls ? 'On' : 'Off'}  ▶`);
     this.chat.setLabel(`Online quick chat (1-6):   ◀  ${settings.muteChat ? 'Muted' : 'On'}  ▶`);
     for (const a of ACTIONS) {

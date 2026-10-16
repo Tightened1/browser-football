@@ -9,7 +9,7 @@ import { DEFAULT_LOOK, isLook, type Look } from '../teams';
  * Bump whenever any message below changes shape or meaning. The `hello` message itself must never change,
  * so that two different versions can always tell each other apart.
  */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 /** The game version (package.json). Both players must run the same one; bump it with each task that ships. */
 export const GAME_VERSION: string = packageVersion;
 
@@ -86,6 +86,13 @@ export interface RematchMsg { t: 'rematch'; want: boolean }
 export interface RestartMsg { t: 'restart'; seed: number }
 /** Guest -> host, after hello, when reconnecting mid-match: the token from `start` and the newest event id received. */
 export interface RejoinMsg { t: 'rejoin'; token: string; lastEvent: number }
+/**
+ * T23, host -> guest: the instant replay of the goal at tick `moment` starts (`on`) or has ended. The host holds the
+ * kickoff while it runs; the guest plays the same clip from its own replay buffer.
+ */
+export interface ReplayMsg { t: 'replay'; on: boolean; moment: number }
+/** T23, guest -> host: skip the replay of the goal at `moment` (it ends for both players). */
+export interface ReplaySkipMsg { t: 'replay-skip'; moment: number }
 /** A snapshot or input packet (base64), when the unreliable channel is not available. */
 export interface FastMsg { t: 'fast'; b: string }
 
@@ -93,7 +100,7 @@ export type Message =
   | HelloMsg | WelcomeMsg | RejectMsg
   | LobbyMsg | ReadyMsg | LookMsg | SwapMsg | StartMsg | SeriesResetMsg | LobbyBackMsg | EmoteMsg
   | PingMsg | PongMsg | ByeMsg
-  | EventMsg | StatsMsg | RematchMsg | RestartMsg | RejoinMsg | FastMsg;
+  | EventMsg | StatsMsg | RematchMsg | RestartMsg | RejoinMsg | ReplayMsg | ReplaySkipMsg | FastMsg;
 export type MessageType = Message['t'];
 
 /* ---- Validation ----------------------------------------------------------------------------- */
@@ -111,6 +118,7 @@ const isVersioned = (m: Obj): boolean => isNum(m.protocol) && isStr(m.game);
 const EVENT_TYPES: readonly MatchEventType[] = [
   'kickoff', 'goal', 'throw-in', 'goal-kick', 'corner', 'half-time', 'second-half', 'full-time',
   'foul', 'yellow-card', 'red-card', 'free-kick', 'penalty', 'penalty-result', 'extra-time', 'shootout',
+  'save',
 ];
 const isOpt = <T>(v: unknown, f: (x: unknown) => x is T): boolean => v === undefined || f(v);
 export const isMatchEvent = (v: unknown): v is MatchEvent =>
@@ -167,6 +175,8 @@ const VALIDATORS: Record<MessageType, (m: Obj) => boolean> = {
   rematch: (m) => isBool(m.want),
   restart: (m) => isNum(m.seed),
   rejoin: (m) => isStr(m.token) && isNum(m.lastEvent),
+  replay: (m) => isBool(m.on) && isNum(m.moment),
+  'replay-skip': (m) => isNum(m.moment),
   fast: (m) => typeof m.b === 'string' && m.b.length <= 4096,
 };
 

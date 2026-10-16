@@ -28,6 +28,7 @@ import {
   GAME_WIDTH,
   CAMERA_AUTO_MIN_SCALE,
   CAMERA_FOLLOW_ZOOM,
+  REPLAY_CAMERA_ZOOM,
   CAMERA_SMOOTH,
   CAMERA_ZOOM_SMOOTH,
   FX_CONFETTI_COUNT,
@@ -63,6 +64,7 @@ import type { Difficulty, GameState, InputFrame, MatchEvent, MatchRules, MatchSt
 import { GuestLobby, GuestMatch } from '../net/client';
 import { HostLobby, HostMatch } from '../net/host';
 import type { MatchDriver, NetOverlay } from '../net/match';
+import type { ReplayView } from '../net/replay';
 import type { Lobby } from '../net/peer';
 import { teamOf } from '../net/protocol';
 
@@ -143,6 +145,9 @@ export class MatchScene extends Phaser.Scene {
   private frozen = false;
   private resultsShown = false;
   private fullTimeFor = 0;
+  /** T23: the full-time highlights have been started (or there were none); the replay mode drawn last frame. */
+  private highlightsTried = false;
+  private shownReplay: ReplayView['mode'] | null = null;
   private onlineLabel?: Phaser.GameObjects.Text;
   /** T21: quick-chat bubbles above each team's controlled player, and whether we are going back to the lobby (keep the connection). */
   private readonly bubbles: Phaser.GameObjects.Text[] = [];
@@ -170,6 +175,8 @@ export class MatchScene extends Phaser.Scene {
     this.frozen = false;
     this.resultsShown = false;
     this.fullTimeFor = 0;
+    this.highlightsTried = false;
+    this.shownReplay = null;
   }
 
   create(): void {
@@ -245,6 +252,8 @@ export class MatchScene extends Phaser.Scene {
       };
       this.input.keyboard?.on('keydown', (e: KeyboardEvent) => this.onChatKey(e));
     }
+    // T23: any key (but the menu, overlay and quick-chat keys) skips a replay or the highlights.
+    this.input.keyboard?.on('keydown', (e: KeyboardEvent) => this.onSkipKey(e));
     // Esc: the pause menu (or, once the match is over for good, back to the menu).
     this.input.keyboard?.on('keydown-ESC', (e: KeyboardEvent) => {
       if (e.repeat || this.resultsShown) return; // the results screen has its own Esc
@@ -307,9 +316,10 @@ export class MatchScene extends Phaser.Scene {
     const level = difficulty ?? settings.difficulty;
     const halfLength = this.halfLength;
     const rules = this.rules;
-    if (online instanceof HostLobby) return new HostMatch({ localTeam: this.humanTeam, seed: this.seed, difficulty: level, halfLength, lobby: online, rules });
-    if (online instanceof GuestLobby) return new GuestMatch(online, this.humanTeam, halfLength, this.seed, rules);
-    return new HostMatch({ localTeam: this.aiVsAi ? null : this.humanTeam, seed: this.seed, difficulty: level, halfLength, rules });
+    const replays = settings.replays;
+    if (online instanceof HostLobby) return new HostMatch({ localTeam: this.humanTeam, seed: this.seed, difficulty: level, halfLength, lobby: online, rules, replays });
+    if (online instanceof GuestLobby) return new GuestMatch(online, this.humanTeam, halfLength, this.seed, rules, replays);
+    return new HostMatch({ localTeam: this.aiVsAi ? null : this.humanTeam, seed: this.seed, difficulty: level, halfLength, rules, replays });
   }
 
   /** Read-only access for the HUD. */
@@ -319,6 +329,11 @@ export class MatchScene extends Phaser.Scene {
 
   isOnline(): boolean {
     return this.driver.online;
+  }
+
+  /** T23: the replay or highlights clip on screen (for the HUD's banner), or null. */
+  replayView(): ReplayView | null {
+    return this.driver.replay();
   }
 
   /** The team the local player controls (null when spectating AI vs AI), for the HUD's penalty hints. */
@@ -380,11 +395,22 @@ export class MatchScene extends Phaser.Scene {
     return this.lastInput;
   }
 
-  /** Full time: after a moment, the results screen goes over the match; it closes itself when a new match starts. */
+  /**
+   * T23: a key skips the replay (online, the instant replay ends for both) or the whole highlights reel. Not the keys
+   * that belong to menus, overlays and quick chat, nor while a menu is open.
+   */
+  private onSkipKey(e: KeyboardEvent): void {
+    if (e.repeat || this.pauseOpen || this.resultsShown || !this.driver.replay()) return;
+    if (['Escape', 'Backquote', 'KeyN', 'KeyM', 'Tab'].includes(e.code) || /^F\d+$/.test(e.code) || emoteForKey(e.code) >= 0) return;
+    this.driver.skipReplay();
+  }
+
+  /** Full time: after a moment, the highlights (if on), then the results screen over the match; it closes itself when a new match starts. */
   private watchFullTime(dt: number): void {
     const over = this.driver.state.phase === 'full-time';
     if (!over) {
       this.fullTimeFor = 0;
+      this.highlightsTried = false;
       if (this.resultsShown) {
         this.resultsShown = false;
         this.scene.stop('ResultsScene');
@@ -393,6 +419,11 @@ export class MatchScene extends Phaser.Scene {
     }
     this.fullTimeFor += dt;
     if (!this.resultsShown && this.fullTimeFor >= RESULTS_DELAY) {
+      if (!this.highlightsTried) {
+        this.highlightsTried = true;
+        if (settings.replays === 'all' && this.driver.startHighlights()) return;
+      }
+      if (this.driver.replay()) return; // the highlights are still on
       this.closePause();
       this.resultsShown = true;
       this.scene.launch('ResultsScene');
@@ -404,11 +435,20 @@ export class MatchScene extends Phaser.Scene {
     const dt = Math.min(0.1, delta / 1000);
     if (!this.frozen) this.driver.advance(delta / 1000, () => this.sampleInput(), now);
     this.watchFullTime(delta / 1000);
-    const state = this.driver.state;
-    this.react(state, dt);
+    // T23: during a replay the replay's own state is drawn; the live match (held, or over) waits behind it.
+    const replay = this.driver.replay();
+    if ((replay?.mode ?? null) !== this.shownReplay) {
+      // Into or out of a replay (or the next highlight): the ball's motion jumps, so cues and particles start afresh.
+      this.shownReplay = replay?.mode ?? null;
+      this.detector.reset();
+      this.effects.clear();
+      this.netsDirty = true;
+    }
+    const state = replay?.state ?? this.driver.state;
+    this.react(state, dt, !!replay);
     this.effects.update(dt);
-    this.updateCamera(state, dt);
-    this.drawState(state);
+    this.updateCamera(state, dt, !!replay);
+    this.drawState(state, !!replay);
     this.drawNets();
     this.drawEffects();
     this.drawOnlineStatus();
@@ -421,10 +461,17 @@ export class MatchScene extends Phaser.Scene {
    * Sounds and effects for what just happened. Everything is worked out from the drawn state alone (its new events and
    * the ball's motion), so the host, the offline game and the online guest all behave the same.
    */
-  private react(state: GameState, dt: number): void {
+  private react(state: GameState, dt: number, replaying: boolean): void {
     if (settings.volume !== this.lastVolume) {
       this.lastVolume = settings.volume;
       sound.applyVolume();
+    }
+    // A replay has no events of its own and isn't your play: only the ball's sounds and the crowd.
+    if (replaying) {
+      const cue = this.detector.update(state.ball, dt, this.posts);
+      if (cue) this.onBallCue(cue);
+      sound.setExcitement(crowdExcitement(state.ball.pos.x, Math.hypot(state.ball.vel.x, state.ball.vel.y), PITCH_LEFT, PITCH_RIGHT));
+      return;
     }
     // A new match (ticks and event ids start again) forgets what it had handled.
     const restarted = state.tick < this.lastTick - 5;
@@ -489,11 +536,12 @@ export class MatchScene extends Phaser.Scene {
   }
 
   /** Follows the ball (with look-ahead) when the pitch is drawn small or the setting says so, otherwise holds the whole pitch. */
-  private updateCamera(state: GameState, dt: number): void {
+  private updateCamera(state: GameState, dt: number, replaying = false): void {
     const mode = settings.camera;
     const scale = this.scale.displaySize.width / GAME_WIDTH;
-    const follow = mode === 'follow' || (mode === 'auto' && scale < CAMERA_AUTO_MIN_SCALE);
-    this.camZoom = approach(this.camZoom, follow ? CAMERA_FOLLOW_ZOOM : 1, CAMERA_ZOOM_SMOOTH, dt);
+    // A replay always follows the ball, a little closer (T23).
+    const follow = replaying || mode === 'follow' || (mode === 'auto' && scale < CAMERA_AUTO_MIN_SCALE);
+    this.camZoom = approach(this.camZoom, replaying ? REPLAY_CAMERA_ZOOM : follow ? CAMERA_FOLLOW_ZOOM : 1, CAMERA_ZOOM_SMOOTH, dt);
     const target = follow ? cameraTarget(state.ball) : { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
     this.camX = approach(this.camX, target.x, CAMERA_SMOOTH, dt);
     this.camY = approach(this.camY, target.y, CAMERA_SMOOTH, dt);
@@ -658,7 +706,7 @@ export class MatchScene extends Phaser.Scene {
   }
 
   /** Read-only: draws the given state. */
-  private drawState(state: GameState): void {
+  private drawState(state: GameState, replaying = false): void {
     const g = this.dynamic;
     g.clear();
     g.fillStyle(0xffffff, 1);
@@ -674,8 +722,11 @@ export class MatchScene extends Phaser.Scene {
       if (cur) label.setText(String(cur.number)).setPosition(cur.pos.x, cur.pos.y - cur.radius - 10);
     }
     this.drawDebugOverlay(state);
-    this.drawRestartAim(g, state);
-    this.drawAimLine(g, state);
+    // (Your aim arrows come from your keys now, so a replay doesn't show them.)
+    if (!replaying) {
+      this.drawRestartAim(g, state);
+      this.drawAimLine(g, state);
+    }
     // Ball: a hard shot looks lifted: it grows a little and its shadow slides away and shrinks. (Drawing only: the sim is 2D.)
     const { ball } = state;
     const lift = ballLift(Math.hypot(ball.vel.x, ball.vel.y));

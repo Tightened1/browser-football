@@ -7,6 +7,7 @@ import { matchClock, periodLength } from '../sim/rules';
 import { shootoutTally } from '../sim/fouls';
 import type { GameState, MatchEvent, RestartType, ShootoutRecord, TeamId } from '../sim/types';
 import type { MatchScene } from './MatchScene';
+import type { ReplayView } from '../net/replay';
 
 const FONT = 'sans-serif';
 const BAR_W = 560;
@@ -45,6 +46,14 @@ function recentEvent(s: GameState, types: readonly MatchEvent['type'][], seconds
   return undefined;
 }
 
+/** T23: what a replay shows, e.g. "GOAL — Reds · 2nd half 01:23" or "WHAT A SAVE — Blues · 1st half 00:40". */
+export function replayCaption(view: Pick<ReplayView, 'clip'>, teamName: (team: TeamId) => string): string {
+  const c = view.clip;
+  const what = c.kind === 'goal' ? `GOAL${c.ownGoal ? ' (own goal)' : ''}` : 'WHAT A SAVE';
+  const when = c.half > HALVES ? 'extra time' : `${c.half === 1 ? '1st' : c.half === 2 ? '2nd' : `${c.half}th`} half`;
+  return `${what} — ${teamName(c.team)} · ${when} ${formatClock(c.clock)}`;
+}
+
 /** "3 – 2" in the shoot-out. */
 export function shootoutScoreText(so: Pick<ShootoutRecord, 'first' | 'kicks'>): string {
   const { goals } = shootoutTally(so);
@@ -80,6 +89,13 @@ export class HudScene extends Phaser.Scene {
   private shootoutGfx!: Phaser.GameObjects.Graphics;
   private shootoutTitle!: Phaser.GameObjects.Text;
   private shootoutNames!: [Phaser.GameObjects.Text, Phaser.GameObjects.Text];
+  /** T23: the REPLAY / HIGHLIGHTS banner (top left), what the clip shows, its progress and the skip hint. */
+  private replayBanner!: Phaser.GameObjects.Container;
+  private replayTitle!: Phaser.GameObjects.Text;
+  private replaySlow!: Phaser.GameObjects.Text;
+  private replayCaption!: Phaser.GameObjects.Text;
+  private replayHint!: Phaser.GameObjects.Text;
+  private replayGfx!: Phaser.GameObjects.Graphics;
 
   constructor() {
     super('HudScene');
@@ -125,6 +141,19 @@ export class HudScene extends Phaser.Scene {
     goalText.setText('GOAL!').setStroke('#000000', 12);
     this.goalTeam = this.text(0, 78, 30);
     this.goalBanner = this.add.container(CX, GAME_HEIGHT / 2 - 40, [goalText, this.goalTeam]).setVisible(false);
+
+    // T23: replay banner (a TV-style tag in the top-left corner) and the skip hint at the bottom.
+    const tag = this.add.graphics();
+    tag.fillStyle(0xc8102e, 0.92);
+    tag.fillRoundedRect(0, 0, 230, 46, 6);
+    tag.fillStyle(0xffffff, 1);
+    tag.fillCircle(22, 23, 7);
+    this.replayTitle = this.text(40, 23, 26).setOrigin(0, 0.5);
+    this.replaySlow = this.text(0, 62, 18, '#ffd23f').setOrigin(0, 0.5);
+    this.replayCaption = this.text(0, 88, 17, '#ffffff', false).setOrigin(0, 0.5);
+    this.replayGfx = this.add.graphics();
+    this.replayBanner = this.add.container(20, 18, [tag, this.replayTitle, this.replaySlow, this.replayCaption, this.replayGfx]).setDepth(50).setVisible(false);
+    this.replayHint = this.text(CX, GAME_HEIGHT - 44, 17, '#ffffff', false).setDepth(50).setVisible(false);
 
     // Half-time / full-time overlay.
     const shade = this.add.rectangle(CX, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.65);
@@ -207,6 +236,8 @@ export class HudScene extends Phaser.Scene {
       this.overlayInfo.setText(extra ? `Golden goal: the first goal wins (then penalties) — ${left}` : `Teams swap ends — ${left}`);
     }
 
+    this.drawReplay(this.match()?.replayView() ?? null);
+
     const net = this.match()?.netOverlay() ?? null;
     this.netPanel.setVisible(!!net);
     if (net) {
@@ -214,6 +245,29 @@ export class HudScene extends Phaser.Scene {
       this.netBody.setText(net.body);
       this.netHint.setText(net.ended ? 'Press Enter or Esc to return to the menu' : 'Esc: menu');
     }
+  }
+
+  /**
+   * T23: during a replay, the REPLAY (or HIGHLIGHTS 2/5) tag, SLOW MOTION, what the clip shows and how far through it
+   * is, and the skip hint; the live match's banners and hints are hidden meanwhile.
+   */
+  private drawReplay(view: ReplayView | null): void {
+    this.replayBanner.setVisible(!!view);
+    this.replayHint.setVisible(!!view);
+    if (!view) return;
+    for (const o of [this.goalBanner, this.restartLabel, this.foulBanner, this.cardBanner, this.penaltyBanner, this.penaltyHint]) o.setVisible(false);
+    const reel = view.mode === 'highlights';
+    this.replayTitle.setText(reel ? `HIGHLIGHTS ${view.index}/${view.total}` : 'REPLAY').setFontSize(reel ? 21 : 26);
+    this.replaySlow.setText(view.slow ? 'SLOW MOTION' : '').setAlpha(0.75 + 0.25 * Math.sin(this.time.now / 120));
+    this.replayCaption.setText(replayCaption(view, (t) => teamStyle(t).name));
+    const g = this.replayGfx;
+    g.clear();
+    g.fillStyle(0x000000, 0.6);
+    g.fillRect(0, 50, 230, 4);
+    g.fillStyle(0xffffff, 0.9);
+    g.fillRect(0, 50, 230 * view.progress, 4);
+    const online = this.match()?.isOnline() ?? false;
+    this.replayHint.setText(reel ? 'Press any key to skip the highlights' : online ? 'Press any key to skip the replay (for both players)' : 'Press any key to skip the replay');
   }
 
   /** The last few quick-chat messages, bottom left, fading as they age. */
