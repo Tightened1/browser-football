@@ -48,6 +48,10 @@ import {
   AI_SHOT_DETECT_TIME,
   AI_SPACE_SEARCH_RADIUS,
   AI_TACKLE_RANGE,
+  AI_BEHIND_SLIDE_FACTOR,
+  AI_BOX_SLIDE_FACTOR,
+  AI_CLEAN_SLIDE_MARGIN,
+  AI_FOUL_LOOSE_RANGE,
   AI_FEINT_CHANCE,
   AI_FEINT_FOOL_RANGE,
   AI_FEINT_FOOL_TIME,
@@ -93,15 +97,21 @@ import {
   TACKLE_DURATION,
   TACKLE_SPEED,
   WALL_RESTITUTION,
+  FOUL_PROFILES,
+  PENALTY_AI_PLACED,
+  PENALTY_AI_STRIKE_AT,
+  PENALTY_AI_TELL,
+  PENALTY_KEEPER_READ,
   type AiProfile,
 } from '../config';
 import { angleDiff, CARRY_SPEED } from './dribble';
-import { defendingProfile, keeperDifficulty, keeperProfile } from './matchRules';
+import { defendingProfile, foulsOn, keeperDifficulty, keeperProfile } from './matchRules';
+import { fromBehind, inPenaltyBox, inPlay } from './fouls';
 import { nextRandom } from './random';
 import { curledCrossing } from './shooting';
 
 import { kickSpeedForDistance } from './physics';
-import { cornerTarget, heldShortSpeed, inwardDirection, pendingHeldRestart, pendingThrowIn, restartTarget, throwChargeFor } from './setpiece';
+import { cornerTarget, heldChargeTime, heldShortSpeed, inwardDirection, pendingHeldRestart, pendingPenalty, pendingThrowIn, restartTarget, throwChargeFor } from './setpiece';
 import type {
   AiIntent,
   AiPlayerMemory,
@@ -269,6 +279,9 @@ function createMemory(p: PlayerState): AiPlayerMemory {
     shieldTimer: 0,
     evadedFrom: -1,
     fooled: 0,
+    penaltySide: 9,
+    penaltyPlaced: false,
+    penaltyTell: false,
   };
 }
 
@@ -417,7 +430,7 @@ export function analyse(state: GameState, human: [boolean, boolean]): AiContext 
   const intercept = players.map((p) => interceptFor(p, ballPath, PLAYER_MAX_SPEED * profileOf(state, p.team).speed));
   const chaser: [number, number] = [-1, -1];
   for (const p of players) {
-    if (p.role === 'keeper') continue;
+    if (p.role === 'keeper' || p.sentOff) continue;
     if (ballInOwnGoalMouth(state, p.team) && along(p.pos.x, state.attackDir[p.team]) > along(ball.pos.x, state.attackDir[p.team])) continue;
     const c = chaser[p.team];
     if (c < 0 || intercept[p.id].time < intercept[c].time) chaser[p.team] = p.id;
@@ -559,7 +572,7 @@ function findSpace(state: GameState, p: PlayerState, base: Vec2): Vec2 {
 export function choosePressers(state: GameState, ctx: AiContext, team: TeamId): number[] {
   const prof = defendingAiProfile(state, ctx, team);
   const order = state.players
-    .filter((p) => p.team === team && p.role !== 'keeper')
+    .filter((p) => p.team === team && p.role !== 'keeper' && inPlay(p))
     .sort((a, b) => ctx.intercept[a.id].time - ctx.intercept[b.id].time || a.id - b.id);
   const ball = state.ball.pos;
   const danger = Math.abs(ball.x - ownGoalX(state.attackDir[team])) < AI_DANGER_ZONE;
@@ -574,9 +587,9 @@ export function choosePressers(state: GameState, ctx: AiContext, team: TeamId): 
 function markAssignment(state: GameState, ctx: AiContext, team: TeamId, exclude: number[]): number[] {
   const goalX = ownGoalX(state.attackDir[team]);
   const opps = state.players
-    .filter((o) => o.team !== team && o.role !== 'keeper' && o.id !== ctx.owner)
+    .filter((o) => o.team !== team && o.role !== 'keeper' && o.id !== ctx.owner && inPlay(o))
     .sort((a, b) => Math.abs(a.pos.x - goalX) - Math.abs(b.pos.x - goalX) || a.id - b.id);
-  const free = state.players.filter((p) => p.team === team && p.role !== 'keeper' && !exclude.includes(p.id));
+  const free = state.players.filter((p) => p.team === team && p.role !== 'keeper' && !exclude.includes(p.id) && inPlay(p));
   const result = state.players.map(() => -1);
   for (const o of opps) {
     let best: PlayerState | null = null;
@@ -604,7 +617,7 @@ function cornerSpot(state: GameState, p: PlayerState, from: Vec2): Vec2 {
   const side = from.y < MID_Y ? -1 : 1; // the corner's side of the goal
   const takerId = state.restart?.taker ?? -1;
   const order = state.players
-    .filter((t) => t.team === p.team && t.role !== 'keeper' && t.id !== takerId)
+    .filter((t) => t.team === p.team && t.role !== 'keeper' && t.id !== takerId && inPlay(t))
     .sort((a, b) => b.slot - a.slot || a.id - b.id);
   const i = order.findIndex((t) => t.id === p.id);
   const s = AI_CORNER_SPOTS[i] ?? { dx: PENALTY_BOX_WIDTH + 40, dy: -side * 40 };
@@ -633,6 +646,11 @@ function thinkOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPla
     // Our corner (T16): get into the box -- near post, far post, penalty spot.
     m.offset = cornerSpot(state, p, r.pos);
     return set('run');
+  }
+  if (r?.type === 'free-kick' && r.team !== team && r.wall?.includes(p.id)) {
+    // In the wall for their free kick (T19): hold it.
+    m.target = { ...p.pos };
+    return set('wall');
   }
 
   if (ctx.possTeam === team) {
@@ -664,7 +682,7 @@ function thinkOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPla
     const humanId = ctx.human[team] ? state.controlled[team] : -1;
     if (pressers[0] === p.id) {
       m.markId = ctx.owner;
-      m.tackleArmed = nextRandom(ai) < prof.tackleChance;
+      m.tackleArmed = nextRandom(ai) < prof.tackleChance * slideFear(state, p, ctx);
       return set('press');
     }
     if (pressers[1] === p.id) return set('cover');
@@ -734,12 +752,28 @@ function actOffBall(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlaye
         m.kickPending = true;
         m.tackleArmed = false;
       } else if (m.tackleArmed && safeAngle && !slideFromBehindInBox(state, p, carrier) && dist(p.pos, slideAt) < AI_TACKLE_RANGE && p.tackleCooldown === 0 && p.tackleTimer === 0 && p.windup === 0 && !p.prevTackle) {
-        input = { ...IDLE, moveX: d.x * full, moveY: d.y * full, tackle: true };
-        m.tackleArmed = false;
-        state.ai.teams[p.team].tackles++;
+        if (behindRisk(state, p, carrier, slideAt)) {
+          // From behind it's a foul (T19): usually think better of it and keep jockeying.
+          m.tackleArmed = false;
+        } else {
+          input = { ...IDLE, moveX: d.x * full, moveY: d.y * full, tackle: true };
+          m.tackleArmed = false;
+          state.ai.teams[p.team].tackles++;
+        }
       }
       break;
     }
+    case 'wall':
+      if (state.restart?.type === 'free-kick') {
+        target = m.target;
+        input = moveToward(p, target, 10, calm);
+        break;
+      }
+      // The free kick has been taken: back into shape.
+      m.thinkTimer = 0;
+      target = separate(state, p, shapePosition(state, p, false));
+      input = moveToward(p, clampToPitch(target), 30, full);
+      break;
     case 'cover': {
       // Second presser: sit between the carrier and our goal, cutting off the direct route.
       const at = ctx.owner >= 0 ? state.players[ctx.owner].pos : ball.pos;
@@ -879,7 +913,7 @@ export function evaluateOnBall(
   let passSpeed = PASS_SPEED;
   let receiver = -1;
   for (const t of state.players) {
-    if (t.team !== p.team || t.id === p.id) continue;
+    if (t.team !== p.team || t.id === p.id || t.sentOff) continue;
     const point = clampToPitch({ x: t.pos.x + t.vel.x * 0.35, y: t.pos.y + t.vel.y * 0.35 });
     const len = dist(state.ball.pos, point);
     const lane = laneClearance(state, p.team, state.ball.pos, point);
@@ -1099,7 +1133,7 @@ function executeKick(state: GameState, p: PlayerState, m: AiPlayerMemory, speed:
       m.kickPending = true;
       return { ...aimInput, pass: true };
     }
-    if (p.charge + SIM_DT * 0.5 < throwChargeFor(m.kickSpeed, held.type)) return { ...aimInput, shoot: true };
+    if (p.charge + SIM_DT * 0.5 < throwChargeFor(m.kickSpeed, held.type, heldChargeTime(state, held.type))) return { ...aimInput, shoot: true };
     m.kickPending = true;
     return aimInput;
   }
@@ -1201,6 +1235,7 @@ function decideOnBall(state: GameState, p: PlayerState, m: AiPlayerMemory, prof:
 }
 
 function onBallInput(state: GameState, p: PlayerState, m: AiPlayerMemory, prof: AiProfile, dt: number): InputFrame {
+  if (pendingPenalty(state)?.taker === p.id) return penaltyTakerInput(state, p, m);
   const kicking = m.intent === 'pass' || m.intent === 'shoot' || m.intent === 'clear';
   if (!kicking && m.intent !== 'dribble') {
     // Just got the ball: carry on for a reaction time before deciding (quicker when someone is closing in).
@@ -1366,6 +1401,10 @@ function keeperInput(state: GameState, ctx: AiContext, p: PlayerState, m: AiPlay
   const goalX = ownGoalX(dir);
   const speed = prof.speed;
 
+  // 0. A penalty (T19): wait on the line, then guess a way to go as it is struck.
+  const pk = penaltyKeeperInput(state, p, m);
+  if (pk) return pk;
+
   // 1. On the ball (after a save or a back-pass): pick a teammate and play it out, or clear it.
   if (isOnBall(state, ctx, p, m)) {
     if (m.intent !== 'distribute') {
@@ -1470,6 +1509,106 @@ function keeperSaveLine(state: GameState, y: number): number {
   return y - Math.sign(off) * KEEPER_POST_SHORTFALL * f * f;
 }
 
+/* ------------------------------------------------------------------------------------------------
+ * 3d. Fouls and penalties (T19)
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * Fear of fouls: with fouls on, a presser decides to slide in far less often when the carrier is inside our own box
+ * (a foul there is a penalty). 1 = no fear.
+ */
+function slideFear(state: GameState, p: PlayerState, ctx: AiContext): number {
+  if (!foulsOn(state.rules) || ctx.owner < 0) return 1;
+  const carrier = state.players[ctx.owner];
+  return carrier.team !== p.team && inPenaltyBox(carrier.pos, ownGoalX(state.attackDir[p.team])) ? AI_BOX_SLIDE_FACTOR : 1;
+}
+
+/**
+ * With fouls on, a slide from behind the carrier, or one where the ball (at `slideAt`) isn't clearly nearer than the
+ * carrier's body (by AI_CLEAN_SLIDE_MARGIN px), is likely a foul: it goes ahead only now and then (AI_BEHIND_SLIDE_FACTOR, seeded).
+ */
+function behindRisk(state: GameState, p: PlayerState, owner: PlayerState | null, slideAt: Vec2): boolean {
+  if (!foulsOn(state.rules)) return false;
+  // Whoever is on the ball, or about to be: the carrier, else the opponent nearest a loose ball.
+  let carrier = owner && owner.team !== p.team ? owner : null;
+  if (!carrier) {
+    let best = AI_FOUL_LOOSE_RANGE;
+    for (const o of state.players) {
+      const d = dist(o.pos, state.ball.pos);
+      if (o.team !== p.team && inPlay(o) && d < best) {
+        best = d;
+        carrier = o;
+      }
+    }
+  }
+  if (!carrier) return false;
+  const behind = fromBehind(carrier, p.pos, FOUL_PROFILES[state.rules.fouls as 'lenient' | 'strict'].behindAngle);
+  // The body in the way: the ball isn't clearly nearer to us than the carrier is.
+  const body = dist(p.pos, slideAt) + AI_CLEAN_SLIDE_MARGIN > dist(p.pos, carrier.pos);
+  if (!behind && !body) return false;
+  return nextRandom(state.ai) >= AI_BEHIND_SLIDE_FACTOR;
+}
+
+/**
+ * The AI taking a penalty: picks a side (left / centre / right) and a placed or power kick once, waits (facing its aim
+ * early -- a tell -- more often the easier it is), and strikes with PENALTY_AI_STRIKE_AT s of the restart left.
+ */
+function penaltyTakerInput(state: GameState, p: PlayerState, m: AiPlayerMemory): InputFrame {
+  const r = state.restart!;
+  const { ai } = state;
+  const diff = ai.difficulty[p.team];
+  if (m.penaltySide === 9) {
+    const u = nextRandom(ai);
+    m.penaltySide = u < 0.4 ? -1 : u < 0.8 ? 1 : 0;
+    m.penaltyPlaced = nextRandom(ai) < PENALTY_AI_PLACED[diff];
+    m.penaltyTell = nextRandom(ai) < PENALTY_AI_TELL[diff];
+  }
+  m.intent = 'penalty';
+  const towards = r.pos.x < (PITCH_LEFT + PITCH_RIGHT) / 2 ? -1 : 1;
+  const aim = { ...IDLE, moveX: towards * 0.3, moveY: m.penaltySide * 0.3 };
+  const chargeTime = heldChargeTime(state, 'penalty');
+  const strikeAt = PENALTY_AI_STRIKE_AT + (m.penaltyPlaced ? 0 : chargeTime);
+  m.target = { x: r.pos.x + towards * 100, y: r.pos.y + m.penaltySide * 70 };
+  if (r.timer > strikeAt) return m.penaltyTell ? aim : { ...IDLE };
+  m.intent = 'shoot';
+  m.kickTarget = { ...m.target };
+  if (m.penaltyPlaced) {
+    if (p.prevPass) return aim;
+    m.kickPending = true;
+    return { ...aim, pass: true };
+  }
+  if (p.charge + SIM_DT * 0.5 < chargeTime * 0.85) return { ...aim, shoot: true };
+  m.kickPending = true;
+  return aim;
+}
+
+/**
+ * The AI keeper at a penalty: still on its line until the kick, then one guess as it is struck -- the right way with
+ * PENALTY_KEEPER_READ (its difficulty), else one of the other two. Staying in the middle is a guess too: it holds its
+ * ground. Null when there is no penalty for it (or once it has dived: normal keeping then).
+ */
+function penaltyKeeperInput(state: GameState, p: PlayerState, m: AiPlayerMemory): InputFrame | null {
+  const r = pendingPenalty(state);
+  if (r && r.team !== p.team) {
+    m.intent = 'save';
+    m.target = { ...p.pos };
+    return { ...IDLE };
+  }
+  const pen = state.penalty;
+  if (!pen || pen.keeper !== p.id) return null;
+  if (m.penaltySide === 9) {
+    const { ball } = state;
+    const yLine = Math.abs(ball.vel.x) > 1 ? ball.pos.y + (ball.vel.y * (p.pos.x - ball.pos.x)) / ball.vel.x : ball.pos.y;
+    const real = Math.abs(yLine - p.pos.y) < p.radius * 0.8 ? 0 : Math.sign(yLine - p.pos.y);
+    const read = nextRandom(state.ai) < PENALTY_KEEPER_READ[keeperDifficulty(state, p.team)];
+    const others = [-1, 0, 1].filter((x) => x !== real);
+    m.penaltySide = read ? real : others[Math.floor(nextRandom(state.ai) * others.length) % others.length];
+    m.intent = 'save';
+    if (m.penaltySide !== 0 && p.tackleCooldown === 0 && p.tackleTimer === 0) return { ...IDLE, moveY: m.penaltySide, tackle: true };
+  }
+  return m.penaltySide === 0 ? { ...IDLE } : null;
+}
+
 /**
  * Eased defending (rules.easedDefending, T15): no sliding in from behind a carrier inside our own penalty box (a
  * clumsy foul, and too harsh on a shooter who has got there).
@@ -1493,7 +1632,7 @@ function chooseDistribution(state: GameState, p: PlayerState, m: AiPlayerMemory,
   let bestScore = 0.3; // below this, just clear it
   let bestPoint = { x: 0, y: 0 };
   for (const t of state.players) {
-    if (t.team !== p.team || t.id === p.id) continue;
+    if (t.team !== p.team || t.id === p.id || t.sentOff) continue;
     const len = dist(p.pos, t.pos);
     if (len > AI_PASS_MAX + 150) continue;
     const lane = laneClearance(state, p.team, p.pos, t.pos);
@@ -1541,6 +1680,12 @@ export function computeAiInputs(
     m.cooldown = Math.max(0, m.cooldown - dt);
     m.fooled = Math.max(0, m.fooled - dt);
     m.runTimer = Math.max(0, m.runTimer - dt);
+    if (!pendingPenalty(state) && !state.penalty) m.penaltySide = 9; // ready for the next penalty
+    if (p.sentOff) {
+      m.intent = 'recover';
+      m.target = { ...p.pos };
+      return { ...IDLE };
+    }
     if (m.kickPending) {
       // Last tick's kick input: a kick starts the player's kick flash, so this confirms the ball was struck. A kick
       // still waiting in the kick buffer stays pending.

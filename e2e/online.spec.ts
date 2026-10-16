@@ -1,6 +1,7 @@
 // T18: two real browser pages play an online match through a local PeerJS broker: host, join with the room
 // code, start, press keys on both, and check that both show the same score and clock with no console errors.
-import { expect, test, type Page } from '@playwright/test';
+// T19: a penalty online -- the guest takes it, the host keeps goal, and both screens agree on what happened.
+import { expect, test, type Browser, type Page } from '@playwright/test';
 
 interface Snap {
   score: [number, number];
@@ -40,9 +41,8 @@ async function playKeys(page: Page, key: string, ms: number): Promise<void> {
   await page.keyboard.up(key);
 }
 
-test('host and guest play a synchronised online match', async ({ browser }) => {
-  const errors: string[] = [];
-  // Two separate browser contexts = two separate players (own storage, own WebRTC peer).
+/** Two players (separate browser contexts: own storage, own WebRTC peer) host, join by room code, ready up and kick off. */
+async function startOnlineMatch(browser: Browser, errors: string[]): Promise<{ hostPage: Page; guestPage: Page }> {
   const hostPage = await (await browser.newContext()).newPage();
   const guestPage = await (await browser.newContext()).newPage();
   await openGame(hostPage, errors, 'host');
@@ -73,10 +73,16 @@ test('host and guest play a synchronised online match', async ({ browser }) => {
       { timeout: 30_000 },
     );
   }
-
-  // A few seconds of play: both players run, pass and shoot.
   await hostPage.locator('canvas').click({ position: { x: 5, y: 5 } });
   await guestPage.locator('canvas').click({ position: { x: 5, y: 5 } });
+  return { hostPage, guestPage };
+}
+
+test('host and guest play a synchronised online match', async ({ browser }) => {
+  const errors: string[] = [];
+  const { hostPage, guestPage } = await startOnlineMatch(browser, errors);
+
+  // A few seconds of play: both players run, pass and shoot.
   const before = (await matchState(guestPage))!;
   // Rendering in headless CI can be slow, so play until three match-seconds have passed rather than for a fixed time.
   const dirs = [['ArrowRight', 'ArrowLeft'], ['ArrowUp', 'ArrowDown'], ['ArrowDown', 'ArrowUp'], ['ArrowLeft', 'ArrowRight']];
@@ -97,4 +103,66 @@ test('host and guest play a synchronised online match', async ({ browser }) => {
   expect(guest.tick).toBeGreaterThan(before.tick);
 
   expect(errors).toEqual([]);
+  await Promise.all([hostPage.context().close(), guestPage.context().close()]);
+});
+
+test('a penalty online: the guest takes it, the host keeps goal, and both see the same result', async ({ browser }) => {
+  const errors: string[] = [];
+  const { hostPage, guestPage } = await startOnlineMatch(browser, errors);
+
+  // On the host: a foul on the guest's player inside the host's box (team 0 defends the left goal in the first half).
+  await hostPage.evaluate(() => {
+    const s = (window as any).__game.scene.getScene('MatchScene').driver.state;
+    s.restart = null;
+    s.possession = null;
+    (window as any).__sim.awardFoul(s, { offender: 1, victim: s.controlled[1], reckless: false, kind: 'slide', spot: { x: 150, y: 410 } });
+  });
+  // Both screens show it: the guest's own player on the spot, the host in goal.
+  await guestPage.waitForFunction(() => (window as any).__game.scene.getScene('MatchScene').driver.state.restart?.type === 'penalty', null, { timeout: 10_000 });
+  const setup = await Promise.all(
+    [hostPage, guestPage].map((p) =>
+      p.evaluate(() => {
+        const s = (window as any).__game.scene.getScene('MatchScene').driver.state;
+        return { type: s.restart?.type, team: s.restart?.team, taker: s.restart?.taker, controlled: [...s.controlled], keeperRole: s.players[s.controlled[0]].role };
+      }),
+    ),
+  );
+  for (const v of setup) {
+    expect(v.type).toBe('penalty');
+    expect(v.team).toBe(1);
+    expect(v.taker).toBe(v.controlled[1]);
+    expect(v.keeperRole).toBe('keeper');
+  }
+
+  // The guest aims up and strikes it with power; the host dives down as it goes.
+  await guestPage.keyboard.down('ArrowUp');
+  await guestPage.keyboard.down('Space');
+  await guestPage.waitForTimeout(350);
+  await Promise.all([
+    guestPage.keyboard.up('Space'),
+    (async () => {
+      await hostPage.keyboard.down('ArrowDown');
+      await hostPage.keyboard.press('c');
+      await hostPage.keyboard.up('ArrowDown');
+    })(),
+  ]);
+  await guestPage.keyboard.up('ArrowUp');
+
+  // Decided (the result event reached both screens), with the same outcome and score on each.
+  const result = (p: Page) =>
+    p.evaluate(() => {
+      const s = (window as any).__game.scene.getScene('MatchScene').driver.state;
+      const e = [...s.events].reverse().find((x: any) => x.type === 'penalty-result');
+      return e ? { scored: e.scored, team: e.team, score: [...s.score] } : null;
+    });
+  for (const page of [hostPage, guestPage]) await page.waitForFunction(() => (window as any).__game.scene.getScene('MatchScene').driver.state.events.some((e: any) => e.type === 'penalty-result'), null, { timeout: 15_000 });
+  await hostPage.waitForTimeout(500);
+  const [h, g] = [await result(hostPage), await result(guestPage)];
+  expect(h).not.toBeNull();
+  expect(g).toEqual(h);
+  expect(h!.team).toBe(1);
+  expect(h!.score[1]).toBe(h!.scored ? 1 : 0);
+
+  expect(errors).toEqual([]);
+  await Promise.all([hostPage.context().close(), guestPage.context().close()]);
 });

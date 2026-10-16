@@ -1,21 +1,71 @@
 {
-  "_comment": "Safe ranges for the average per match, checked by `npm run test:sim` (fixed seeds, normal difficulty, 8 AI-vs-AI matches per ruleset). Widen or move them when you change balance on purpose. Keys are fields of the report printed by scripts/simulate.ts.",
+  "_comment": "Safe ranges for the average per match, checked by `npm run test:sim` (fixed seeds, normal difficulty, 8 AI-vs-AI matches per ruleset). Widen or move them when you change balance on purpose. Keys are fields of the report printed by scripts/simulate.ts. T19: fouls per match (Arcade = Lenient, target ~2-5; Classic = Strict, with cards); Classic goals widened after Strict fouls brought free kicks (5.2 a match over 40).",
   "arcade": {
-    "goalsPerMatch": [3.5, 8],
-    "shotsPerMatch": [20, 40],
-    "corners": [4, 16],
-    "throwIns": [70, 150],
-    "stuckEpisodesPerMatch": [0, 0.3],
-    "deadBallPerMatch": [0, 0.3],
-    "longestStillSeconds": [0, 4]
+    "goalsPerMatch": [
+      3.5,
+      9
+    ],
+    "shotsPerMatch": [
+      20,
+      44
+    ],
+    "corners": [
+      4,
+      16
+    ],
+    "throwIns": [
+      70,
+      150
+    ],
+    "stuckEpisodesPerMatch": [
+      0,
+      0.3
+    ],
+    "deadBallPerMatch": [
+      0,
+      0.3
+    ],
+    "longestStillSeconds": [
+      0,
+      4
+    ],
+    "foulsPerMatch": [
+      1.5,
+      6
+    ]
   },
   "classic": {
-    "goalsPerMatch": [2, 5.5],
-    "shotsPerMatch": [16, 34],
-    "corners": [4, 16],
-    "throwIns": [70, 150],
-    "stuckEpisodesPerMatch": [0, 0.3],
-    "deadBallPerMatch": [0, 0.3],
-    "longestStillSeconds": [0, 4]
+    "goalsPerMatch": [
+      2.5,
+      6.5
+    ],
+    "shotsPerMatch": [
+      16,
+      34
+    ],
+    "corners": [
+      4,
+      16
+    ],
+    "throwIns": [
+      70,
+      150
+    ],
+    "stuckEpisodesPerMatch": [
+      0,
+      0.3
+    ],
+    "deadBallPerMatch": [
+      0,
+      0.3
+    ],
+    "longestStillSeconds": [
+      0,
+      4
+    ],
+    "foulsPerMatch": [
+      5,
+      16
+    ]
   }
 }

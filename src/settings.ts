@@ -1,8 +1,8 @@
 // Player settings, saved in localStorage. Everything that touches storage is wrapped in try/catch (private windows,
 // blocked storage and quota errors must never break the game); the validation is pure and unit-tested.
 import { AI_DIFFICULTY, CAMERA_DEFAULT_MODE, DEFAULT_RULES_PRESET, type CameraMode } from './config';
-import { AI_DEFENDING_LEVELS, KEEPER_LEVELS, RULES_PRESETS, rulesFor } from './sim/matchRules';
-import type { AiDefending, Difficulty, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
+import { AI_DEFENDING_LEVELS, DRAW_RULES, FOUL_LEVELS, KEEPER_LEVELS, RULES_PRESETS, rulesFor } from './sim/matchRules';
+import type { AiDefending, Difficulty, DrawRule, FoulStrictness, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
 import { DEFAULT_LOOK, sanitizeLook, type Look } from './teams';
 
 export type ActionId = 'up' | 'down' | 'left' | 'right' | 'pass' | 'shoot' | 'tackle' | 'sprint' | 'shield' | 'switch';
@@ -54,6 +54,13 @@ export const KEEPERS_OPTIONS: readonly KeepersSetting[] = ['rules', ...KEEPER_LE
 /** AI defending vs humans: as the match rules say (Arcade: Relaxed, Classic: Normal), or a fixed level (T17). */
 export type DefendingSetting = AiDefending | 'rules';
 export const DEFENDING_OPTIONS: readonly DefendingSetting[] = ['rules', ...AI_DEFENDING_LEVELS];
+/** T19: fouls (Off / Lenient / Strict), cards (on / off) and what a draw goes to: as the match rules say, or fixed. */
+export type FoulsSetting = FoulStrictness | 'rules';
+export const FOULS_OPTIONS: readonly FoulsSetting[] = ['rules', ...FOUL_LEVELS];
+export type CardsSetting = 'rules' | 'on' | 'off';
+export const CARDS_OPTIONS: readonly CardsSetting[] = ['rules', 'on', 'off'];
+export type DrawsSetting = DrawRule | 'rules';
+export const DRAWS_OPTIONS: readonly DrawsSetting[] = ['rules', ...DRAW_RULES];
 
 export interface Settings {
   /** Minutes per half. */
@@ -65,6 +72,10 @@ export interface Settings {
   keepers: KeepersSetting;
   /** How hard the AI tackles a human on the ball (T17): the preset's own, or a fixed level. */
   aiDefending: DefendingSetting;
+  /** T19: how strict the referee is, whether reckless slides get cards, and what a draw goes to. */
+  fouls: FoulsSetting;
+  cards: CardsSetting;
+  draws: DrawsSetting;
   /** Sound volume, 0..100. */
   volume: number;
   /** Camera: follow the ball when the pitch is drawn small (auto), never (wide) or always (follow). */
@@ -78,7 +89,7 @@ export interface Settings {
 export function defaultSettings(): Settings {
   const bindings = {} as Bindings;
   for (const a of ACTIONS) bindings[a.id] = [...DEFAULT_BINDINGS[a.id]] as [string, string];
-  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, rules: DEFAULT_RULES_PRESET, keepers: 'rules', aiDefending: 'rules', volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK } };
+  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, rules: DEFAULT_RULES_PRESET, keepers: 'rules', aiDefending: 'rules', fouls: 'rules', cards: 'rules', draws: 'rules', volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK } };
 }
 
 /** Left and right Shift (Ctrl, Alt) count as one key. */
@@ -138,6 +149,9 @@ export function sanitizeSettings(raw: unknown): Settings {
     rules: RULES_OPTIONS.includes(r.rules as RulesPreset) ? (r.rules as RulesPreset) : d.rules,
     keepers: KEEPERS_OPTIONS.includes(r.keepers as KeepersSetting) ? (r.keepers as KeepersSetting) : d.keepers,
     aiDefending: DEFENDING_OPTIONS.includes(r.aiDefending as DefendingSetting) ? (r.aiDefending as DefendingSetting) : d.aiDefending,
+    fouls: FOULS_OPTIONS.includes(r.fouls as FoulsSetting) ? (r.fouls as FoulsSetting) : d.fouls,
+    cards: CARDS_OPTIONS.includes(r.cards as CardsSetting) ? (r.cards as CardsSetting) : d.cards,
+    draws: DRAWS_OPTIONS.includes(r.draws as DrawsSetting) ? (r.draws as DrawsSetting) : d.draws,
     volume: typeof r.volume === 'number' && Number.isFinite(r.volume) ? Math.round(Math.min(100, Math.max(0, r.volume)) / 10) * 10 : d.volume,
     camera: CAMERA_OPTIONS.includes(r.camera as CameraMode) ? (r.camera as CameraMode) : d.camera,
     showControls: typeof r.showControls === 'boolean' ? r.showControls : d.showControls,
@@ -171,7 +185,7 @@ export function updateSettings(patch: Partial<Settings>): void {
 
 /** The match rules the settings ask for (offline, and when hosting). */
 export function matchRulesSetting(s: Settings = settings): MatchRules {
-  return rulesFor(s.rules, s.keepers, s.aiDefending);
+  return rulesFor(s.rules, s.keepers, s.aiDefending, { fouls: s.fouls, cards: s.cards === 'rules' ? 'rules' : s.cards === 'on', draws: s.draws });
 }
 
 /** Which action (other than `except`) already uses `code`. */

@@ -4,8 +4,11 @@ import {
   ACTIONS,
   CAMERA_OPTIONS,
   DEFAULT_BINDINGS,
+  CARDS_OPTIONS,
   DEFENDING_OPTIONS,
   DIFFICULTY_OPTIONS,
+  DRAWS_OPTIONS,
+  FOULS_OPTIONS,
   MATCH_LENGTH_OPTIONS,
   KEEPERS_OPTIONS,
   RULES_OPTIONS,
@@ -25,8 +28,10 @@ import { rulesLabel, rulesSummary } from '../sim/matchRules';
 import { button, drawBackdrop, Focus, heading, label, UI_COLORS, type Button, type FocusItem } from './ui';
 
 const CX = GAME_WIDTH / 2;
-const VALUE_Y = 160;
+const VALUE_Y = 150;
 const VALUE_STEP = 37;
+/** The match settings are in two columns, this far either side of the centre. */
+const COL = 262;
 const KEYS_Y = 482;
 const KEYS_STEP = 25;
 const CAMERA_LABEL = { auto: 'Auto (follow ball on small screens)', wide: 'Whole pitch', follow: 'Follow the ball' } as const;
@@ -40,8 +45,14 @@ function step<T>(list: readonly T[], current: T, dir: number): T {
 
 const KEEPERS_LABEL = { rules: 'As the match rules say', team: 'Same as the AI', easy: 'Easy', normal: 'Normal', hard: 'Hard' } as const;
 const DEFENDING_LABEL = { rules: 'As the match rules say', relaxed: 'Relaxed', normal: 'Normal', tough: 'Tough' } as const;
+const FOULS_LABEL = { rules: 'As the match rules say', off: 'Off (no fouls)', lenient: 'Lenient', strict: 'Strict' } as const;
+const CARDS_LABEL = { rules: 'As the match rules say', on: 'On', off: 'Off' } as const;
+const DRAWS_LABEL = { rules: 'As the match rules say', off: 'Stay a draw', shootout: 'Penalty shoot-out', 'golden-goal': 'Golden goal, then penalties' } as const;
 
-/** Settings: match length, AI difficulty, match rules, keepers, AI defending vs humans, volume, controls overlay and key rebinding. Saved on every change. */
+/**
+ * Settings: match length, AI difficulty, match rules, keepers, AI defending vs humans, fouls, cards, draws, volume,
+ * camera, controls overlay and key rebinding. Saved on every change.
+ */
 export class SettingsScene extends Phaser.Scene {
   private focus!: Focus;
   private message!: Phaser.GameObjects.Text;
@@ -50,6 +61,9 @@ export class SettingsScene extends Phaser.Scene {
   private rules!: Button;
   private keepers!: Button;
   private defending!: Button;
+  private fouls!: Button;
+  private cards!: Button;
+  private draws!: Button;
   private rulesInfo!: Phaser.GameObjects.Text;
   private volume!: Button;
   private overlay!: Button;
@@ -66,25 +80,30 @@ export class SettingsScene extends Phaser.Scene {
     heading(this, CX, 50, 'SETTINGS', 'Saved automatically · ↑ ↓ choose a row · ← → change it · Enter on a key to rebind it');
 
     const items: FocusItem[] = [];
-    const value = (y: number, change: (dir: number) => void): Button => {
-      const b = button(this, CX, y, '', () => change(1), { size: 18, width: 480 });
+    const value = (x: number, y: number, change: (dir: number) => void): Button => {
+      const b = button(this, x, y, '', () => change(1), { size: 16, width: 500 });
       items.push({ button: b, onLeft: () => change(-1), onRight: () => change(1) });
       return b;
     };
-    label(this, CX, 120, 22, UI_COLORS.warn, true).setText('MATCH');
-    this.length = value(VALUE_Y, (d) => this.set({ halfMinutes: step(MATCH_LENGTH_OPTIONS, settings.halfMinutes, d) }));
-    this.difficulty = value(VALUE_Y + VALUE_STEP, (d) => this.set({ difficulty: step(DIFFICULTY_OPTIONS, settings.difficulty, d) }));
-    this.rules = value(VALUE_Y + VALUE_STEP * 2, (d) => this.set({ rules: step(RULES_OPTIONS, settings.rules, d) }));
-    this.keepers = value(VALUE_Y + VALUE_STEP * 3, (d) => this.set({ keepers: step(KEEPERS_OPTIONS, settings.keepers, d) }));
-    this.defending = value(VALUE_Y + VALUE_STEP * 4, (d) => this.set({ aiDefending: step(DEFENDING_OPTIONS, settings.aiDefending, d) }));
-    this.rulesInfo = label(this, CX + 250, VALUE_Y + VALUE_STEP * 3, 14, UI_COLORS.muted).setOrigin(0, 0.5).setWordWrapWidth(300);
-    this.volume = value(VALUE_Y + VALUE_STEP * 5, (d) => {
+    const left = (i: number, change: (dir: number) => void): Button => value(CX - COL, VALUE_Y + VALUE_STEP * i, change);
+    const right = (i: number, change: (dir: number) => void): Button => value(CX + COL, VALUE_Y + VALUE_STEP * i, change);
+    label(this, CX, 100, 22, UI_COLORS.warn, true).setText('MATCH');
+    this.length = left(0, (d) => this.set({ halfMinutes: step(MATCH_LENGTH_OPTIONS, settings.halfMinutes, d) }));
+    this.difficulty = left(1, (d) => this.set({ difficulty: step(DIFFICULTY_OPTIONS, settings.difficulty, d) }));
+    this.rules = left(2, (d) => this.set({ rules: step(RULES_OPTIONS, settings.rules, d) }));
+    this.keepers = left(3, (d) => this.set({ keepers: step(KEEPERS_OPTIONS, settings.keepers, d) }));
+    this.defending = left(4, (d) => this.set({ aiDefending: step(DEFENDING_OPTIONS, settings.aiDefending, d) }));
+    this.fouls = left(5, (d) => this.set({ fouls: step(FOULS_OPTIONS, settings.fouls, d) }));
+    this.cards = right(0, (d) => this.set({ cards: step(CARDS_OPTIONS, settings.cards, d) }));
+    this.draws = right(1, (d) => this.set({ draws: step(DRAWS_OPTIONS, settings.draws, d) }));
+    this.volume = right(2, (d) => {
       this.set({ volume: Math.min(100, Math.max(0, settings.volume + d * 10)) });
       sound.applyVolume();
       sound.blip();
     });
-    this.camera = value(VALUE_Y + VALUE_STEP * 6, (d) => this.set({ camera: step(CAMERA_OPTIONS, settings.camera, d) }));
-    this.overlay = value(VALUE_Y + VALUE_STEP * 7, () => this.set({ showControls: !settings.showControls }));
+    this.camera = right(3, (d) => this.set({ camera: step(CAMERA_OPTIONS, settings.camera, d) }));
+    this.overlay = right(4, () => this.set({ showControls: !settings.showControls }));
+    this.rulesInfo = label(this, CX + COL, VALUE_Y + VALUE_STEP * 5.1, 14, UI_COLORS.muted).setWordWrapWidth(500);
 
     label(this, CX, 452, 22, UI_COLORS.warn, true).setText('KEY BINDINGS');
     ACTIONS.forEach((a, i) => {
@@ -122,6 +141,9 @@ export class SettingsScene extends Phaser.Scene {
     this.rules.setLabel(`Match rules:   ◀  ${rulesLabel(settings.rules)}  ▶`);
     this.keepers.setLabel(`Keepers:   ◀  ${KEEPERS_LABEL[settings.keepers]}  ▶`);
     this.defending.setLabel(`AI defending vs humans:   ◀  ${DEFENDING_LABEL[settings.aiDefending]}  ▶`);
+    this.fouls.setLabel(`Fouls:   ◀  ${FOULS_LABEL[settings.fouls]}  ▶`);
+    this.cards.setLabel(`Cards (with fouls on):   ◀  ${CARDS_LABEL[settings.cards]}  ▶`);
+    this.draws.setLabel(`A draw:   ◀  ${DRAWS_LABEL[settings.draws]}  ▶`);
     this.rulesInfo.setText(`${rulesLabel(settings.rules)}: ${rulesSummary(matchRulesSetting())}. Online, the host's rules are used.`);
     this.volume.setLabel(`Sound volume:   ◀  ${settings.volume}%  ▶`);
     this.camera.setLabel(`Camera:   ◀  ${CAMERA_LABEL[settings.camera]}  ▶`);

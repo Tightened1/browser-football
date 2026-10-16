@@ -6,7 +6,7 @@ import { describeRoute } from '../net/ice';
 import { inviteLink, type Lobby, type LobbyView } from '../net/peer';
 import { canStart, looksByTeam, teamOf } from '../net/protocol';
 import { matchRulesSetting, settings, updateSettings } from '../settings';
-import { rulesFor, rulesLabel, rulesSummary } from '../sim/matchRules';
+import { rulesLabel, rulesSummary } from '../sim/matchRules';
 import type { TeamId } from '../sim/types';
 import { cycleKit, cycleName, teamStyles, type Look } from '../teams';
 import type { MatchSceneData } from './MatchScene';
@@ -178,7 +178,7 @@ export class LobbyScene extends Phaser.Scene {
     if (!(this.lobby instanceof HostLobby)) return;
     const next = this.lobby.view.lobby.rules.preset === 'arcade' ? 'classic' : 'arcade';
     updateSettings({ rules: next });
-    this.lobby.setRules(rulesFor(next, settings.keepers, settings.aiDefending));
+    this.lobby.setRules(matchRulesSetting());
   }
 
   private changeName(): void {

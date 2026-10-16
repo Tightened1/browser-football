@@ -1,14 +1,14 @@
 // Network messages: typed, versioned, validated on receipt. Pure: no PeerJS, no DOM.
 import { version as packageVersion } from '../../package.json';
 import { copyRules, isMatchRules, rulesFor } from '../sim/matchRules';
-import type { GoalRecord, MatchEvent, MatchEventType, MatchRules, MatchStats, TeamId } from '../sim/types';
+import type { CardRecord, GoalRecord, MatchEvent, MatchEventType, MatchRules, MatchStats, PenaltyRecord, ShootoutRecord, TeamId } from '../sim/types';
 import { DEFAULT_LOOK, isLook, type Look } from '../teams';
 
 /**
  * Bump whenever any message below changes shape or meaning. The `hello` message itself must never change,
  * so that two different versions can always tell each other apart.
  */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 /** The game version (package.json). Both players must run the same one; bump it with each task that ships. */
 export const GAME_VERSION: string = packageVersion;
 
@@ -99,7 +99,10 @@ const isPair = <T>(v: unknown, f: (x: unknown) => x is T): v is [T, T] => Array.
 const isLobby = (v: unknown): v is LobbyState =>
   isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr) && isPair(v.looks, isLook) && isMatchRules(v.rules);
 const isVersioned = (m: Obj): boolean => isNum(m.protocol) && isStr(m.game);
-const EVENT_TYPES: readonly MatchEventType[] = ['kickoff', 'goal', 'throw-in', 'goal-kick', 'corner', 'half-time', 'second-half', 'full-time'];
+const EVENT_TYPES: readonly MatchEventType[] = [
+  'kickoff', 'goal', 'throw-in', 'goal-kick', 'corner', 'half-time', 'second-half', 'full-time',
+  'foul', 'yellow-card', 'red-card', 'free-kick', 'penalty', 'penalty-result', 'extra-time', 'shootout',
+];
 const isOpt = <T>(v: unknown, f: (x: unknown) => x is T): boolean => v === undefined || f(v);
 export const isMatchEvent = (v: unknown): v is MatchEvent =>
   isObj(v) &&
@@ -111,11 +114,25 @@ export const isMatchEvent = (v: unknown): v is MatchEvent =>
   isPair(v.score, isNum) &&
   isOpt(v.team, isTeam) &&
   isOpt(v.player, isNum) &&
-  isOpt(v.ownGoal, isBool);
+  isOpt(v.ownGoal, isBool) &&
+  isOpt(v.scored, isBool) &&
+  isOpt(v.saved, isBool);
 
 const isGoal = (v: unknown): v is GoalRecord => isObj(v) && isTeam(v.team) && isNum(v.player) && isBool(v.ownGoal) && isNum(v.half) && isNum(v.clock);
+const isCard = (v: unknown): v is CardRecord => isObj(v) && isTeam(v.team) && isNum(v.player) && (v.card === 'yellow' || v.card === 'red') && isNum(v.half) && isNum(v.clock);
+const isPenalty = (v: unknown): v is PenaltyRecord => isObj(v) && isTeam(v.team) && isNum(v.player) && isBool(v.scored) && isNum(v.half) && isNum(v.clock);
+const isShootout = (v: unknown): v is ShootoutRecord =>
+  isObj(v) && isTeam(v.first) && Array.isArray(v.kicks) && v.kicks.length <= 200 && v.kicks.every(isBool) && (v.winner === -1 || isTeam(v.winner));
+const isList = <T>(v: unknown, f: (x: unknown) => x is T): v is T[] => Array.isArray(v) && v.length <= 100 && v.every(f);
 const isStats = (v: unknown): v is MatchStats =>
-  isObj(v) && isPair(v.shots, isNum) && isPair(v.possession, isNum) && Array.isArray(v.goals) && v.goals.length <= 100 && v.goals.every(isGoal);
+  isObj(v) &&
+  isPair(v.shots, isNum) &&
+  isPair(v.possession, isNum) &&
+  isList(v.goals, isGoal) &&
+  isPair(v.fouls, isNum) &&
+  isList(v.cards, isCard) &&
+  isList(v.penalties, isPenalty) &&
+  (v.shootout === null || isShootout(v.shootout));
 
 const VALIDATORS: Record<MessageType, (m: Obj) => boolean> = {
   hello: (m) => isVersioned(m) && isStr(m.name),

@@ -1,5 +1,5 @@
 // All tunable constants live here.
-import type { AiDefending, Difficulty, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
+import type { AiDefending, Difficulty, FoulStrictness, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
 import { turnServersFromEnv } from './net/ice';
 
 /** Pitch playing area in world units (pixels at 1x). */
@@ -470,6 +470,9 @@ export const MATCH_RULES: Record<RulesPreset, MatchRules> = {
     aimLine: true,
     easedDefending: true,
     aiDefending: 'relaxed',
+    fouls: 'lenient',
+    cards: false,
+    draws: 'shootout',
   },
   classic: {
     preset: 'classic',
@@ -483,6 +486,9 @@ export const MATCH_RULES: Record<RulesPreset, MatchRules> = {
     aimLine: false,
     easedDefending: false,
     aiDefending: 'normal',
+    fouls: 'strict',
+    cards: true,
+    draws: 'off',
   },
 };
 /** The preset a new player starts with (Settings → Match rules), offline and when hosting. */
@@ -610,6 +616,98 @@ export const RESTART_PLAYED_DISTANCE = 3;
 export const OUT_REST_SPEED = 30;
 /** How many recent events the state keeps. */
 export const MAX_EVENTS = 40;
+
+/* ---------------------------------------------------------------------------------------------
+ * Fouls, free kicks, penalties and shoot-outs (T19). Arcade, not a rulebook: the whistle goes at once (no advantage).
+ * ------------------------------------------------------------------------------------------- */
+
+/**
+ * How the referee judges challenges, per strictness (MatchRules.fouls; 'off' calls nothing). Only a slide that hits an
+ * opponent hard -- closing on them at `minImpact` px/s or more as it reaches them -- can be a foul. It is one when it
+ * reaches an opponent "involved" in play (carrying the ball, or within `involvedRange` px of it) before the ball -- with
+ * the ball still more than `missGap` px beyond its reach, a clear miss -- and doesn't get the ball within `ballGrace` s,
+ * or reaches them from behind: from within `behindAngle` rad of straight
+ * behind the way they run (an involved opponent only, if `behindInvolved`; and only before it got the ball, unless
+ * `behindWithBall`: Strict calls winning it from behind too). A standing
+ * challenge is a foul only when clearly late: the challenger runs into an opponent `lateMinAge`..`lateMaxAge` s after
+ * that opponent kicked the ball (now more than FOUL_LATE_BALL_GAP px away) at a closing speed of `lateSpeed` px/s or more.
+ */
+export interface FoulProfile {
+  minImpact: number;
+  involvedRange: number;
+  missGap: number;
+  ballGrace: number;
+  behindAngle: number;
+  behindInvolved: boolean;
+  behindWithBall: boolean;
+  lateSpeed: number;
+  lateMinAge: number;
+  lateMaxAge: number;
+}
+export const FOUL_PROFILES: Record<Exclude<FoulStrictness, 'off'>, FoulProfile> = {
+  lenient: { minImpact: 340, involvedRange: 12, missGap: 12, ballGrace: 1, behindAngle: 0.7, behindInvolved: true, behindWithBall: false, lateSpeed: 360, lateMinAge: 0.2, lateMaxAge: 0.5 },
+  strict: { minImpact: 305, involvedRange: 20, missGap: 4, ballGrace: 0.1, behindAngle: 0.85, behindInvolved: false, behindWithBall: true, lateSpeed: 340, lateMinAge: 0.12, lateMaxAge: 0.6 },
+};
+export const FOUL_LATE_BALL_GAP = 50;
+/** Bodies count as touching within this gap (px). */
+export const FOUL_CONTACT_SLACK = 1;
+/** A slide that hits the player first while still faster than this (px/s), or from behind, is reckless: a yellow card (with rules.cards). */
+export const FOUL_RECKLESS_SPEED = 420;
+/** Kick ages are counted up to this (s). */
+export const KICK_AGE_MAX = 5;
+/** Where a sent-off player waits for the rest of the half: well off the pitch (and off every screen), out of play. */
+export const SENT_OFF_POS = { x: -1500, y: -1500 } as const;
+
+/**
+ * Free kicks are taken like throw-ins and corners (the ball stays on its spot; aim with the arrow): pass is a pass
+ * (PASS_SPEED), shoot a charged shot (SHOT_MIN_SPEED..SHOT_MAX_SPEED over the rules' charge time, with the aim assist).
+ * The other team is kept FREE_KICK_CLEAR_RADIUS px back. Within FREE_KICK_WALL_RANGE px of the goal it defends, 1 AI
+ * defender (2 within FREE_KICK_WALL_TWO_RANGE) is put in a wall on the line from the ball to the goal centre, just
+ * outside that distance. An AI's free kick gets RESTART_AUTO_DELAY_FREE_KICK s.
+ */
+export const FREE_KICK_CLEAR_RADIUS = 85;
+export const FREE_KICK_WALL_RANGE = 400;
+export const FREE_KICK_WALL_TWO_RANGE = 290;
+export const RESTART_AUTO_DELAY_FREE_KICK = 2;
+
+/**
+ * Penalties (a foul inside the box, and shoot-outs): the taker stands at the spot (PENALTY_SPOT_DISTANCE out) and aims
+ * left / centre / right with the move keys (the part of them across the goal); pass is a placed kick at
+ * PENALTY_PLACED_SPEED aimed PENALTY_PLACED_INSET px inside a post, shoot a charged power kick aimed PENALTY_AIM_INSET px
+ * inside it. The keeper waits on its line, still, until it dives (move + tackle) or the kick is struck; everyone else
+ * waits outside the box. A human taker gets RESTART_AUTO_DELAY_PENALTY_HUMAN s, an AI's RESTART_AUTO_DELAY_PENALTY (it
+ * strikes with PENALTY_AI_STRIKE_AT of that left at the latest). A struck penalty is decided within PENALTY_RESOLVE_TIME s.
+ */
+export const PENALTY_PLACED_SPEED = 680;
+export const PENALTY_PLACED_INSET = 12;
+export const PENALTY_AIM_INSET = 24;
+export const RESTART_AUTO_DELAY_PENALTY_HUMAN = 6;
+export const RESTART_AUTO_DELAY_PENALTY = 2.5;
+export const PENALTY_AI_STRIKE_AT = 0.9;
+export const PENALTY_RESOLVE_TIME = 1.4;
+/** The AI keeper facing a penalty dives the right way with this chance (by its difficulty), else guesses another way. */
+export const PENALTY_KEEPER_READ: Record<Difficulty, number> = { easy: 0.3, normal: 0.4, hard: 0.5 };
+/**
+ * The AI taker: how often it takes a placed kick (rather than a charged power kick), and how often it shows its aim
+ * early (facing it while it waits), a tell for a human keeper -- by its difficulty.
+ */
+export const PENALTY_AI_PLACED: Record<Difficulty, number> = { easy: 0.6, normal: 0.45, hard: 0.3 };
+export const PENALTY_AI_TELL: Record<Difficulty, number> = { easy: 0.7, normal: 0.4, hard: 0.15 };
+
+/** Shoot-outs: best of SHOOTOUT_KICKS each, then sudden death; SHOOTOUT_PAUSE s between kicks (and before the first). */
+export const SHOOTOUT_KICKS = 5;
+export const SHOOTOUT_PAUSE = 1.6;
+/** A safety net: after this many kicks each, the team that went first wins (never seen in practice). */
+export const SHOOTOUT_MAX_ROUNDS = 40;
+/** Golden-goal extra time (MatchRules.draws 'golden-goal'): one period of this many seconds, the first goal wins. */
+export const EXTRA_TIME_SECONDS = 120;
+/** AI: how much less often it slides in inside its own box (fear of giving away a penalty), and from behind anywhere. */
+export const AI_BOX_SLIDE_FACTOR = 0.25;
+export const AI_BEHIND_SLIDE_FACTOR = 0.15;
+/** ...a slide counts as from the ball side (safe) when the ball is at least this much nearer (px) than the carrier. */
+export const AI_CLEAN_SLIDE_MARGIN = 10;
+/** ...with nobody on the ball, the opponent nearest it within this distance (px) counts as the one being tackled. */
+export const AI_FOUL_LOOSE_RANGE = 45;
 
 /* ---------------------------------------------------------------------------------------------
  * Networking (T06). PeerJS: the broker only introduces the two browsers (signalling); game data

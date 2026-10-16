@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { sound } from './audio/sound';
+import { awardFoul } from './sim/rules';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config';
 import { DiagnosticsScene } from './render/DiagnosticsScene';
 import { HowToPlayScene } from './render/HowToPlayScene';
@@ -33,5 +34,6 @@ const game = new Phaser.Game({
   scene: [MenuScene, SettingsScene, HowToPlayScene, JoinScene, TeamPickScene, LobbyScene, MatchScene, HudScene, PauseScene, ResultsScene, DiagnosticsScene],
 });
 
-// Dev only (and the e2e build, T18): lets the browser console and the Playwright tests inspect the running game.
-if (import.meta.env.DEV || import.meta.env.VITE_E2E) (window as unknown as { __game: Phaser.Game }).__game = game;
+// Dev only (and the e2e build, T18): lets the browser console and the Playwright tests inspect the running game, and
+// (T19) give a foul on the host, to play a penalty online.
+if (import.meta.env.DEV || import.meta.env.VITE_E2E) Object.assign(window, { __game: game, __sim: { awardFoul } });

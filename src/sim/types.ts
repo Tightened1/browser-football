@@ -69,6 +69,21 @@ export interface PlayerState extends CircleBody {
   /** Seconds left of a feint (T17), and until the next one is allowed. */
   feintTimer: number;
   feintCooldown: number;
+  /**
+   * T19, the referee: the current slide has touched the ball; has been judged (one call per slide); the opponent it
+   * reached before the ball (-1 = none yet), on which tick and where -- a foul unless it gets the ball straight after.
+   */
+  slideBall: boolean;
+  slideJudged: boolean;
+  slideVictim: number;
+  slideContactTick: number;
+  slideSpotX: number;
+  slideSpotY: number;
+  /** T19: seconds since this player last kicked the ball (capped), for late tackles. */
+  kickAge: number;
+  /** T19: yellow cards this half, and sent off (two yellows) for the rest of the half: parked off the pitch, out of play. */
+  yellow: number;
+  sentOff: boolean;
 }
 
 /** One tick of input for one human controller; inputs[team] drives that team's controlled player. */
@@ -97,6 +112,11 @@ export type AiDefending = 'relaxed' | 'normal' | 'tough';
 
 /** Match-rules presets (T15): 'arcade' makes scoring easier, 'classic' is the game as it was before T15. */
 export type RulesPreset = 'arcade' | 'classic';
+/** How strict the referee is (T19): 'off' = no fouls (the game before T19). */
+export type FoulStrictness = 'off' | 'lenient' | 'strict';
+/** What happens to a drawn match (T19): it stays a draw, a penalty shoot-out, or golden-goal extra time (then a shoot-out). */
+export type DrawRule = 'off' | 'shootout' | 'golden-goal';
+
 /** Keeper skill: a fixed difficulty, or 'team' = the same as the rest of its team's AI. */
 export type KeeperLevel = Difficulty | 'team';
 
@@ -126,6 +146,12 @@ export interface MatchRules {
   easedDefending: boolean;
   /** "AI defending vs humans" (T17): the AI's tackle profile against a human carrier. AI vs AI is unaffected. */
   aiDefending: AiDefending;
+  /** T19: fouls (slides into the player before the ball or from behind, clearly late challenges) and how strictly they are called. */
+  fouls: FoulStrictness;
+  /** T19: a reckless slide is a yellow card; two in a half and the player is sent off for the rest of it. */
+  cards: boolean;
+  /** T19: a draw at full time goes to a penalty shoot-out, or golden-goal extra time first. */
+  draws: DrawRule;
 }
 
 /** What a whole team is doing: has the ball, hasn't, or it just changed hands / is loose. */
@@ -155,6 +181,9 @@ export type AiIntent =
   | 'rush'
   | 'save'
   | 'distribute'
+  // set pieces (T19)
+  | 'wall'
+  | 'penalty'
   // controlled by a human
   | 'human';
 
@@ -192,6 +221,11 @@ export interface AiPlayerMemory {
   evadedFrom: number;
   /** T17: seconds left of being wrong-footed by a feint. */
   fooled: number;
+  /** T19 penalties: the side chosen (-1 / 0 / +1 across the goal, 9 = not decided yet), and a placed (vs power) kick. */
+  penaltySide: number;
+  penaltyPlaced: boolean;
+  /** T19, taking a penalty: it faces its aim while it waits (a tell). */
+  penaltyTell: boolean;
 }
 
 export interface AiTeamMemory {
@@ -250,6 +284,54 @@ export interface MatchStats {
   /** Seconds each team had possession (the last team to touch the ball, while the ball is in play). */
   possession: [number, number];
   goals: GoalRecord[];
+  /** T19: fouls committed per team, cards shown, penalties taken in the match, and the shoot-out (null if none). */
+  fouls: [number, number];
+  cards: CardRecord[];
+  penalties: PenaltyRecord[];
+  shootout: ShootoutRecord | null;
+}
+
+/** A card (T19): to `team`'s player `player`. A second yellow is recorded as a red. */
+export interface CardRecord {
+  team: TeamId;
+  player: number;
+  card: 'yellow' | 'red';
+  half: number;
+  clock: number;
+}
+
+/** A penalty taken during the match (T19; shoot-out kicks are in ShootoutRecord). */
+export interface PenaltyRecord {
+  team: TeamId;
+  player: number;
+  scored: boolean;
+  half: number;
+  clock: number;
+}
+
+/** A penalty shoot-out (T19): kicks alternate, `first` takes kick 0; true = scored. */
+export interface ShootoutRecord {
+  first: TeamId;
+  kicks: boolean[];
+  /** -1 while it is undecided. */
+  winner: TeamId | -1;
+}
+
+/** The shoot-out under way: its record, plus seconds of pause before the next kick. */
+export interface Shootout extends ShootoutRecord {
+  pause: number;
+}
+
+/** A penalty kick (match or shoot-out) that has been struck and is still being decided: goal, save or miss. */
+export interface LivePenalty {
+  /** Team taking it, the taker and the keeper facing it. */
+  team: TeamId;
+  taker: number;
+  keeper: number;
+  /** Seconds since it was struck. */
+  timer: number;
+  keeperTouched: boolean;
+  shootout: boolean;
 }
 
 export interface GameState {
@@ -294,6 +376,10 @@ export interface GameState {
   events: MatchEvent[];
   nextEventId: number;
   stats: MatchStats;
+  /** T19: a penalty struck and still being decided (else null). */
+  penalty: LivePenalty | null;
+  /** T19: the penalty shoot-out, once it has started (kept after it ends, for the HUD and results). */
+  shootout: Shootout | null;
 }
 
 /** A player carrying the ball (sticky dribbling). */
@@ -306,9 +392,9 @@ export interface Possession {
   roll: number;
 }
 
-export type MatchPhase ='pre-kickoff' | 'playing' | 'goal-scored' | 'half-time' | 'full-time';
+export type MatchPhase = 'pre-kickoff' | 'playing' | 'goal-scored' | 'half-time' | 'full-time' | 'shootout';
 
-export type RestartType = 'kickoff' | 'throw-in' | 'goal-kick' | 'corner';
+export type RestartType = 'kickoff' | 'throw-in' | 'goal-kick' | 'corner' | 'free-kick' | 'penalty';
 
 export interface Restart {
   type: RestartType;
@@ -319,6 +405,8 @@ export interface Restart {
   taker: number;
   /** Seconds until the restart is released automatically (the opposition keeps clear until then). */
   timer: number;
+  /** A free kick near goal (T19): the defenders standing in the wall. */
+  wall?: number[];
 }
 
 /** The restart just taken, kept for RESTART_GRACE_TIME so it can be retaken if the ball goes straight back out. */
@@ -332,18 +420,24 @@ export interface RestartGrace {
   timer: number;
 }
 
-export type MatchEventType = 'kickoff' | 'goal' | 'throw-in' | 'goal-kick' | 'corner' | 'half-time' | 'second-half' | 'full-time';
+export type MatchEventType =
+  | 'kickoff' | 'goal' | 'throw-in' | 'goal-kick' | 'corner' | 'half-time' | 'second-half' | 'full-time'
+  // T19
+  | 'foul' | 'yellow-card' | 'red-card' | 'free-kick' | 'penalty' | 'penalty-result' | 'extra-time' | 'shootout';
 
 export interface MatchEvent {
   /** Increasing; never reused within a match. */
   id: number;
   tick: number;
   type: MatchEventType;
-  /** goal: scoring team. Restarts and kickoff: the team taking it. */
+  /** goal: scoring team. Restarts and kickoff: the team taking it. foul and cards: the offender's team. penalty-result: the taking team. */
   team?: TeamId;
-  /** goal: player who touched the ball last (-1 if unknown). */
+  /** goal: player who touched the ball last (-1 if unknown). foul / cards: the offender. penalty-result: the taker. */
   player?: number;
   ownGoal?: boolean;
+  /** penalty-result: scored, or (if not) saved by the keeper rather than missed. */
+  scored?: boolean;
+  saved?: boolean;
   half: number;
   /** Seconds played in the half when it happened. */
   clock: number;

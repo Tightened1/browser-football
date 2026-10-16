@@ -561,3 +561,67 @@ AI vs AI, 40 matches, goals per match easy / normal / hard: Arcade 4.88 / 6.05 /
    [`FEINT_DOUBLE_TAP_MS`, `FEINT_SPEED`, `FEINT_TIME`]
 6. As the guest (`?lag=100`): sprint, shield and feint feel immediate, with no rubber-banding of the ball.
 7. Old saved keys: switch was `Z` / `Shift`; after updating, Shift should be sprint and V shield.
+
+# T19: fouls, free kicks, penalties and shoot-outs (game 1.5.0, protocol 7)
+
+Goal: tackles carry risk and set pieces add excitement -- arcade, not a rulebook (the whistle goes at once, no advantage).
+
+## 1. How the referee decides (`sim/fouls.ts`, thresholds in `FOUL_PROFILES`)
+
+- Only a slide that hits an opponent **hard** (closing at `minImpact` px/s or more) can be a foul. Measured first:
+  with "any contact before the ball" the AI-vs-AI matches had **44 fouls a match** (233 slides a match; the held ball
+  sits right at the carrier's feet, so a body is often brushed a moment before the ball, and slides clip players late
+  as they run on). Calls that were mostly noise were dropped one by one: Lenient needs the ball well out of reach at
+  contact (`missGap`) and no touch on it for the rest of the slide (`ballGrace`), counts only the player on (or at)
+  the ball (`involvedRange`), and lets a slide that won the ball from behind go (`behindWithBall`: Strict calls it).
+- From behind (within `behindAngle` of straight behind the way the victim runs): a foul, and **reckless** (a yellow
+  with cards on), as is hitting the player first still at full stretch (`FOUL_RECKLESS_SPEED`).
+- A standing challenge is a foul only when clearly late: running into someone 0.2-0.5 s after they kicked it, at
+  `lateSpeed` (Lenient 360 px/s: basically a sprint into the passer).
+- The AI fears fouls: with fouls on it decides to slide far less inside its own box (`AI_BOX_SLIDE_FACTOR`), and only
+  rarely slides from behind or when the carrier's body is nearer than the ball (`AI_BEHIND_SLIDE_FACTOR`,
+  `AI_CLEAN_SLIDE_MARGIN`; with a loose ball, at the opponent nearest it).
+
+## 2. Set pieces
+
+- **Free kick** on the spot of the foul (where the contact was), held like a corner: arrow, pass = pass, charged shoot =
+  shot (with the aim assist). Defenders kept `FREE_KICK_CLEAR_RADIUS` back; within `FREE_KICK_WALL_RANGE` of goal 1 AI
+  defender (2 within `FREE_KICK_WALL_TWO_RANGE`) is placed in a wall on the line to the goal centre and holds it
+  (AI intent `wall`). No grace-period retake for a free kick or penalty.
+- **Penalty**: taker on the spot, keeper on its line (a human team's control goes to its keeper), everyone else in a line
+  outside the box, still. Keys aim left / centre / right (the part across the goal: diagonals = the same corner); pass =
+  placed (680 px/s, 12 px inside the post), shoot = power (24 px inside). The keeper can't walk off its line, only dive
+  (move + tackle) or stand. The kick is then "live" (`GameState.penalty`) until a goal, a save (keeper touch), a miss,
+  or 1.4 s; a penalty given as time runs out is still taken. The AI taker picks a side and placed/power once, and shows
+  its aim early (a tell) more the easier it is (`PENALTY_AI_TELL`); the AI keeper dives the right way with
+  `PENALTY_KEEPER_READ` (by keeper difficulty) as the kick is struck, else another way (staying in the middle is a guess).
+- **Cards** (rules.cards): a reckless foul is a yellow, two a red -- sent off for the rest of the half (parked off the
+  pitch, out of every contest; the human moves to a teammate), back on for the next half with yellows wiped.
+- **Draws** (rules.draws): Off, a shoot-out (best of 5 then sudden death, alternating, takers rotate attackers first,
+  all at the right-hand goal), or golden-goal extra time (`EXTRA_TIME_SECONDS`, after a break) then a shoot-out.
+
+## 3. Numbers (AI vs AI, 40 matches, seed 1, 2 x 3 min; seed 7 holdout for normal)
+
+| | goals/match before → after | fouls/match | free kicks | penalties | cards (Y / R) | shoot-outs |
+|---|---|---|---|---|---|---|
+| Arcade easy | 4.85 (T17) → 4.85 | 2.35 | 2.33 | 0.03 | off | 12.5% of matches |
+| Arcade normal | 5.20 → 6.67 (seed 7: 5.50) | 3.38 (seed 7: 3.17) | 3.30 | 0.07 | off | 10%, 65% of kicks scored |
+| Arcade hard | 7.08 (T17) → 6.60 | 5.33 | 5.25 | 0.07 | off | 15% |
+| Classic easy | 3.63 (T17) → 4.55 | 5.63 | 5.63 | 0 | 1.77 / 0.07 | off |
+| Classic normal | 3.75 → 5.22 (seed 7: 5.35) | 10.07 | 10.0 | 0.07 | 2.35 / 0.25 | off |
+| Classic hard | 5.13 (T17) → 4.75 | 12.97 | 12.7 | 0.28 | 2.05 / 0.10 | off |
+
+("Before" for normal is this task's own baseline run, 20 matches.) Lenient lands in the ~2-5 target; goals stay in
+their targets (Arcade 5-9, Classic 3-6), Classic higher than before because the AI slides less (fear of fouls) and
+free kicks near goal give chances (~0.9 goals a match within 8 s of one). No stuck or dead balls. `npm run test:sim`
+now also checks `foulsPerMatch` (`scripts/simRanges.json`).
+
+## 4. Please feel-test by hand (T19), ideally online
+
+1. Slide in from the side and behind a dribbling AI player: do the calls feel fair? Too many / too few? [`FOUL_PROFILES`]
+2. Take a penalty both ways (placed and power) against a human keeper and the AI: is it a fair guessing game? Does the
+   taker's facing give too much away to a keeper? [`PENALTY_*`]
+3. As the keeper: is diving at the moment of the kick possible online at your ping (the guest isn't predicted here)?
+4. Free kicks near goal: can you beat the wall with the aim assist? Is the wall in a sensible place? [`FREE_KICK_*`]
+5. Classic (Strict, cards): ~10 fouls a match AI vs AI -- does it stop the game too often with humans?
+6. A drawn Arcade match: is the shoot-out pace right (1.6 s between kicks, 6 s for a human to take one)?

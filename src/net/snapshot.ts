@@ -1,6 +1,6 @@
 // Binary packets for the unreliable channel: host -> guest snapshots, guest -> host inputs. Pure: no PeerJS, no DOM.
 import { DRIBBLE_ROLL_PERIOD, KICK_BUFFER_TIME, KICK_FLASH_TIME, SHOT_MAX_CHARGE_TIME } from '../config';
-import type { GameState, InputFrame, MatchPhase, Possession, RestartType, TeamId } from '../sim/types';
+import type { GameState, InputFrame, MatchPhase, Possession, RestartType, ShootoutRecord, TeamId } from '../sim/types';
 
 /* ---- Snapshot ---------------------------------------------------------------------------------- */
 
@@ -28,6 +28,9 @@ export interface PlayerSnap extends BodySnap {
   shielding: boolean;
   windup: boolean;
   feinting: boolean;
+  /** T19: yellow cards this half, and sent off. */
+  yellow: number;
+  sentOff: boolean;
 }
 
 /** Everything the guest needs to draw one moment of the match (static player data comes from its own copy). */
@@ -47,6 +50,8 @@ export interface Snapshot {
   restart: { type: RestartType; team: TeamId } | null;
   /** Sticky dribbling: who carries the ball, and how it sits (null = loose). */
   possession: Possession | null;
+  /** T19: the penalty shoot-out so far (null = none). At most SHOOTOUT_SNAP_KICKS kicks are sent (the newest). */
+  shootout: ShootoutRecord | null;
   /** Id of the newest match event so far (events themselves go on the reliable channel). */
   lastEventId: number;
   /** Host has paused the match (connection trouble); resumeIn > 0 = counting down to resume (s). */
@@ -78,6 +83,7 @@ export function takeSnapshot(s: GameState, net: SnapshotNet): Snapshot {
     controlled: [s.controlled[0], s.controlled[1]],
     restart: s.restart ? { type: s.restart.type, team: s.restart.team } : null,
     possession: s.possession ? { ...s.possession } : null,
+    shootout: s.shootout ? { first: s.shootout.first, kicks: [...s.shootout.kicks], winner: s.shootout.winner } : null,
     lastEventId: s.events.length ? s.events[s.events.length - 1].id : 0,
     paused: net.paused,
     resumeIn: net.resumeIn,
@@ -95,6 +101,8 @@ export function takeSnapshot(s: GameState, net: SnapshotNet): Snapshot {
       shielding: p.shielding,
       windup: p.windup > 0,
       feinting: p.feintTimer > 0,
+      yellow: p.yellow,
+      sentOff: p.sentOff,
     })),
   };
 }
@@ -115,6 +123,7 @@ export function applySnapshot(s: GameState, snap: Snapshot): void {
   const taker = r && r.type !== 'goal-kick' ? snap.controlled[r.team] : -1;
   s.restart = r ? { ...r, pos: { x: snap.ball.x, y: snap.ball.y }, taker, timer: 0 } : null;
   s.possession = snap.possession ? { ...snap.possession } : null;
+  s.shootout = snap.shootout ? { ...snap.shootout, kicks: [...snap.shootout.kicks], pause: 0 } : null;
   s.ball.pos = { x: snap.ball.x, y: snap.ball.y };
   s.ball.vel = { x: snap.ball.vx, y: snap.ball.vy };
   snap.players.forEach((ps, i) => {
@@ -133,6 +142,8 @@ export function applySnapshot(s: GameState, snap: Snapshot): void {
     p.shielding = ps.shielding;
     p.windup = ps.windup ? 0.01 : 0;
     p.feintTimer = ps.feinting ? 0.01 : 0;
+    p.yellow = ps.yellow;
+    p.sentOff = ps.sentOff;
   });
 }
 
@@ -142,9 +153,11 @@ export function applySnapshot(s: GameState, snap: Snapshot): void {
  *   u16 phaseTimer (1/100 s) · u8 flags (attackDir0>0, kickoffTeam, paused) · u8 resumeIn (1/10 s)
  *   i8 controlled0 · i8 controlled1 · u8 restart (0 none, else type+1 | team<<4) · u16 lastEventId · u8 players
  *   i8 carrier (-1 none) · u8 hold angle (1/256 turn) · u8 roll (1/256 of DRIBBLE_ROLL_PERIOD)
+ *   u8 shoot-out (0 none, else 1 | first<<1 | (winner+1)<<2) · u8 kicks sent · u8[8] scored bits, kick i at bit i
  *   ball: i16 x, y (1/16 px) · i16 vx, vy (1/8 px/s)
  *   per player: i16 x, y · i16 vx, vy · u8 facing (1/256 turn) · u8 charge (1/255 of max)
  *               u8 flags (tackling, queued, kicked, sprinting, shielding, wind-up, feinting) · u8 stamina (1/127) | sprint lock<<7
+ *               u8 cards: yellows (0..3) | sent off<<2
  * Inputs: u8 type=2 · u8 count · u32 newest seq · per frame, newest first: i8 moveX, i8 moveY (1/127)
  *         u8 buttons (pass, shoot, tackle, switch, sprint, shield, feint)
  * ------------------------------------------------------------------------------------------------- */
@@ -152,14 +165,17 @@ export function applySnapshot(s: GameState, snap: Snapshot): void {
 export const PACKET_SNAPSHOT = 1;
 export const PACKET_INPUTS = 2;
 
-const PHASES: readonly MatchPhase[] = ['pre-kickoff', 'playing', 'goal-scored', 'half-time', 'full-time'];
-const RESTARTS: readonly RestartType[] = ['kickoff', 'throw-in', 'goal-kick', 'corner'];
+const PHASES: readonly MatchPhase[] = ['pre-kickoff', 'playing', 'goal-scored', 'half-time', 'full-time', 'shootout'];
+const RESTARTS: readonly RestartType[] = ['kickoff', 'throw-in', 'goal-kick', 'corner', 'free-kick', 'penalty'];
 const POS_SCALE = 16;
 const VEL_SCALE = 8;
 const TIME_SCALE = 100;
-const HEADER_BYTES = 28;
+const SHOOTOUT_OFFSET = 28;
+/** Shoot-out kicks a snapshot carries (the newest, if there were more: 32 rounds of sudden death). */
+export const SHOOTOUT_SNAP_KICKS = 64;
+const HEADER_BYTES = SHOOTOUT_OFFSET + 2 + SHOOTOUT_SNAP_KICKS / 8;
 const BODY_BYTES = 8;
-const PLAYER_BYTES = BODY_BYTES + 4;
+const PLAYER_BYTES = BODY_BYTES + 5;
 const TAU = Math.PI * 2;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
@@ -219,6 +235,18 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
   v.setInt8(25, s.possession ? clamp(s.possession.player, 0, 127) : -1);
   v.setUint8(26, s.possession ? turnByte(s.possession.angle) : 0);
   v.setUint8(27, s.possession ? Math.floor((s.possession.roll / DRIBBLE_ROLL_PERIOD) * 256) & 255 : 0);
+  const so = s.shootout;
+  if (so) {
+    // Only the newest kicks fit; dropping whole pairs keeps who took which kick (they alternate from `first`).
+    const drop = Math.max(0, so.kicks.length - SHOOTOUT_SNAP_KICKS);
+    const skip = drop + (drop % 2);
+    const kicks = so.kicks.slice(skip);
+    v.setUint8(SHOOTOUT_OFFSET, 1 | (so.first << 1) | ((so.winner + 1) << 2));
+    v.setUint8(SHOOTOUT_OFFSET + 1, kicks.length);
+    kicks.forEach((k, i) => {
+      if (k) bytes[SHOOTOUT_OFFSET + 2 + (i >> 3)] |= 1 << (i & 7);
+    });
+  }
   let o = writeBody(v, HEADER_BYTES, s.ball);
   for (const p of s.players) {
     o = writeBody(v, o, p);
@@ -226,7 +254,8 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
     v.setUint8(o + 1, u8((p.charge / SHOT_MAX_CHARGE_TIME) * 255));
     v.setUint8(o + 2, (p.tackling ? 1 : 0) | (p.queued ? 2 : 0) | (p.kicked ? 4 : 0) | (p.sprinting ? 8 : 0) | (p.shielding ? 16 : 0) | (p.windup ? 32 : 0) | (p.feinting ? 64 : 0));
     v.setUint8(o + 3, clamp(Math.round(p.stamina * 127), 0, 127) | (p.sprintLock ? 128 : 0));
-    o += 4;
+    v.setUint8(o + 4, clamp(p.yellow, 0, 3) | (p.sentOff ? 4 : 0));
+    o += 5;
   }
   return bytes;
 }
@@ -251,6 +280,7 @@ export function decodeSnapshot(bytes: Uint8Array): Snapshot | null {
     o += BODY_BYTES;
     const pf = v.getUint8(o + 2);
     const st = v.getUint8(o + 3);
+    const cards = v.getUint8(o + 4);
     players.push({
       ...b,
       facing: byteTurn(v.getUint8(o)),
@@ -264,9 +294,23 @@ export function decodeSnapshot(bytes: Uint8Array): Snapshot | null {
       feinting: (pf & 64) !== 0,
       stamina: (st & 127) / 127,
       sprintLock: (st & 128) !== 0,
+      yellow: cards & 3,
+      sentOff: (cards & 4) !== 0,
     });
-    o += 4;
+    o += 5;
   }
+  const sf = v.getUint8(SHOOTOUT_OFFSET);
+  const kickCount = Math.min(SHOOTOUT_SNAP_KICKS, v.getUint8(SHOOTOUT_OFFSET + 1));
+  const winnerBits = (sf >> 2) & 3;
+  if (sf & 1 && winnerBits === 3) return null;
+  const shootout: ShootoutRecord | null =
+    sf & 1
+      ? {
+          first: ((sf >> 1) & 1) as TeamId,
+          kicks: Array.from({ length: kickCount }, (_, i) => (bytes[SHOOTOUT_OFFSET + 2 + (i >> 3)] & (1 << (i & 7))) !== 0),
+          winner: (winnerBits - 1) as TeamId | -1,
+        }
+      : null;
   return {
     tick: v.getUint32(1, true),
     ack: v.getUint32(5, true) - 1,
@@ -280,6 +324,7 @@ export function decodeSnapshot(bytes: Uint8Array): Snapshot | null {
     controlled: [v.getInt8(19), v.getInt8(20)],
     restart: restartType ? { type: restartType, team: ((restartByte >> 4) & 1) as TeamId } : null,
     possession: carrier >= 0 ? { player: carrier, angle: byteTurn(v.getUint8(26)), roll: (v.getUint8(27) / 256) * DRIBBLE_ROLL_PERIOD } : null,
+    shootout,
     lastEventId: v.getUint16(22, true),
     paused: (flags & 4) !== 0,
     resumeIn: v.getUint8(18) / 10,

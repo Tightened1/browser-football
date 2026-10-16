@@ -72,7 +72,7 @@ describe('protocol', () => {
       { t: 'start', hostTeam: 1, seed: 42, token: 'abc', half: 120, rules: rulesFor('arcade') },
       { t: 'rematch', want: true },
       { t: 'restart', seed: 9 },
-      { t: 'stats', stats: { shots: [3, 1], possession: [40.5, 20], goals: [{ team: 0, player: 4, ownGoal: false, half: 1, clock: 33.2 }] } },
+      { t: 'stats', stats: { shots: [3, 1], possession: [40.5, 20], goals: [{ team: 0, player: 4, ownGoal: false, half: 1, clock: 33.2 }], fouls: [1, 0], cards: [], penalties: [], shootout: null } },
       { t: 'rejoin', token: 'abc', lastEvent: 7 },
       { t: 'event', event: { id: 3, tick: 120, type: 'goal', team: 1, player: 8, ownGoal: false, half: 1, clock: 12.5, score: [0, 1] } },
       { t: 'fast', b: 'AQID' },

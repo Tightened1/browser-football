@@ -106,7 +106,7 @@ export function scanEvents(events: readonly MatchEvent[], lastId: number, restar
   return { fresh, lastId: restarted ? newest : Math.max(base, newest) };
 }
 
-export type SoundId = 'whistle-short' | 'whistle-half' | 'whistle-full' | 'goal';
+export type SoundId = 'whistle-short' | 'whistle-half' | 'whistle-full' | 'whistle-foul' | 'goal';
 
 /** The sound (if any) a match event makes. */
 export function eventSound(event: MatchEvent): SoundId | null {
@@ -117,6 +117,12 @@ export function eventSound(event: MatchEvent): SoundId | null {
       return 'whistle-half';
     case 'full-time':
       return 'whistle-full';
+    case 'foul':
+      return 'whistle-foul';
+    case 'extra-time':
+      return 'whistle-short';
+    case 'shootout':
+      return 'whistle-half';
     case 'goal':
       return 'goal';
     default:

@@ -49,7 +49,7 @@ function run(s: GameState, ticks: number, f: (n: number) => InputFrame): GameSta
 }
 
 describe('match-rules presets', () => {
-  it('Classic is the game as it was before T15 (plus T17: Normal AI defending vs humans)', () => {
+  it('Classic is the game as it was before T15 (plus T17: Normal AI defending vs humans; T19: a Strict referee with cards, draws stay draws)', () => {
     expect(rulesFor('classic')).toEqual({
       preset: 'classic',
       goalWidth: GOAL_WIDTH,
@@ -62,12 +62,15 @@ describe('match-rules presets', () => {
       aimLine: false,
       easedDefending: false,
       aiDefending: 'normal',
+      fouls: 'strict',
+      cards: true,
+      draws: 'off',
     });
     // ...and what the sim uses when no rules are given.
     expect(createInitialState().rules).toEqual(CLASSIC_RULES);
   });
 
-  it('Arcade: big goals, easy keepers who parry more, quick charge, aim assist, finesse, aim line, eased defending', () => {
+  it('Arcade: big goals, easy keepers who parry more, quick charge, aim assist, finesse, aim line, eased defending, a Lenient referee, shoot-outs', () => {
     expect(ARCADE).toEqual({
       preset: 'arcade',
       goalWidth: GOAL_WIDTH_BIG,
@@ -80,6 +83,9 @@ describe('match-rules presets', () => {
       aimLine: true,
       easedDefending: true,
       aiDefending: 'relaxed',
+      fouls: 'lenient',
+      cards: false,
+      draws: 'shootout',
     });
     expect(KEEPER_DIFFICULTY).toBe('easy');
     expect(GOAL_WIDTH_BIG).toBeGreaterThan(GOAL_WIDTH);

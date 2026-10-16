@@ -50,10 +50,12 @@ export class HowToPlayScene extends Phaser.Scene {
       `A throw always goes into the pitch (wait ${RESTART_AUTO_DELAY_HUMAN} s: to a free teammate). You can't dribble over a line.`,
       'Match rules (Settings): Arcade = big goals, quick charge, aim line, aim assist, kinder keepers, relaxed AI tackling of humans.',
       "Classic = the original game. Online, the host's rules are used (shown in the lobby). Line up your shot: keys aim in 8 directions.",
+      'Fouls: a slide into the player instead of the ball, or from behind, gives a free kick -- a penalty in the box. Strict referees show cards.',
+      'Penalties: aim up / down (or neither, the middle), pass = placed, shoot = power. Facing one, dive with up / down + tackle.',
       'Online: one player hosts and shares the room code or invite link; the other joins. You pick your own team and kit.',
       'Change any key under Settings. The pause menu does not stop an online match, since your friend is still playing.',
     ];
-    notes.forEach((n, i) => label(this, CX, 500 + i * 25, 16, UI_COLORS.muted).setText(n).setWordWrapWidth(1100));
+    notes.forEach((n, i) => label(this, CX, 490 + i * 23, 15, UI_COLORS.muted).setText(n).setWordWrapWidth(1120));
 
     const back = button(this, CX, 765, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 220 });
 

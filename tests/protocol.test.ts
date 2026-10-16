@@ -17,12 +17,16 @@ import { createMatchState, NEUTRAL_INPUT, step } from '../src/sim/simulation';
 import type { MatchEvent, MatchStats } from '../src/sim/types';
 
 const lobby = createLobbyState('Host', 'Guest', { name: 1, kit: 2 }, { name: 3, kit: 4 }, rulesFor('classic'));
-const event: MatchEvent = { id: 7, tick: 1234, type: 'goal', half: 1, clock: 61.5, score: [1, 0], team: 0, player: 3, ownGoal: false };
+const event: MatchEvent = { id: 7, tick: 1234, type: 'penalty-result', half: 1, clock: 61.5, score: [1, 0], team: 0, player: 3, scored: false, saved: true };
 const stats: MatchStats = {
   shots: [5, 3],
   possession: [120, 100],
   goals: [{ team: 0, player: 3, ownGoal: false, half: 1, clock: 61.5 }],
-} as MatchStats;
+  fouls: [2, 4],
+  cards: [{ team: 1, player: 7, card: 'yellow', half: 1, clock: 80 }],
+  penalties: [{ team: 0, player: 4, scored: true, half: 2, clock: 12 }],
+  shootout: { first: 1, kicks: [true, false, true, true], winner: -1 },
+};
 
 /** One example of every message. Typed as a full Record so adding a message type without a test fails to compile. */
 const SAMPLES: Record<MessageType, Message> = {

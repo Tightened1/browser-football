@@ -556,10 +556,13 @@ export class GuestMatch implements MatchDriver {
 
   /* ---- Prediction ---------------------------------------------------------------------------------- */
 
-  /** Prediction only runs in open play: not while sliding, at set pieces (teleports) or while paused. */
+  /**
+   * Prediction only runs in open play: not while sliding, at set pieces (teleports) or while paused -- nor for our
+   * keeper (T19: we control it facing a penalty; the host's keeper is drawn, kept simple).
+   */
   private predictable(s: Snapshot): boolean {
     const id = s.controlled[this.localTeam];
-    return this.predict && id >= 0 && s.phase === 'playing' && !s.restart && !s.paused && !s.players[id].tackling;
+    return this.predict && id >= 0 && s.phase === 'playing' && !s.restart && !s.paused && !s.players[id].tackling && this.state.players[id]?.role !== 'keeper';
   }
 
   /** New authoritative state: start from the host's player and replay the inputs it hadn't applied yet. */

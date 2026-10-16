@@ -140,8 +140,8 @@ class SoundEngine {
     this.noiseBurst(t + 0.02, 0.18, 0.2 * loud, 'bandpass', 1800, 0.8);
   }
 
-  /** A referee's pea whistle: `blasts` trills, each `len` seconds. */
-  whistle(blasts: number, len: number): void {
+  /** A referee's pea whistle: `blasts` trills, each `len` seconds (`pitch` scales the tone: a foul's is sharper). */
+  whistle(blasts: number, len: number, pitch = 1): void {
     if (!this.can()) return;
     const ctx = this.ctx!;
     for (let i = 0; i < blasts; i++) {
@@ -159,7 +159,7 @@ class SoundEngine {
       const lfoDepth = ctx.createGain();
       lfoDepth.gain.value = 0.3;
       lfo.connect(lfoDepth).connect(trill.gain);
-      for (const f of [2870, 3010]) {
+      for (const f of [2870 * pitch, 3010 * pitch]) {
         const osc = ctx.createOscillator();
         osc.type = 'sine';
         osc.frequency.setValueAtTime(f, t);
@@ -242,6 +242,9 @@ class SoundEngine {
         return this.whistle(2, 0.6);
       case 'whistle-full':
         return this.whistle(3, 0.7);
+      case 'whistle-foul':
+        // A foul (T19): one short, sharp, higher blast.
+        return this.whistle(1, 0.3, 1.12);
       case 'goal':
         this.roar();
         this.net(0.8);

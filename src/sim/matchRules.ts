@@ -11,22 +11,38 @@ import {
   type AiProfile,
   type DefendingProfile,
 } from '../config';
-import type { AiDefending, Difficulty, GameState, KeeperLevel, MatchRules, RulesPreset, TeamId } from './types';
+import type { AiDefending, Difficulty, DrawRule, FoulStrictness, GameState, KeeperLevel, MatchRules, RulesPreset, TeamId } from './types';
 
 export const RULES_PRESETS: readonly RulesPreset[] = ['arcade', 'classic'];
 export const KEEPER_LEVELS: readonly KeeperLevel[] = ['team', 'easy', 'normal', 'hard'];
 export const AI_DEFENDING_LEVELS: readonly AiDefending[] = ['relaxed', 'normal', 'tough'];
+export const FOUL_LEVELS: readonly FoulStrictness[] = ['off', 'lenient', 'strict'];
+export const DRAW_RULES: readonly DrawRule[] = ['off', 'shootout', 'golden-goal'];
+
+/** Settings overrides of a preset's T19 rules ('rules' = the preset's own). */
+export interface RulesOverrides {
+  fouls?: FoulStrictness | 'rules';
+  cards?: boolean | 'rules';
+  draws?: DrawRule | 'rules';
+}
 
 /**
  * A preset's rules, optionally with the keepers' skill (Settings → Keepers) and the AI's defending against humans
  * (Settings → AI defending vs humans, T17) overridden; 'rules' = the preset's own.
  */
-export function rulesFor(preset: RulesPreset, keepers: KeeperLevel | 'rules' = 'rules', aiDefending: AiDefending | 'rules' = 'rules'): MatchRules {
+export function rulesFor(preset: RulesPreset, keepers: KeeperLevel | 'rules' = 'rules', aiDefending: AiDefending | 'rules' = 'rules', more: RulesOverrides = {}): MatchRules {
   const r = { ...MATCH_RULES[preset] };
   if (keepers !== 'rules') r.keeperDifficulty = keepers;
   if (aiDefending !== 'rules') r.aiDefending = aiDefending;
+  if (more.fouls !== undefined && more.fouls !== 'rules') r.fouls = more.fouls;
+  if (more.cards !== undefined && more.cards !== 'rules') r.cards = more.cards;
+  if (more.draws !== undefined && more.draws !== 'rules') r.draws = more.draws;
   return r;
 }
+
+/** Are fouls called, and are cards shown (only with fouls)? */
+export const foulsOn = (r: MatchRules): boolean => r.fouls !== 'off';
+export const cardsOn = (r: MatchRules): boolean => r.fouls !== 'off' && r.cards;
 
 /** How the AI tackles a carrier (T17): the rules' "vs humans" level for a human carrier, else the AI-vs-AI profile. */
 export function defendingProfile(rules: MatchRules, humanCarrier: boolean): DefendingProfile {
@@ -54,7 +70,10 @@ export function isMatchRules(v: unknown): v is MatchRules {
     isBool(r.finesse) &&
     isBool(r.aimLine) &&
     isBool(r.easedDefending) &&
-    AI_DEFENDING_LEVELS.includes(r.aiDefending as AiDefending)
+    AI_DEFENDING_LEVELS.includes(r.aiDefending as AiDefending) &&
+    FOUL_LEVELS.includes(r.fouls as FoulStrictness) &&
+    isBool(r.cards) &&
+    DRAW_RULES.includes(r.draws as DrawRule)
   );
 }
 
@@ -72,6 +91,9 @@ export function copyRules(r: MatchRules): MatchRules {
     aimLine: r.aimLine,
     easedDefending: r.easedDefending,
     aiDefending: r.aiDefending,
+    fouls: r.fouls,
+    cards: r.cards,
+    draws: r.draws,
   };
 }
 
@@ -107,5 +129,17 @@ export function rulesSummary(r: MatchRules): string {
   if (r.shotChargeTime < SHOT_MAX_CHARGE_TIME) parts.push('quick charge');
   if (r.finesse) parts.push('finesse shots');
   parts.push(`${r.aiDefending} AI defending`);
+  parts.push(r.fouls === 'off' ? 'no fouls' : `${r.fouls} referee${cardsOn(r) ? ' with cards' : ''}`);
+  if (r.draws !== 'off') parts.push(r.draws === 'shootout' ? 'draws go to penalties' : 'golden goal, then penalties');
   return parts.join(', ');
+}
+
+/** "Off" / "Lenient" / "Strict". */
+export function foulsLabel(level: FoulStrictness): string {
+  return level[0].toUpperCase() + level.slice(1);
+}
+
+/** For menus: what a drawn match goes to. */
+export function drawsLabel(rule: DrawRule): string {
+  return rule === 'off' ? 'Stays a draw' : rule === 'shootout' ? 'Penalty shoot-out' : 'Golden goal, then penalties';
 }

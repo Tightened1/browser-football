@@ -14,7 +14,7 @@ export function possessionPercent(possession: readonly [number, number]): [numbe
   return [home, 100 - home];
 }
 
-const RESTART_NAMES = { kickoff: 'kickoff', 'throw-in': 'throw-in', 'goal-kick': 'goal kick', corner: 'corner' } as const;
+const RESTART_NAMES = { kickoff: 'kickoff', 'throw-in': 'throw-in', 'goal-kick': 'goal kick', corner: 'corner', 'free-kick': 'free kick', penalty: 'penalty' } as const;
 
 /**
  * Debug overlay line (T16): who touched the ball last -- team, shirt number and role -- and the restart waiting to be

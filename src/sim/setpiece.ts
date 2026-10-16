@@ -1,4 +1,5 @@
-// Set pieces (T14): throw-ins are thrown, not dribbled (and corners crossed from a standing start, T16); every restart is aimed into the pitch; auto-throw / auto-pass
+// Set pieces (T14): throw-ins are thrown, not dribbled (and corners crossed from a standing start, T16, free kicks and
+// penalties kicked from it, T19); every restart is aimed into the pitch (a penalty at the goal); auto-throw / auto-pass
 // for a taker who does nothing; the grace period after a restart. Pure (shared by the sim, the AI and the renderer).
 import {
   CORNER_HARD_MAX_SPEED,
@@ -7,6 +8,9 @@ import {
   KICK_FLASH_TIME,
   KICK_TOUCH_LOCKOUT,
   PASS_SPEED,
+  PENALTY_AIM_INSET,
+  PENALTY_PLACED_INSET,
+  PENALTY_PLACED_SPEED,
   PENALTY_BOX_HEIGHT,
   PENALTY_BOX_WIDTH,
   PENALTY_SPOT_DISTANCE,
@@ -17,6 +21,7 @@ import {
   RESTART_GRACE_TIME,
   SHOT_MAX_CHARGE_TIME,
   SHOT_MAX_SPEED,
+  SHOT_MIN_SPEED,
   THROW_AIM_EDGE,
   THROW_LONG_MAX_SPEED,
   THROW_LONG_MIN_SPEED,
@@ -25,6 +30,7 @@ import {
 } from '../config';
 import { angleDiff } from './dribble';
 import { kickSpeedForDistance } from './physics';
+import { assistAim } from './shooting';
 import type { GameState, InputFrame, PlayerState, Restart, RestartType, Vec2 } from './types';
 
 const MID_X = (PITCH_LEFT + PITCH_RIGHT) / 2;
@@ -35,13 +41,23 @@ export function pendingThrowIn(state: GameState): Restart | null {
   return state.restart?.type === 'throw-in' ? state.restart : null;
 }
 
+/** Set pieces whose ball stays on its spot until the taker plays it: see pendingHeldRestart. */
+export function isHeldType(type: RestartType): boolean {
+  return type === 'throw-in' || type === 'corner' || type === 'free-kick' || type === 'penalty';
+}
+
 /**
  * A set piece whose ball stays on its spot until the taker plays it (no dribbling it, nobody else can move it): a
- * throw-in, or a corner (T16: aimed with the arrow and crossed, low or hard).
+ * throw-in, a corner (T16: aimed with the arrow and crossed, low or hard), a free kick or a penalty (T19).
  */
 export function pendingHeldRestart(state: GameState): Restart | null {
   const r = state.restart;
-  return r && (r.type === 'throw-in' || r.type === 'corner') ? r : null;
+  return r && isHeldType(r.type) ? r : null;
+}
+
+/** The penalty waiting to be taken, if any. */
+export function pendingPenalty(state: GameState): Restart | null {
+  return state.restart?.type === 'penalty' ? state.restart : null;
 }
 
 /**
@@ -58,7 +74,10 @@ export function inwardDirection(type: RestartType, pos: Vec2): Vec2 | null {
       return { x: sx * Math.SQRT1_2, y: sy * Math.SQRT1_2 };
     case 'goal-kick':
       return { x: sx, y: 0 };
+    case 'penalty':
+      return { x: -sx, y: 0 }; // at the goal it is taken at
     case 'kickoff':
+    case 'free-kick':
       return null;
   }
 }
@@ -82,11 +101,36 @@ export function restartAim(r: Restart, input: Pick<InputFrame, 'moveX' | 'moveY'
   return clampAim(moving ? Math.atan2(input.moveY, input.moveX) : facing, inwardDirection(r.type, r.pos));
 }
 
-/** A held set piece's speeds: [short (pass), charged min, charged max] -- throw-ins thrown, corners crossed. */
+/**
+ * A penalty's aim (T19): left, centre or right of the goal it is taken at, from the part of the move keys across the
+ * goal (else from the facing, which keeps the last aim). A placed kick (pass) goes PENALTY_PLACED_INSET px inside the
+ * post, a power kick (shoot) PENALTY_AIM_INSET px.
+ */
+export function penaltyAim(r: Pick<Restart, 'pos'>, input: Pick<InputFrame, 'moveX' | 'moveY'>, facing: number, goalWidth: number, placed = false): number {
+  const goalX = r.pos.x < MID_X ? PITCH_LEFT : PITCH_RIGHT;
+  const ml = Math.hypot(input.moveX, input.moveY);
+  const across = ml > 1e-6 ? input.moveY / ml : Math.sin(facing);
+  const side = across > 0.3 ? 1 : across < -0.3 ? -1 : 0;
+  const y = MID_Y + side * (goalWidth / 2 - (placed ? PENALTY_PLACED_INSET : PENALTY_AIM_INSET));
+  return Math.atan2(y - r.pos.y, goalX - r.pos.x);
+}
+
+/** Where a held set piece's taker is aiming: a penalty at the goal (penaltyAim), anything else as restartAim. */
+export function heldAim(state: GameState, r: Restart, input: Pick<InputFrame, 'moveX' | 'moveY'>, facing: number, placed = false): number {
+  return r.type === 'penalty' ? penaltyAim(r, input, facing, state.rules.goalWidth, placed) : restartAim(r, input, facing);
+}
+
+/** A held set piece's speeds: [short (pass), charged min, charged max] -- throw-ins thrown, corners crossed, free kicks and penalties kicked. */
 function heldSpeeds(type: RestartType): [number, number, number] {
-  return type === 'corner'
-    ? [CORNER_LOW_SPEED, CORNER_HARD_MIN_SPEED, CORNER_HARD_MAX_SPEED]
-    : [THROW_SHORT_SPEED, THROW_LONG_MIN_SPEED, THROW_LONG_MAX_SPEED];
+  if (type === 'corner') return [CORNER_LOW_SPEED, CORNER_HARD_MIN_SPEED, CORNER_HARD_MAX_SPEED];
+  if (type === 'free-kick') return [PASS_SPEED, SHOT_MIN_SPEED, SHOT_MAX_SPEED];
+  if (type === 'penalty') return [PENALTY_PLACED_SPEED, SHOT_MIN_SPEED, SHOT_MAX_SPEED];
+  return [THROW_SHORT_SPEED, THROW_LONG_MIN_SPEED, THROW_LONG_MAX_SPEED];
+}
+
+/** How long a held set piece's charge takes to fill: a shot's (the rules') for free kicks and penalties, else SHOT_MAX_CHARGE_TIME. */
+export function heldChargeTime(state: GameState, type: RestartType): number {
+  return type === 'free-kick' || type === 'penalty' ? state.rules.shotChargeTime : SHOT_MAX_CHARGE_TIME;
 }
 
 /** The pass-button (short throw / low cross) speed of a held set piece. */
@@ -94,18 +138,18 @@ export function heldShortSpeed(type: RestartType = 'throw-in'): number {
   return heldSpeeds(type)[0];
 }
 
-/** Long throw (or hard cross, for a corner) speed for a charge (s), like a shot but shorter. */
-export function throwSpeed(charge: number, type: RestartType = 'throw-in'): number {
+/** Long throw (or hard cross, for a corner; a shot for a free kick or penalty) speed for a charge (s) out of `chargeTime`. */
+export function throwSpeed(charge: number, type: RestartType = 'throw-in', chargeTime = SHOT_MAX_CHARGE_TIME): number {
   const [, lo, hi] = heldSpeeds(type);
-  const f = Math.min(1, Math.max(0, charge / SHOT_MAX_CHARGE_TIME));
+  const f = Math.min(1, Math.max(0, charge / chargeTime));
   return lo + (hi - lo) * f;
 }
 
-/** The charge (s) that throws (or crosses) at `speed` (for the AI). */
-export function throwChargeFor(speed: number, type: RestartType = 'throw-in'): number {
+/** The charge (s) that throws (or crosses, or shoots) at `speed` (for the AI). */
+export function throwChargeFor(speed: number, type: RestartType = 'throw-in', chargeTime = SHOT_MAX_CHARGE_TIME): number {
   const [, lo, hi] = heldSpeeds(type);
   const f = (speed - lo) / (hi - lo);
-  return Math.max(0.02, Math.min(1, f)) * SHOT_MAX_CHARGE_TIME;
+  return Math.max(0.02, Math.min(1, f)) * chargeTime;
 }
 
 /**
@@ -183,29 +227,39 @@ export function releaseRestart(state: GameState): void {
   const r = state.restart;
   if (!r) return;
   state.restart = null;
-  state.grace = RESTART_GRACE_TIME > 0 ? { type: r.type, team: r.team, pos: { ...r.pos }, taker: r.taker, timer: RESTART_GRACE_TIME } : null;
+  // (A free kick or penalty is a deliberate kick: one that goes straight out is not retaken.)
+  const graced = RESTART_GRACE_TIME > 0 && r.type !== 'free-kick' && r.type !== 'penalty';
+  state.grace = graced ? { type: r.type, team: r.team, pos: { ...r.pos }, taker: r.taker, timer: RESTART_GRACE_TIME } : null;
 }
 
 /** The taker throws (or kicks) the set piece at `speed` towards `aim`, and the restart is released. */
 export function playRestart(state: GameState, taker: PlayerState, speed: number, aim: number): void {
   const { ball } = state;
+  const r = state.restart;
+  if (r?.type === 'penalty') {
+    // Struck: now it is decided (goal, save or miss: rules.ts).
+    const keeper = state.players.find((p) => p.team !== r.team && p.role === 'keeper');
+    state.penalty = { team: r.team, taker: taker.id, keeper: keeper ? keeper.id : -1, timer: 0, keeperTouched: false, shootout: state.phase === 'shootout' };
+  }
   state.possession = null;
   taker.facing = aim;
   taker.charge = 0;
   taker.kickQueue = 0;
   taker.touchTimer = KICK_TOUCH_LOCKOUT;
   taker.kickFlash = KICK_FLASH_TIME;
+  taker.kickAge = 0;
   ball.vel = { x: Math.cos(aim) * speed, y: Math.sin(aim) * speed };
   state.lastTouch = { team: taker.team, player: taker.id };
   releaseRestart(state);
 }
 
 /**
- * One tick of a throw-in or corner taker: stands still with the ball (held over their head, or at their feet), aims with
- * the move keys (clamped into the pitch) and plays it on a pass press (short throw / low cross) or a shoot release (long
- * throw / hard cross, charged). Returns whether it was played.
+ * One tick of a held set piece's taker: stands still with the ball (held over their head, or at their feet), aims with
+ * the move keys (clamped into the pitch; a penalty left / centre / right) and plays it on a pass press (short throw /
+ * low cross / pass / placed penalty) or a shoot release (long throw / hard cross / shot, charged). A free kick shot gets
+ * the aim assist. Returns whether it was played, and as a shot (a free kick or penalty struck at goal).
  */
-export function takeHeldRestart(state: GameState, p: PlayerState, input: InputFrame, dt: number): boolean {
+export function takeHeldRestart(state: GameState, p: PlayerState, input: InputFrame, dt: number): 'none' | 'played' | 'shot' {
   const r = state.restart!;
   p.tackleCooldown = Math.max(0, p.tackleCooldown - dt);
   p.touchTimer = Math.max(0, p.touchTimer - dt);
@@ -213,17 +267,22 @@ export function takeHeldRestart(state: GameState, p: PlayerState, input: InputFr
   p.tackleTimer = 0;
   p.kickQueue = 0;
   p.vel = { x: 0, y: 0 };
-  const aim = restartAim(r, input, p.facing);
+  const aim = heldAim(state, r, input, p.facing);
   p.facing = aim;
-  if (input.shoot) p.charge = Math.min(SHOT_MAX_CHARGE_TIME, p.charge + dt);
+  const full = heldChargeTime(state, r.type);
+  if (input.shoot) p.charge = Math.min(full, p.charge + dt);
   const passPressed = input.pass && !p.prevPass;
   const shootReleased = !input.shoot && p.prevShoot;
   if (passPressed || shootReleased) {
-    playRestart(state, p, passPressed ? heldShortSpeed(r.type) : throwSpeed(p.charge, r.type), aim);
-    return true;
+    let a = aim;
+    if (r.type === 'penalty' && passPressed) a = heldAim(state, r, input, aim, true);
+    else if (r.type === 'free-kick' && shootReleased) a = assistAim(state, p.team, state.ball.pos, aim);
+    const type = r.type;
+    playRestart(state, p, passPressed ? heldShortSpeed(type) : throwSpeed(p.charge, type, full), a);
+    return type === 'penalty' || (type === 'free-kick' && shootReleased) ? 'shot' : 'played';
   }
   if (!input.shoot) p.charge = 0;
-  return false;
+  return 'none';
 }
 
 /**
@@ -236,10 +295,15 @@ export function autoPlayRestart(state: GameState, humanTaker: boolean): boolean 
   if (!r || r.taker < 0) return false;
   const taker = state.players[r.taker];
   if (!taker) return false;
-  const held = r.type === 'throw-in' || r.type === 'corner';
+  const held = isHeldType(r.type);
   if (!held && !humanTaker) return false;
   if (held && taker.charge > 0) {
-    playRestart(state, taker, throwSpeed(taker.charge, r.type), taker.facing);
+    playRestart(state, taker, throwSpeed(taker.charge, r.type, heldChargeTime(state, r.type)), taker.facing);
+    return true;
+  }
+  if (r.type === 'penalty') {
+    // Nobody pressed anything: a placed kick where the taker is aiming.
+    playRestart(state, taker, heldShortSpeed('penalty'), heldAim(state, r, { moveX: 0, moveY: 0 }, taker.facing, true));
     return true;
   }
   const t = r.type === 'corner' ? cornerTarget(state, r, taker) : restartTarget(state, r, taker);

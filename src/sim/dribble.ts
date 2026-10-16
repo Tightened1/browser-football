@@ -235,7 +235,7 @@ export function keeperHoldAngle(state: GameState, p: PlayerState): number {
 /** Can `p` take control of the ball right now? (A teammate's pass may arrive faster than a loose ball; a keeper catches.) */
 export function canControl(state: GameState, p: PlayerState): boolean {
   const { ball } = state;
-  if (p.tackleTimer > 0 || p.windup > 0 || p.touchTimer > 0 || p.kickFlash > 0) return false;
+  if (p.tackleTimer > 0 || p.windup > 0 || p.touchTimer > 0 || p.kickFlash > 0 || p.sentOff) return false;
   if (p.role === 'keeper' && !keeperInBox(state, p)) return false;
   const gap = Math.hypot(ball.pos.x - p.pos.x, ball.pos.y - p.pos.y) - p.radius - ball.radius;
   if (gap > DRIBBLE_CONTROL_REACH) return false;
@@ -294,9 +294,10 @@ function standingTackleWins(state: GameState, o: PlayerState, c: PlayerState, hu
  */
 export function updatePossession(state: GameState, humanDriven: readonly boolean[] = []): void {
   if (!stickyDribbling()) return;
-  // (Nobody can pick up a throw-in or a corner: it is thrown / crossed from its spot.)
-  const held = state.restart?.type === 'throw-in' || state.restart?.type === 'corner';
-  if (state.phase !== 'playing' || held) {
+  // (Nobody can pick up a throw-in, corner, free kick or penalty: it is played from its spot. A shoot-out is all penalties.)
+  const t = state.restart?.type;
+  const held = t === 'throw-in' || t === 'corner' || t === 'free-kick' || t === 'penalty';
+  if ((state.phase !== 'playing' && state.phase !== 'shootout') || held) {
     state.possession = null;
     return;
   }

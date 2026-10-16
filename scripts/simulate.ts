@@ -5,6 +5,8 @@
 //                           the AI, to measure how the AI defends against a person (T17); --defending relaxed|normal|tough
 //                           overrides the rules' "AI defending vs humans" setting.
 // Always reports AI tackle duels: how often an AI challenge on a carrier wins the ball, for AI and human carriers.
+// Fouls (T19): fouls, free kicks, penalties (and how many are scored), cards and shoot-outs per match.
+//   --fouls off|lenient|strict, --cards on|off and --draws off|shootout|golden-goal override the rules' own.
 import { readFileSync } from 'node:fs';
 import { SIM_DT } from '../src/config';
 import { botInput, createBotMemory, type BotSkill } from './humanBot';
@@ -30,6 +32,14 @@ const RULES = rulesFor(PRESET);
 const HUMAN = opt('human', '') as BotSkill | '';
 const DEFENDING = opt('defending', '');
 if (DEFENDING) (RULES as unknown as Record<string, unknown>).aiDefending = DEFENDING;
+const FOULS = opt('fouls', '');
+if (FOULS) (RULES as unknown as Record<string, unknown>).fouls = FOULS;
+const CARDS = opt('cards', '');
+if (CARDS) RULES.cards = CARDS === 'on';
+const DRAWS = opt('draws', '');
+if (DRAWS) (RULES as unknown as Record<string, unknown>).draws = DRAWS;
+/** Fouls-per-match target range (T19, Lenient). */
+const FOUL_TARGET: [number, number] = [2, 5];
 /** Goals-per-match target range for the rules (T11 for Classic, T15 for Arcade). */
 const TARGET: [number, number] = PRESET === 'arcade' ? [5, 9] : [3, 6];
 /** Corners-per-match target range (T16). */
@@ -71,6 +81,19 @@ interface MatchResult {
   carrySeconds: [number, number];
   /** Separate carries by the human. */
   humanCarries: number;
+  /** T19: fouls, free kicks, match penalties (and goals from them), cards, shoot-outs (and their kicks), extra time. */
+  fouls: number;
+  freeKicks: number;
+  penalties: number;
+  penaltyGoals: number;
+  yellows: number;
+  reds: number;
+  shootouts: number;
+  shootoutKicks: number;
+  shootoutGoals: number;
+  extraTimes: number;
+  /** Goals within 8 s of a free kick being taken. */
+  freeKickGoals: number;
 }
 
 function playMatch(difficulty: Difficulty, seed: number): MatchResult {
@@ -95,6 +118,11 @@ function playMatch(difficulty: Difficulty, seed: number): MatchResult {
   let lastGoals = 0;
   let sinceCorner = 99;
   let cornerGoals = 0;
+  let sinceFreeKick = 99;
+  let freeKickGoals = 0;
+  let penaltyGoals = 0;
+  let shootoutKicks = 0;
+  let shootoutGoals = 0;
   let lastId = 0;
   const counts: Record<string, number> = {};
   const bot = createBotMemory(seed);
@@ -114,14 +142,23 @@ function playMatch(difficulty: Difficulty, seed: number): MatchResult {
       if (e.id > lastId) {
         counts[e.type] = (counts[e.type] ?? 0) + 1;
         lastId = e.id;
+        if (e.type === 'penalty-result') {
+          if (s.phase === 'shootout' || (s.phase === 'full-time' && s.shootout)) {
+            shootoutKicks++;
+            if (e.scored) shootoutGoals++;
+          } else if (e.scored) penaltyGoals++;
+        }
       }
     }
     const goals = s.score[0] + s.score[1];
     if (s.restart?.type === 'corner') sinceCorner = 0;
     else sinceCorner += SIM_DT;
+    if (s.restart?.type === 'free-kick') sinceFreeKick = 0;
+    else sinceFreeKick += SIM_DT;
     if (goals > lastGoals) {
       if (sinceKick < 8) quick++;
       if (sinceCorner < 8) cornerGoals++;
+      if (sinceFreeKick < 8) freeKickGoals++;
       lastGoals = goals;
     }
     if (s.phase === 'playing' && !s.restart) {
@@ -171,6 +208,17 @@ function playMatch(difficulty: Difficulty, seed: number): MatchResult {
     duelWins: [a.duelWins + b.duelWins, a.duelWinsHuman + b.duelWinsHuman],
     carrySeconds: carry,
     humanCarries,
+    fouls: counts['foul'] ?? 0,
+    freeKicks: counts['free-kick'] ?? 0,
+    penalties: (counts['penalty'] ?? 0) - shootoutKicks,
+    penaltyGoals,
+    yellows: counts['yellow-card'] ?? 0,
+    reds: counts['red-card'] ?? 0,
+    shootouts: counts['shootout'] ?? 0,
+    shootoutKicks,
+    shootoutGoals,
+    extraTimes: counts['extra-time'] ?? 0,
+    freeKickGoals,
   };
 }
 
@@ -224,6 +272,20 @@ for (const d of difficulties) {
     longestStillSeconds: Math.max(...rs.map((r) => r.longestStill)),
     quickGoalsPerMatch: avg(rs.map((r) => r.quickGoals)),
     playSecondsPerMatch: avg(rs.map((r) => r.playSeconds)),
+    foulsPerMatch: avg(rs.map((r) => r.fouls)),
+    foulsMin: Math.min(...rs.map((r) => r.fouls)),
+    foulsMax: Math.max(...rs.map((r) => r.fouls)),
+    pctFoulsInTarget: (100 * rs.filter((r) => r.fouls >= FOUL_TARGET[0] && r.fouls <= FOUL_TARGET[1]).length) / MATCHES,
+    freeKicksPerMatch: avg(rs.map((r) => r.freeKicks)),
+    goalsFromFreeKicks: avg(rs.map((r) => r.freeKickGoals)),
+    penaltiesPerMatch: avg(rs.map((r) => r.penalties)),
+    penaltyConversion: sum(rs.map((r) => r.penalties)) ? sum(rs.map((r) => r.penaltyGoals)) / sum(rs.map((r) => r.penalties)) : 0,
+    yellowsPerMatch: avg(rs.map((r) => r.yellows)),
+    redsPerMatch: avg(rs.map((r) => r.reds)),
+    pctShootouts: (100 * sum(rs.map((r) => r.shootouts))) / MATCHES,
+    shootoutConversion: sum(rs.map((r) => r.shootoutKicks)) ? sum(rs.map((r) => r.shootoutGoals)) / sum(rs.map((r) => r.shootoutKicks)) : 0,
+    shootoutKicksPerShootout: sum(rs.map((r) => r.shootouts)) ? sum(rs.map((r) => r.shootoutKicks)) / sum(rs.map((r) => r.shootouts)) : 0,
+    pctExtraTime: (100 * sum(rs.map((r) => r.extraTimes))) / MATCHES,
     homeGoalsPerMatch: avg(rs.map((r) => r.goals[0])),
     awayGoalsPerMatch: avg(rs.map((r) => r.goals[1])),
     duels: [0, 1].map((k) => {
@@ -247,6 +309,8 @@ for (const d of difficulties) {
   console.log(`out of play        ${f1(out.outOfPlayPerMatch)}/match (throw-ins ${f1(out.throwIns)}, goal kicks ${f1(out.goalKicks)}, corners ${f1(out.corners)})`);
   console.log(`corners            ${f1(out.corners)}/match (min ${out.cornersMin}, max ${out.cornersMax}; ${f1(out.pctCornersInTarget)}% of matches in ${CORNER_TARGET[0]}-${CORNER_TARGET[1]})   goal kicks ${f1(out.goalKicks)}/match   goals within 8 s of a corner ${f2(out.goalsFromCorners)}/match`);
   console.log(`passes / tackles   ${f1(out.passesPerMatch)} / ${f1(out.tacklesPerMatch)}   own goals ${f2(out.ownGoalsPerMatch)}`);
+  console.log(`fouls (${RULES.fouls})     ${f2(out.foulsPerMatch)}/match (min ${out.foulsMin}, max ${out.foulsMax}; ${f1(out.pctFoulsInTarget)}% of matches in ${FOUL_TARGET[0]}-${FOUL_TARGET[1]})   free kicks ${f2(out.freeKicksPerMatch)} (goals within 8 s ${f2(out.goalsFromFreeKicks)})   penalties ${f2(out.penaltiesPerMatch)} (${f1(out.penaltyConversion * 100)}% scored)`);
+  console.log(`cards (${RULES.cards ? 'on' : 'off'})        yellow ${f2(out.yellowsPerMatch)}/match   red ${f2(out.redsPerMatch)}/match   draws (${RULES.draws}): extra time ${f1(out.pctExtraTime)}%, shoot-outs ${f1(out.pctShootouts)}% of matches (${f1(out.shootoutKicksPerShootout)} kicks each, ${f1(out.shootoutConversion * 100)}% scored)`);
   console.log(`stuck ball (>${STUCK_SECONDS}s within ${STUCK_RADIUS}px)  ${f2(out.stuckEpisodesPerMatch)}/match, ${out.matchesWithStuck}/${MATCHES} matches affected, longest ${f1(out.longestStillSeconds)}s`);
   const bad = rs.filter((r) => r.stuckEpisodes > 0);
   if (bad.length) console.log(`  stuck in seeds: ${bad.map((r) => `${r.seed} (${f1(r.longestStill)}s)`).join(', ')}  -- reproduce with --seed ${SEED} --matches ${MATCHES}`);

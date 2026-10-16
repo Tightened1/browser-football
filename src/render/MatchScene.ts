@@ -9,6 +9,7 @@ import {
   LINE_THICKNESS,
   PENALTY_BOX_HEIGHT,
   PENALTY_BOX_WIDTH,
+  PENALTY_SPOT_DISTANCE,
   PITCH_HEIGHT,
   PITCH_MARGIN,
   PITCH_STRIPES,
@@ -19,7 +20,6 @@ import {
   DEBUG_CLICK_KICK,
   DEBUG_KICK_SPEED,
   POST_RADIUS,
-  SHOT_MAX_CHARGE_TIME,
   AIM_LINE_ALPHA,
   AIM_LINE_COLOR,
 
@@ -55,7 +55,7 @@ import { randomOpponent, type Look } from '../teams';
 import { setTeamLooks, teamStyle } from './teamStyle';
 import { roleOf } from '../sim/ai';
 import { lastTouchText } from '../matchStats';
-import { pendingHeldRestart, restartAim } from '../sim/setpiece';
+import { heldAim, heldChargeTime, pendingHeldRestart } from '../sim/setpiece';
 import { assistAim, attackedGoalX, inShootingRange, yAtGoalLine } from '../sim/shooting';
 import type { Difficulty, GameState, InputFrame, MatchEvent, MatchRules, MatchStats, PlayerState, TeamId, Vec2 } from '../sim/types';
 import { GuestLobby, GuestMatch } from '../net/client';
@@ -292,6 +292,11 @@ export class MatchScene extends Phaser.Scene {
     return this.driver.online;
   }
 
+  /** The team the local player controls (null when spectating AI vs AI), for the HUD's penalty hints. */
+  localTeam(): TeamId | null {
+    return this.aiVsAi ? null : this.humanTeam;
+  }
+
   /** Connection trouble / match ended online (drawn by the HUD), or null. */
   netOverlay(): NetOverlay | null {
     return this.driver.overlay(performance.now());
@@ -428,7 +433,10 @@ export class MatchScene extends Phaser.Scene {
   private onEvent(e: MatchEvent, state: GameState): void {
     const id = eventSound(e);
     if (id) sound.playId(id);
-    if (e.type !== 'goal') return;
+    // A shoot-out goal (T19) is cheered like a goal, though the score doesn't change. (In a match, the goal event does it.)
+    const shootoutGoal = e.type === 'penalty-result' && e.scored && !!state.shootout;
+    if (shootoutGoal) sound.playId('goal');
+    if (e.type !== 'goal' && !shootoutGoal) return;
     // GOAL!: the net bulges, confetti flies, and a light shake and zoom punch.
     const { x, y } = state.ball.pos;
     this.effects.ripple(x, y, 1);
@@ -601,19 +609,20 @@ export class MatchScene extends Phaser.Scene {
   }
 
   /**
-   * Your set piece (throw-in, corner, kickoff): an arrow from the ball where it will go, from your move keys and clamped
-   * into the pitch as the sim will (sim/setpiece.ts), longer as a long throw / shot charges.
+   * Your set piece (throw-in, corner, kickoff, free kick, penalty): an arrow from the ball where it will go, from your
+   * move keys and clamped into the pitch (a penalty: left / centre / right of the goal) as the sim will
+   * (sim/setpiece.ts), longer as a long throw / shot charges.
    */
   private drawRestartAim(g: Phaser.GameObjects.Graphics, state: GameState): void {
     const r = state.restart;
     if (this.aiVsAi || !r || r.team !== this.humanTeam || r.taker < 0 || r.taker !== state.controlled[this.humanTeam]) return;
     const taker = state.players[r.taker];
-    const aim = restartAim(r, this.lastInput, taker.facing);
+    const aim = heldAim(state, r, this.lastInput, taker.facing);
     const fx = Math.cos(aim);
     const fy = Math.sin(aim);
     const { x, y } = r.pos;
     const start = state.ball.radius + 6;
-    const len = start + SET_PIECE_ARROW_LENGTH * (1 + Math.min(1, taker.charge / SHOT_MAX_CHARGE_TIME));
+    const len = start + SET_PIECE_ARROW_LENGTH * (1 + Math.min(1, taker.charge / heldChargeTime(state, r.type)));
     g.lineStyle(4, SET_PIECE_ARROW_COLOR, 0.85);
     g.lineBetween(x + fx * start, y + fy * start, x + fx * (len - 10), y + fy * (len - 10));
     g.fillStyle(SET_PIECE_ARROW_COLOR, 0.85);
@@ -717,8 +726,9 @@ export class MatchScene extends Phaser.Scene {
     if (p.charge > 0) {
       const w = 36;
       const h = 6;
-      // (A long throw charges like the Classic shot; a shot takes the rules' charge time.)
-      const full = pendingHeldRestart(this.driver.state)?.taker === p.id ? SHOT_MAX_CHARGE_TIME : this.driver.state.rules.shotChargeTime;
+      // (A long throw or cross charges like the Classic shot; a shot, free kick or penalty takes the rules' charge time.)
+      const held = pendingHeldRestart(this.driver.state);
+      const full = held?.taker === p.id ? heldChargeTime(this.driver.state, held.type) : this.driver.state.rules.shotChargeTime;
       const frac = Math.min(1, p.charge / full);
       const bx = x - w / 2;
       const by = y + p.radius + 6;
@@ -773,7 +783,7 @@ export class MatchScene extends Phaser.Scene {
     const boxTop = midY - PENALTY_BOX_HEIGHT / 2;
     g.strokeRect(left, boxTop, PENALTY_BOX_WIDTH, PENALTY_BOX_HEIGHT);
     g.strokeRect(right - PENALTY_BOX_WIDTH, boxTop, PENALTY_BOX_WIDTH, PENALTY_BOX_HEIGHT);
-    const spot = PENALTY_BOX_WIDTH * 0.7;
+    const spot = PENALTY_SPOT_DISTANCE;
     g.fillCircle(left + spot, midY, 4);
     g.fillCircle(right - spot, midY, 4);
     const arc = 55;

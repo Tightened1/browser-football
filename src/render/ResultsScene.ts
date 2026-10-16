@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH } from '../config';
 import { formatTime, possessionPercent } from '../matchStats';
-import type { GoalRecord, MatchStats } from '../sim/types';
+import { shootoutTally } from '../sim/fouls';
+import type { GameState, GoalRecord, MatchStats, ShootoutRecord, TeamId } from '../sim/types';
 import type { MatchScene } from './MatchScene';
 import { readableColor, teamStyle } from './teamStyle';
 import { button, Focus, label, UI_COLORS, type Button } from './ui';
@@ -55,10 +56,9 @@ export class ResultsScene extends Phaser.Scene {
   update(): void {
     const state = this.match.getState();
     this.score.setText(`${teamStyle(0).name} ${state.score[0]} – ${state.score[1]} ${teamStyle(1).name}`);
-    const [a, b] = state.score;
-    this.verdict.setText(a === b ? 'It ends in a draw' : `${teamStyle(a > b ? 0 : 1).name} win!`);
-
     const stats = this.match.stats();
+    this.verdict.setText(verdictText(state, stats?.shootout ?? state.shootout));
+
     // The stats object is a fresh copy every tick, so compare what is in it.
     const key = stats ? JSON.stringify(stats) : '';
     if (key !== this.drawnKey) {
@@ -95,23 +95,61 @@ export class ResultsScene extends Phaser.Scene {
       return;
     }
     const [ph, pa] = possessionPercent(stats.possession);
-    row(335, String(stats.shots[0]), 'Shots', String(stats.shots[1]));
-    row(380, `${ph}%`, 'Possession', `${pa}%`);
+    const perTeam = (f: (t: TeamId) => string): [string, string] => [f(0), f(1)];
+    const lines: { mid: string; vals: [string, string] }[] = [
+      { mid: 'Shots', vals: [String(stats.shots[0]), String(stats.shots[1])] },
+      { mid: 'Possession', vals: [`${ph}%`, `${pa}%`] },
+      { mid: 'Fouls', vals: [String(stats.fouls[0]), String(stats.fouls[1])] },
+    ];
+    if (stats.cards.length) lines.push({ mid: 'Cards', vals: perTeam((t) => cardsText(stats, t)) });
+    if (stats.penalties.length) lines.push({ mid: 'Penalties scored', vals: perTeam((t) => penaltiesText(stats, t)) });
+    if (stats.shootout) {
+      const { goals, taken } = shootoutTally(stats.shootout);
+      lines.push({ mid: 'Shoot-out', vals: perTeam((t) => `${goals[t]}/${taken[t]}`) });
+    }
+    lines.forEach((l, i) => row(322 + i * 34, l.vals[0], l.mid, l.vals[1]));
 
-    add(label(this, CX, 440, 22, UI_COLORS.warn, true).setText('GOALS'));
+    const goalsY = 322 + lines.length * 34 + 18;
+    add(label(this, CX, goalsY, 22, UI_COLORS.warn, true).setText('GOALS'));
     if (stats.goals.length === 0) {
-      add(label(this, CX, 490, 20, UI_COLORS.muted).setText('No goals'));
+      add(label(this, CX, goalsY + 40, 20, UI_COLORS.muted).setText('No goals'));
       return;
     }
-    // Up to 8 goals are listed, one per line, oldest first (the rest are summarised).
-    const shown = stats.goals.slice(0, 8);
+    // As many goals as fit are listed, one per line, oldest first (the rest are summarised).
+    const shown = stats.goals.slice(0, Math.max(3, Math.floor((660 - goalsY) / 25) - 1));
     shown.forEach((g: GoalRecord, i: number) => {
-      const y = 478 + i * 25;
+      const y = goalsY + 36 + i * 25;
       const time = formatTime((g.half - 1) * halfLength + g.clock);
       const who = g.player >= 0 ? ` · #${(g.player % 5) + 1}` : '';
       const text = `${time}  ${teamStyle(g.team).name}${who}${g.ownGoal ? ' (own goal)' : ''}`;
       add(label(this, CX, y, 19, hex(readableColor(g.team))).setText(text).setStroke('#000000', 3));
     });
-    if (stats.goals.length > shown.length) add(label(this, CX, 478 + shown.length * 25, 17, UI_COLORS.muted).setText(`…and ${stats.goals.length - shown.length} more`));
+    if (stats.goals.length > shown.length) add(label(this, CX, goalsY + 36 + shown.length * 25, 17, UI_COLORS.muted).setText(`…and ${stats.goals.length - shown.length} more`));
   }
+}
+
+/** "Home win!", "It ends in a draw", or, after a shoot-out, "Home win 4–3 on penalties". */
+export function verdictText(state: Pick<GameState, 'score'>, shootout: ShootoutRecord | null | undefined): string {
+  const [a, b] = state.score;
+  if (a !== b) return `${teamStyle(a > b ? 0 : 1).name} win!`;
+  if (shootout && shootout.winner >= 0) {
+    const { goals } = shootoutTally(shootout);
+    const w = shootout.winner as TeamId;
+    return `${teamStyle(w).name} win ${goals[w]}–${goals[1 - w]} on penalties`;
+  }
+  return 'It ends in a draw';
+}
+
+/** "1 yellow, 1 red" for a team, or "–". */
+function cardsText(stats: MatchStats, team: TeamId): string {
+  const y = stats.cards.filter((c) => c.team === team && c.card === 'yellow').length;
+  const r = stats.cards.filter((c) => c.team === team && c.card === 'red').length;
+  const parts = [y ? `${y} yellow` : '', r ? `${r} red` : ''].filter(Boolean);
+  return parts.length ? parts.join(', ') : '–';
+}
+
+/** "1/2" penalties scored of taken, or "–". */
+function penaltiesText(stats: MatchStats, team: TeamId): string {
+  const taken = stats.penalties.filter((p) => p.team === team);
+  return taken.length ? `${taken.filter((p) => p.scored).length}/${taken.length}` : '–';
 }

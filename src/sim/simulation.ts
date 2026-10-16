@@ -20,6 +20,7 @@ import {
   PLAYER_PLAYER_RESTITUTION,
   KICK_BUFFER_TIME,
   KICK_FLASH_TIME,
+  KICK_AGE_MAX,
   KICK_PLAYER_VEL_FACTOR,
   KICK_REACH,
   KICK_TOUCH_LOCKOUT,
@@ -80,13 +81,14 @@ import {
   takePossession,
   updatePossession,
 } from './dribble';
-import { isFrozen, updateRules } from './rules';
-import { pendingHeldRestart, restartAim, takeHeldRestart } from './setpiece';
+import { awardFoul, isFrozen, updateRules } from './rules';
+import { detectFoul } from './fouls';
+import { pendingHeldRestart, pendingPenalty, restartAim, takeHeldRestart } from './setpiece';
 import { CLASSIC_RULES, copyRules } from './matchRules';
 import { assistAim, curlBall, finesseShot, shotSpeed } from './shooting';
 import { defendingProfile } from './matchRules';
 import type { Boundary } from './physics';
-import type { BallState, Difficulty, GameState, InputFrame, MatchPhase, MatchRules, PlayerRole, PlayerState, TeamId } from './types';
+import type { BallState, Difficulty, GameState, InputFrame, MatchPhase, MatchRules, MatchStats, PlayerRole, PlayerState, TeamId } from './types';
 
 export { shotSpeed };
 
@@ -144,6 +146,15 @@ export function createPlayer(
     shielding: false,
     feintTimer: 0,
     feintCooldown: 0,
+    slideBall: false,
+    slideJudged: false,
+    slideVictim: -1,
+    slideContactTick: 0,
+    slideSpotX: 0,
+    slideSpotY: 0,
+    kickAge: KICK_AGE_MAX,
+    yellow: 0,
+    sentOff: false,
   };
 }
 
@@ -216,7 +227,9 @@ export function createInitialState(options: MatchOptions = {}): GameState {
     grace: null,
     events: [],
     nextEventId: 1,
-    stats: { shots: [0, 0], possession: [0, 0], goals: [] },
+    stats: { shots: [0, 0], possession: [0, 0], goals: [], fouls: [0, 0], cards: [], penalties: [], shootout: null },
+    penalty: null,
+    shootout: null,
   };
 }
 
@@ -249,11 +262,25 @@ export function cloneState(s: GameState): GameState {
     score: [s.score[0], s.score[1]],
     kickoffTeam: s.kickoffTeam,
     firstKickoffTeam: s.firstKickoffTeam,
-    restart: s.restart ? { ...s.restart, pos: { ...s.restart.pos } } : null,
+    restart: s.restart ? { ...s.restart, pos: { ...s.restart.pos }, wall: s.restart.wall ? [...s.restart.wall] : undefined } : null,
     grace: s.grace ? { ...s.grace, pos: { ...s.grace.pos } } : null,
     events: s.events.map((e) => ({ ...e, score: [e.score[0], e.score[1]] as [number, number] })),
     nextEventId: s.nextEventId,
-    stats: { shots: [s.stats.shots[0], s.stats.shots[1]], possession: [s.stats.possession[0], s.stats.possession[1]], goals: s.stats.goals.map((g) => ({ ...g })) },
+    stats: cloneStats(s.stats),
+    penalty: s.penalty ? { ...s.penalty } : null,
+    shootout: s.shootout ? { ...s.shootout, kicks: [...s.shootout.kicks] } : null,
+  };
+}
+
+export function cloneStats(st: MatchStats): MatchStats {
+  return {
+    shots: [st.shots[0], st.shots[1]],
+    possession: [st.possession[0], st.possession[1]],
+    goals: st.goals.map((g) => ({ ...g })),
+    fouls: [st.fouls[0], st.fouls[1]],
+    cards: st.cards.map((c) => ({ ...c })),
+    penalties: st.penalties.map((x) => ({ ...x })),
+    shootout: st.shootout ? { ...st.shootout, kicks: [...st.shootout.kicks] } : null,
   };
 }
 
@@ -304,6 +331,9 @@ function maybeStartTackle(state: GameState, p: PlayerState, input: InputFrame, h
   const c = held ? state.players[held.player] : null;
   const atHuman = !!c && c.team !== p.team && !!humanDriven[c.id];
   const windup = p.role !== 'keeper' && !humanDriven[p.id] && atHuman ? defendingProfile(state.rules, true).windup : 0;
+  p.slideBall = false; // a new slide, for the referee (T19)
+  p.slideJudged = false;
+  p.slideVictim = -1;
   if (windup > 0) p.windup = windup;
   else p.tackleTimer = TACKLE_DURATION;
   p.tackleCooldown = (p.role === 'keeper' ? KEEPER_DIVE_COOLDOWN : TACKLE_COOLDOWN) + windup;
@@ -338,6 +368,7 @@ export function updatePlayer(p: PlayerState, input: InputFrame, dt: number, carr
   p.standCooldown = Math.max(0, p.standCooldown - dt);
   p.feintTimer = Math.max(0, p.feintTimer - dt);
   p.feintCooldown = Math.max(0, p.feintCooldown - dt);
+  p.kickAge = Math.min(KICK_AGE_MAX, p.kickAge + dt);
   if (p.windup > 0) {
     p.windup = Math.max(0, p.windup - dt);
     if (p.windup === 0) p.tackleTimer = TACKLE_DURATION; // wound up: the slide goes, the way it was aimed
@@ -385,6 +416,7 @@ function kickBall(state: GameState, p: PlayerState, speed: number, aim: number, 
   p.touchTimer = KICK_TOUCH_LOCKOUT;
   p.kickFlash = KICK_FLASH_TIME;
   p.kickQueue = 0;
+  p.kickAge = 0;
 }
 
 /**
@@ -428,6 +460,7 @@ function interactWithBall(state: GameState, p: PlayerState, input: InputFrame, d
       ky /= kl;
       ball.vel.x = kx * TACKLE_KNOCK_SPEED;
       ball.vel.y = ky * TACKLE_KNOCK_SPEED;
+      p.slideBall = true; // got the ball first (T19)
       p.touchTimer = KICK_TOUCH_LOCKOUT;
       p.tackleCooldown = Math.min(p.tackleCooldown, TACKLE_HIT_COOLDOWN); // a slide that wins the ball is forgiven
       result.touched = true;
@@ -514,8 +547,9 @@ function parriedWide(state: GameState, ball: BallState, dir: number): boolean {
   return Math.abs(y - (PITCH_TOP + PITCH_HEIGHT / 2)) > state.rules.goalWidth / 2 + KEEPER_PARRY_WIDE_MARGIN;
 }
 
-/** Soft pushing: separate overlapping players (no overlap afterwards) and exchange a little momentum. */
-function resolvePlayerCollisions(players: PlayerState[], boundary: Boundary): void {
+/** Soft pushing: separate overlapping players (no overlap afterwards) and exchange a little momentum. (Not sent-off ones: they are off the pitch.) */
+function resolvePlayerCollisions(all: PlayerState[], boundary: Boundary): void {
+  const players = all.filter((p) => !p.sentOff);
   for (let iter = 0; iter < COLLISION_ITERATIONS; iter++) {
     for (let i = 0; i < players.length; i++) {
       for (let j = i + 1; j < players.length; j++) {
@@ -524,6 +558,26 @@ function resolvePlayerCollisions(players: PlayerState[], boundary: Boundary): vo
     }
     for (const p of players) collideWithBoundary(p, boundary, 1, 0);
   }
+}
+
+/**
+ * At a penalty (T19) everyone but the taker and the keeper facing it waits where they were put, still; in a shoot-out
+ * the taker waits too once the kick is struck, and between kicks everyone does.
+ */
+function waitsAtPenalty(state: GameState, p: PlayerState): boolean {
+  const r = pendingPenalty(state);
+  if (state.phase !== 'shootout') return !!r && p.id !== r.taker && !(p.role === 'keeper' && p.team !== r.team);
+  const team = r ? r.team : state.penalty ? state.penalty.team : -1;
+  if (team < 0) return true;
+  if (r && p.id === r.taker) return false;
+  return !(p.role === 'keeper' && p.team !== team);
+}
+
+/** Before a penalty is struck the keeper stays on its line: it may only dive (move + tackle), not walk. */
+function keeperOnLine(state: GameState, p: PlayerState, input: InputFrame): InputFrame {
+  const r = pendingPenalty(state);
+  if (!r || p.role !== 'keeper' || p.team === r.team || p.tackleTimer > 0) return input;
+  return input.tackle && !p.prevTackle ? input : { ...input, moveX: 0, moveY: 0 };
 }
 
 /** inputs[team] is that team's human input; teams without one (or players not controlled) use the AI. */
@@ -538,7 +592,8 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
     return next;
   }
 
-  applySwitching(next, inputs);
+  // (No switching away from a penalty taker or keeper while a penalty is on.)
+  if (!pendingPenalty(next) && !next.penalty && next.phase !== 'shootout') applySwitching(next, inputs);
   // The AI produces InputFrames like a human would; a controlled player with no human input this tick is AI-driven.
   const human: [boolean, boolean] = [next.controlled[0] >= 0 && !!inputs[0], next.controlled[1] >= 0 && !!inputs[1]];
   const ai = computeAiInputs(next, human, dt);
@@ -551,10 +606,23 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   if (state.tick % 2 === 1) order.reverse();
   for (const i of order) {
     const p = next.players[i];
-    const input = used[i];
+    const input = keeperOnLine(next, p, used[i]);
+    if (p.sentOff || waitsAtPenalty(next, p)) {
+      // Off the pitch (sent off), or waiting for a penalty to be taken (T19).
+      p.vel = { x: 0, y: 0 };
+      p.prevPass = input.pass;
+      p.prevShoot = input.shoot;
+      p.prevTackle = input.tackle;
+      p.prevFeint = !!input.feint;
+      continue;
+    }
     if (pendingHeldRestart(next)?.taker === p.id) {
-      // A throw-in is thrown and a corner crossed, not dribbled: the taker stands still, aims and plays it (sim/setpiece.ts).
-      if (takeHeldRestart(next, p, input, dt)) next.lastTouch = { team: p.team, player: p.id };
+      // A throw-in is thrown, a corner crossed and a free kick or penalty struck, not dribbled: the taker stands still,
+      // aims and plays it (sim/setpiece.ts).
+      const played = takeHeldRestart(next, p, input, dt);
+      if (played !== 'none') next.lastTouch = { team: p.team, player: p.id };
+      // (A shoot-out kick is not a match shot.)
+      if (played === 'shot' && next.phase === 'playing' && countsAsShot(p, next.attackDir[p.team])) next.stats.shots[p.team] += 1;
       p.prevPass = input.pass;
       p.prevShoot = input.shoot;
       p.prevTackle = input.tackle;
@@ -578,6 +646,9 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
     p.prevTackle = input.tackle;
     p.prevFeint = !!input.feint;
   }
+  // The referee (T19): a slide into the player before the ball or from behind, or a clearly late challenge, is a foul.
+  const foul = detectFoul(next);
+  if (foul) awardFoul(next, foul);
   resolvePlayerCollisions(next.players, playerBoundary(next.rules));
   // Sticky dribbling: body checks, taking control of a loose ball, and steering the held ball to its spot.
   updatePossession(next, humanDriven);
@@ -590,7 +661,7 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
   if (held) {
     ball.pos = { ...held.pos };
     ball.vel = { x: 0, y: 0 };
-    for (const p of next.players) if (p.id !== held.taker) collideCircles(p, ball, 0, 1, 0);
+    for (const p of next.players) if (p.id !== held.taker && !p.sentOff) collideCircles(p, ball, 0, 1, 0);
     updateTouches(next);
     next.tick = state.tick + 1;
     updateRules(next, dt);
@@ -609,7 +680,7 @@ export function step(state: GameState, inputs: readonly (InputFrame | undefined)
     moveCircle(ball, subDt);
     for (const p of next.players) {
       // The carrier's own body doesn't push the ball it holds, and a ball just kicked passes through the kicker.
-      if (next.possession?.player === p.id || p.kickFlash > 0) continue;
+      if (next.possession?.player === p.id || p.kickFlash > 0 || p.sentOff) continue;
       if (p.role === 'keeper') {
         // Keepers block: nearly dead bounce, barely moved by the ball, and the ball always leaves the goal.
         // Sticky: in the box a keeper catches what it can hold instead.
