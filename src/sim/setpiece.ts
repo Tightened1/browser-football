@@ -103,14 +103,15 @@ export function restartAim(r: Restart, input: Pick<InputFrame, 'moveX' | 'moveY'
 
 /**
  * A penalty's aim (T19): left, centre or right of the goal it is taken at, from the part of the move keys across the
- * goal (else from the facing, which keeps the last aim). A placed kick (pass) goes PENALTY_PLACED_INSET px inside the
+ * goal (else from the facing, which keeps the last aim); with an analogue stick (T20) anywhere between. A placed kick (pass) goes PENALTY_PLACED_INSET px inside the
  * post, a power kick (shoot) PENALTY_AIM_INSET px.
  */
 export function penaltyAim(r: Pick<Restart, 'pos'>, input: Pick<InputFrame, 'moveX' | 'moveY'>, facing: number, goalWidth: number, placed = false): number {
   const goalX = r.pos.x < MID_X ? PITCH_LEFT : PITCH_RIGHT;
   const ml = Math.hypot(input.moveX, input.moveY);
   const across = ml > 1e-6 ? input.moveY / ml : Math.sin(facing);
-  const side = across > 0.3 ? 1 : across < -0.3 ? -1 : 0;
+  // Keys give -1 / 0 / 1 (a diagonal is as good as straight up or down); an analogue stick places the kick anywhere between.
+  const side = Math.sign(across) * Math.min(1, Math.max(0, (Math.abs(across) - 0.3) / 0.4));
   const y = MID_Y + side * (goalWidth / 2 - (placed ? PENALTY_PLACED_INSET : PENALTY_AIM_INSET));
   return Math.atan2(y - r.pos.y, goalX - r.pos.x);
 }

@@ -20,7 +20,7 @@ export const PAD_ACTIONS: readonly { id: PadActionId; label: string }[] = [
   { id: 'switch', label: 'Switch player' },
 ];
 
-export const DEFAULT_PAD_BINDINGS: PadBindings = { pass: PAD.A, shoot: PAD.X, tackle: PAD.B, sprint: PAD.RT, shield: PAD.LT, switch: PAD.LB };
+export const DEFAULT_PAD_BINDINGS: PadBindings = { pass: PAD.A, shoot: PAD.B, tackle: PAD.X, sprint: PAD.RT, shield: PAD.LT, switch: PAD.LB };
 
 /** The buttons an action can be bound to. RB (quick chat), Back / Start and the d-pad keep their jobs. */
 export const PAD_BINDABLE: readonly number[] = [PAD.A, PAD.B, PAD.X, PAD.Y, PAD.LB, PAD.LT, PAD.RT, PAD.L3, PAD.R3];

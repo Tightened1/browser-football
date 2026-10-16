@@ -26,6 +26,7 @@ import {
 } from '../src/input/gamepad';
 import { decodeInputs, encodeInputs, quantizeInput } from '../src/net/snapshot';
 import { defaultSettings, sanitizeSettings } from '../src/settings';
+import { penaltyAim } from '../src/sim/setpiece';
 import { createMatchState, NEUTRAL_INPUT, step } from '../src/sim/simulation';
 
 function snap(opts: { axes?: number[]; down?: number[]; values?: Record<number, number> } = {}): PadSnapshot {
@@ -76,8 +77,8 @@ describe('buttons and triggers', () => {
   it('maps the default layout', () => {
     const f = (b: number): ReturnType<typeof padFrame> => padFrame(snap({ down: [b] }), DEFAULT_PAD_CONFIG, 0);
     expect(f(PAD.A).pass).toBe(true);
-    expect(f(PAD.X).shoot).toBe(true);
-    expect(f(PAD.B).tackle).toBe(true);
+    expect(f(PAD.B).shoot).toBe(true);
+    expect(f(PAD.X).tackle).toBe(true);
     expect(f(PAD.LB).switchPlayer).toBe(true);
     expect(f(PAD.Y)).toEqual({ ...NEUTRAL_INPUT, seq: 0 });
     expect(padFrame(snap(), DEFAULT_PAD_CONFIG, 7)).toEqual({ ...NEUTRAL_INPUT, seq: 7 });
@@ -184,8 +185,8 @@ describe('rebinding', () => {
   });
 
   it('swaps with the action that had the button, so no action is left without one', () => {
-    const r = rebindPad(DEFAULT_PAD_BINDINGS, 'pass', PAD.X); // shoot has X
-    expect(r.bindings.pass).toBe(PAD.X);
+    const r = rebindPad(DEFAULT_PAD_BINDINGS, 'pass', PAD.B); // shoot has B
+    expect(r.bindings.pass).toBe(PAD.B);
     expect(r.bindings.shoot).toBe(PAD.A);
     expect(new Set(Object.values(r.bindings)).size).toBe(6);
   });
@@ -198,12 +199,12 @@ describe('rebinding', () => {
     const b = rebindPad(DEFAULT_PAD_BINDINGS, 'tackle', PAD.Y).bindings;
     const cfg = { ...DEFAULT_PAD_CONFIG, bindings: b };
     expect(padFrame(snap({ down: [PAD.Y] }), cfg, 0).tackle).toBe(true);
-    expect(padFrame(snap({ down: [PAD.B] }), cfg, 0).tackle).toBe(false);
+    expect(padFrame(snap({ down: [PAD.X] }), cfg, 0).tackle).toBe(false);
   });
 
   it('stored settings: damaged or duplicate bindings fall back, valid ones and the numbers are kept', () => {
     expect(sanitizePadBindings({ ...DEFAULT_PAD_BINDINGS, pass: PAD.START })).toEqual(DEFAULT_PAD_BINDINGS);
-    expect(sanitizePadBindings({ ...DEFAULT_PAD_BINDINGS, pass: PAD.X })).toEqual(DEFAULT_PAD_BINDINGS); // X is shoot's too
+    expect(sanitizePadBindings({ ...DEFAULT_PAD_BINDINGS, pass: PAD.B })).toEqual(DEFAULT_PAD_BINDINGS); // B is shoot's too
     expect(sanitizePadBindings('x')).toEqual(DEFAULT_PAD_BINDINGS);
     const s = sanitizeSettings({ padBindings: { ...DEFAULT_PAD_BINDINGS, pass: PAD.Y, shield: PAD.L3 }, padDeadZone: 0.3, padTrigger: 0.5, rumble: false });
     expect(s.padBindings).toMatchObject({ pass: PAD.Y, shield: PAD.L3 });
@@ -263,5 +264,20 @@ describe('analogue movement online', () => {
     expect(walk(decoded, 120)).toBe(walk(quantizeInput(f), 120));
     // And within a hair of the un-quantised stick (1/127 of rounding).
     expect(Math.abs(walk(decoded, 120) - walk(f, 120))).toBeLessThan(2);
+  });
+});
+
+describe('penalty aim with a stick', () => {
+  const spot = { pos: { x: 1000, y: 400 } };
+  it('keys still give left / centre / right, a stick anything between', () => {
+    const angle = (moveY: number, moveX = 0.5): number => penaltyAim(spot, { moveX, moveY }, 0, 180);
+    const centre = angle(0, 1);
+    const full = angle(-1, 0);
+    expect(angle(-0.707, 0.707)).toBeCloseTo(full, 6); // a diagonal is the full corner, as before
+    const half = angle(-0.5, 0.866); // across = -0.5: about half way
+    expect(half).toBeLessThan(centre);
+    expect(half).toBeGreaterThan(full);
+    expect(angle(-0.2, 0.98)).toBeCloseTo(centre, 6); // inside the dead band: the middle
+    expect(angle(-0.6, 0.8)).toBeLessThan(half); // further across, further to the post
   });
 });

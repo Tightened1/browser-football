@@ -67,8 +67,8 @@ Plug in or pair a controller (any browser "standard" gamepad: Xbox, PlayStation,
 |---|---|---|
 | Move / aim (walk to run by how far you push; set pieces and penalties aim exactly where it points) | Left stick or d-pad | Left stick or d-pad |
 | Pass (tap) | A | ✕ |
-| Shoot (hold to charge, release) / long throw / hard cross | X | □ |
-| Tackle or slide; keeper dive at a penalty (with the stick up / down) | B | ○ |
+| Shoot (hold to charge, release) / long throw / hard cross | B | ○ |
+| Tackle or slide; keeper dive at a penalty (with the stick up / down) | X | □ |
 | Sprint (analogue: counts past the trigger threshold, default 30%) | RT | R2 |
 | Shield the ball | LT | L2 |
 | Switch player | LB | L1 |

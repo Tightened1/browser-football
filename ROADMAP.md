@@ -110,7 +110,7 @@ e2e/                   Playwright two-browser online smoke test (T18); scripts/s
 | Pause menu (offline: pauses; online: the match keeps running) / back | `Esc` |
 | Skip a goal replay (online: for both players) or the full-time highlights | any other key |
 
-**Controller (T20), alongside the keyboard** (Xbox / PlayStation names): left stick or d-pad = move and aim (analogue: stick length scales walk to run; flick twice = feint) · A/✕ pass · X/□ shoot (hold) · B/○ tackle and penalty dive · RT/R2 sprint · LT/L2 shield · LB/L1 switch · RB/R1 + A B X Y (1-4) or d-pad up / down (5-6) quick chat, RB/R1 + View/Share mute · Menu/Options pause · any face button skips a replay. Menus: d-pad / stick, A/✕ choose, B/○ back. Settings → Controller…: rebind, dead zone, trigger threshold, vibration.
+**Controller (T20), alongside the keyboard** (Xbox / PlayStation names): left stick or d-pad = move and aim (analogue: stick length scales walk to run; flick twice = feint) · A/✕ pass · B/○ shoot (hold) · X/□ tackle and penalty dive · RT/R2 sprint · LT/L2 shield · LB/L1 switch · RB/R1 + A B X Y (1-4) or d-pad up / down (5-6) quick chat, RB/R1 + View/Share mute · Menu/Options pause · any face button skips a replay. Menus: d-pad / stick, A/✕ choose, B/○ back. Settings → Controller…: rebind, dead zone, trigger threshold, vibration.
 
 With the ball (sticky dribbling) it stays at your feet; passes and shots go where the move keys point at release, and a kick pressed just before the ball arrives is held for 0.25 s and fires when it does.
 
