@@ -57,7 +57,7 @@ export const CLUBS: readonly Club[] = [
   { name: 'Arsenal', short: 'Arsenal', code: 'ARS',
     kits: [k(0xef0107, 0x7a0a1e, 0xffffff), k(0x0b1a3a, 0xffd400, 0xffd400), k(0xf3e9a8, 0x0b1a3a, 0x0b1a3a)],
     gk: k(0x2e8b57, 0x111111, 0xffffff),
-    players: [p('GK', 'Raya', 1), p('MID', 'Rice', 41), p('MID', 'Ødegaard', 8), p('FWD', 'Saka', 7), p('FWD', 'Gyökeres', 14)] },
+    players: [p('GK', 'Raya', 1), p('DEF', 'Gabriel', 6), p('MID', 'Rice', 41), p('FWD', 'Saka', 7), p('FWD', 'Gyökeres', 14)] },
   { name: 'Aston Villa', short: 'Aston Villa', code: 'AVL',
     kits: [k(0x7a003c, 0x95bfe5, 0x95bfe5), k(0x111111, 0xffd400, 0xffd400), k(0xa9d4f5, 0x7a003c, 0x7a003c)],
     gk: k(0xf28c28, 0x111111, 0x111111),
