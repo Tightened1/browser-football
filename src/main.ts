@@ -18,7 +18,9 @@ import { TeamPickScene } from './render/TeamPickScene';
 sound.attachUnlock();
 
 const game = new Phaser.Game({
-  type: Phaser.AUTO,
+  // The e2e build (T18) draws with the 2D canvas: the CI runner has no GPU, and Chromium's software WebGL there gives
+  // a frame or two a second (two pages at once), against ~5x that with the canvas. Players get WebGL where available.
+  type: import.meta.env.VITE_E2E ? Phaser.CANVAS : Phaser.AUTO,
   parent: 'game',
   width: GAME_WIDTH,
   height: GAME_HEIGHT,

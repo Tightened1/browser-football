@@ -96,7 +96,8 @@ test('host and guest play a synchronised online match', async ({ browser }) => {
   // Same match on both screens: score equal, clock within snapshot/interpolation delay, and the clock moved.
   const host = (await matchState(hostPage))!;
   const guest = (await matchState(guestPage))!;
-  expect(guest.score).toEqual(host.score);
+  // (A goal may have gone in just now: the guest draws the match ~100 ms behind, so give its score a moment to agree.)
+  await expect.poll(async () => (await matchState(guestPage))!.score, { timeout: 10_000 }).toEqual(host.score);
   expect(guest.half).toBe(host.half);
   expect(Math.abs(guest.clock - host.clock)).toBeLessThan(1);
   expect(host.clock).toBeGreaterThan(before.clock + 3);

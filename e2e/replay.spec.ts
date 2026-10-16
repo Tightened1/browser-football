@@ -125,13 +125,13 @@ test('T23: a goal is replayed on both screens, the kickoff waits, and either pla
   for (const page of [hostPage, guestPage]) await waitRp(page, 'rp.highlights !== null');
   for (const page of [hostPage, guestPage]) expect((await rp(page)).highlights.total).toBe(2);
   expect((await rp(hostPage)).highlights.title).toMatch(/^HIGHLIGHTS [12]\/2$/);
-  // Skipping your highlights doesn't skip the other player's: theirs ends later (on their key, or by itself).
+  // Skipping your highlights doesn't skip the other player's (the reel of two goals runs well over ten seconds).
   await hostPage.keyboard.press('KeyK');
   await waitScene(hostPage, 'ResultsScene', 'scene.sys.isActive()', 60_000);
+  expect((await rp(guestPage)).mode).toBe('highlights');
+  expect((await rp(guestPage)).highlightsEndedAt).toBeNull();
   await guestPage.keyboard.press('KeyK');
   await waitScene(guestPage, 'ResultsScene', 'scene.sys.isActive()', 60_000);
-  const [hostEnd, guestEnd] = [(await rp(hostPage)).highlightsEndedAt, (await rp(guestPage)).highlightsEndedAt];
-  expect(guestEnd - hostEnd).toBeGreaterThan(300);
 
   expect(errors).toEqual([]);
   await Promise.all([hostPage.context().close(), guestPage.context().close()]);
