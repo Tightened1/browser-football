@@ -78,10 +78,30 @@ Then open the address Vite prints (usually http://localhost:5173/).
 Other useful commands:
 
 ```bash
-npm test          # run the simulation and network unit tests
+npm test          # run the simulation and network unit tests (more under Tests below)
 npm run build     # type-check and build the site into dist/
 npm run simulate  # play AI-vs-AI matches headlessly and print the stats
 ```
+
+## Tests
+
+Every push and pull request runs these in GitHub Actions (`.github/workflows/deploy.yml`); a push to `main` deploys only if all of them pass.
+
+```bash
+npm test            # Vitest: sim rules, AI, network protocol/snapshot round trips, determinism (~20 s)
+npm run test:sim    # sim regression: 8 fixed-seed AI-vs-AI matches each for Arcade and Classic; fails if an average is outside scripts/simRanges.json (~25 s)
+npm run build       # type-check and build (this is also a CI check)
+npm run test:e2e    # two-browser online smoke test with Playwright (headless Chromium)
+npm run test:all    # all of the above
+```
+
+- **Sim regression ranges** live in one file, [`scripts/simRanges.json`](scripts/simRanges.json): goals, shots, corners, throw-ins, stuck-ball and dead-ball episodes, longest still spell. Each is the allowed range for the average per match. When you change balance on purpose, run `npm run simulate -- --matches 8 --seed 1 --difficulty normal --rules arcade` (and `classic`) and move the ranges. The check prints every stat with `ok` or `FAIL`.
+- **Determinism** (`tests/determinism.test.ts`): the same seed and inputs give an identical final state, and a whole match runs with `Math.random`, `Date.now` and `performance.now` made to throw, so any use of them in `src/sim/` fails the test.
+- **Protocol** (`tests/protocol.test.ts`, `tests/snapshot.test.ts`): one sample of every message type goes through the wire format and back (a new message type without a sample fails to compile); snapshot and input packets round-trip, including through the base64 fallback.
+- **Online smoke test** (`e2e/online.spec.ts`): two browser contexts, host on one and join by room code on the other, start, press keys on both, then check the score and clock match and there are no console errors. First time only: `npx playwright install chromium`. It takes a minute or two on a slow machine, because the pages render in software.
+  - It runs against a **local PeerJS server** (dev dependency `peer`, `scripts/peerServer.mjs`, started by `playwright.config.ts`) rather than the public broker, so CI does not depend on a shared service. The test build is made with `vite build --mode e2e`, which reads [`.env.e2e`](.env.e2e): `VITE_PEER_HOST` / `VITE_PEER_PORT` / `VITE_PEER_PATH` / `VITE_PEER_SECURE` point the game at that server, `VITE_STUN_URLS=` (empty) turns STUN off, and `VITE_E2E=1` exposes `window.__game` for the test. Normal builds ignore all of these and use the public broker. To use another port, change `PEER_PORT` and `VITE_PEER_PORT` together (`E2E_PORT` changes the preview port).
+  - It starts matches by opening the lobby scene directly, so the menu buttons themselves are not clicked.
+  - On failure Playwright keeps a trace in `test-results/` (CI uploads it): `npx playwright show-trace <trace.zip>`.
 
 To test online play on one computer, open two browser windows. Use one as the host and the invite link in the other. The URL option `?lag=50&jitter=10&loss=0.03` simulates a poor connection.
 

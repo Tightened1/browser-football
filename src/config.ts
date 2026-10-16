@@ -616,18 +616,25 @@ export const MAX_EVENTS = 40;
  * then flows directly between them over a WebRTC data channel.
  * ------------------------------------------------------------------------------------------- */
 
-/** Signalling broker: the free public PeerJS cloud server. */
-export const PEER_SERVER = { host: '0.peerjs.com', port: 443, path: '/', secure: true } as const;
+/**
+ * Signalling broker: the free public PeerJS cloud server. For tests only (T18), a build can point at a local
+ * PeerJS server with VITE_PEER_HOST (+ VITE_PEER_PORT, VITE_PEER_PATH, VITE_PEER_SECURE=0|1): see .env.e2e.
+ */
+const peerEnv = import.meta.env ?? {};
+export const PEER_SERVER = peerEnv.VITE_PEER_HOST
+  ? { host: peerEnv.VITE_PEER_HOST, port: Number(peerEnv.VITE_PEER_PORT ?? 9000), path: peerEnv.VITE_PEER_PATH ?? '/', secure: peerEnv.VITE_PEER_SECURE === '1' }
+  : ({ host: '0.peerjs.com', port: 443, path: '/', secure: true } as const);
 /** PeerJS log level in the browser console: 0 none, 1 errors, 2 warnings, 3 everything. */
 export const PEER_DEBUG_LEVEL = 1;
 /** The broker is shared with every other PeerJS app, so our peer IDs get a unique prefix. */
 export const PEER_ID_PREFIX = 'browser-football-';
 
 /** STUN: lets each browser discover its public address, so a direct connection can be made. */
-export const STUN_SERVERS: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-];
+export const STUN_SERVERS: RTCIceServer[] =
+  // Tests only (T18): VITE_STUN_URLS="" means no STUN at all, so two pages on one machine don't wait for the internet.
+  peerEnv.VITE_STUN_URLS !== undefined
+    ? peerEnv.VITE_STUN_URLS.split(',').filter(Boolean).map((urls) => ({ urls }))
+    : [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
 
 /* ===== TURN SERVERS (T08) ======================================================================
  * TURN relays the game data when a direct connection is impossible (strict corporate, school or

@@ -5,6 +5,7 @@
 //                           the AI, to measure how the AI defends against a person (T17); --defending relaxed|normal|tough
 //                           overrides the rules' "AI defending vs humans" setting.
 // Always reports AI tackle duels: how often an AI challenge on a carrier wins the ball, for AI and human carriers.
+import { readFileSync } from 'node:fs';
 import { SIM_DT } from '../src/config';
 import { botInput, createBotMemory, type BotSkill } from './humanBot';
 import { rulesFor } from '../src/sim/matchRules';
@@ -22,6 +23,8 @@ const HALF = Number(opt('half', '180'));
 const which = opt('difficulty', 'all');
 const difficulties: Difficulty[] = which === 'all' ? ['easy', 'normal', 'hard'] : [which as Difficulty];
 const json = args.includes('--json');
+/** --check: compare the averages with scripts/simRanges.json and exit 1 if any is out of range (CI, T18). */
+const CHECK = args.includes('--check');
 const PRESET = opt('rules', 'classic') as RulesPreset;
 const RULES = rulesFor(PRESET);
 const HUMAN = opt('human', '') as BotSkill | '';
@@ -257,3 +260,25 @@ for (const d of difficulties) {
   console.log(`goals within 8s of a kickoff ${f2(out.quickGoalsPerMatch)}/match   open play ${f1(out.playSecondsPerMatch)}s/match   (${f1(out.wallSeconds)}s to simulate)`);
 }
 if (json) console.log(JSON.stringify(report, null, 2));
+
+if (CHECK) {
+  // Ranges live in one file so they are easy to adjust when balance is changed on purpose.
+  const ranges = JSON.parse(readFileSync('scripts/simRanges.json', 'utf8')) as Record<string, unknown>;
+  const wanted = ranges[PRESET] as Record<string, [number, number]> | undefined;
+  if (!wanted) throw new Error(`scripts/simRanges.json has no entry for the "${PRESET}" rules`);
+  let failed = 0;
+  for (const d of difficulties) {
+    const out = report[d] as Record<string, number>;
+    for (const [key, [lo, hi]] of Object.entries(wanted)) {
+      const v = out[key];
+      const ok = typeof v === 'number' && v >= lo && v <= hi;
+      if (!ok) failed++;
+      console.log(`${ok ? 'ok  ' : 'FAIL'} ${PRESET}/${d} ${key} = ${typeof v === 'number' ? v.toFixed(2) : v}  (allowed ${lo} to ${hi})`);
+    }
+  }
+  if (failed) {
+    console.error(`
+Sim regression: ${failed} stat(s) outside the ranges in scripts/simRanges.json. If the change was intentional, adjust them there.`);
+    process.exit(1);
+  }
+}

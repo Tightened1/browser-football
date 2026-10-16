@@ -1,7 +1,7 @@
 {
   "name": "browser-football",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.4.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,13 +10,19 @@
     "test": "vitest run",
     "simulate": "rolldown scripts/simulate.ts --format esm --platform node --file .sim/simulate.mjs && node .sim/simulate.mjs",
     "probe": "rolldown scripts/shotprobe.ts --format esm --platform node --file .sim/shotprobe.mjs && node .sim/shotprobe.mjs",
-    "shoottest": "rolldown scripts/shoottest.ts --format esm --platform node --file .sim/shoottest.mjs && node .sim/shoottest.mjs"
+    "shoottest": "rolldown scripts/shoottest.ts --format esm --platform node --file .sim/shoottest.mjs && node .sim/shoottest.mjs",
+    "test:sim": "rolldown scripts/simulate.ts --format esm --platform node --file .sim/simulate.mjs && node .sim/simulate.mjs --check --matches 8 --seed 1 --difficulty normal --rules arcade && node .sim/simulate.mjs --check --matches 8 --seed 1 --difficulty normal --rules classic",
+    "build:e2e": "tsc --noEmit && vite build --mode e2e --outDir dist-e2e",
+    "test:e2e": "npm run build:e2e && playwright test",
+    "test:all": "npm test && npm run test:sim && npm run test:e2e"
   },
   "dependencies": {
     "peerjs": "^1.5.5",
     "phaser": "^3.90.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "peer": "^1.0.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.3"

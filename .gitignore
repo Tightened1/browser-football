@@ -3,5 +3,9 @@ dist
 *.local
 .DS_Store
 .vscode/*
-!.vscode/extensions.json.env
+!.vscode/extensions.json
+.env
 .sim
+dist-e2e
+test-results
+playwright-report

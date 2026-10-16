@@ -1,21 +1,21 @@
-name: Deploy to GitHub Pages
+name: CI and deploy to GitHub Pages
 
+# Every push and pull request runs the checks; only a push to main that passes them all deploys.
 on:
   push:
-    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  test:
+    name: Unit tests, sim regression, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Vitest: sim, rules, protocol/snapshot round trips, determinism.
       - run: npm test
+      # Fast AI-vs-AI matches (fixed seeds); fails if a stat leaves the ranges in scripts/simRanges.json.
+      - run: npm run test:sim
       - run: npm run build
         env:
           # TURN relay settings (docs/NETWORK_TESTING.md). Repository secrets; unset ones are simply empty.
@@ -33,12 +36,42 @@ jobs:
           VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
           VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
       - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         with:
           path: dist
 
-  deploy:
-    needs: build
+  e2e:
+    name: Two-browser online smoke test
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # Builds the e2e build (local PeerJS broker, see .env.e2e), starts the broker and `vite preview`, runs Playwright.
+      - run: npm run test:e2e
+        env:
+          CI: true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: [test, e2e]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
