@@ -35,6 +35,7 @@ import {
   FX_SHAKE_INTENSITY,
   FX_SHAKE_MS,
   FX_ZOOM_PUNCH,
+  EMOTE_BUBBLE_MS,
   PITCH_LEFT,
   PITCH_RIGHT,
   SHIELD_ARC_COLOR,
@@ -48,11 +49,12 @@ import { crowdExcitement, eventSound, kickPower, scanEvents, BallCueDetector, Ki
 import { sound } from '../audio/sound';
 import { approach, ballLift, cameraTarget, netBox, netGrid, Effects } from './effects';
 import { KeyboardInput } from '../input/keyboard';
-import { controlsSummary, settings } from '../settings';
+import { controlsSummary, settings, updateSettings } from '../settings';
+import { emoteForKey, QUICK_CHAT } from '../social';
 import { ballBoundary, NEUTRAL_INPUT } from '../sim/simulation';
 import { matchRulesSetting } from '../settings';
 import { randomOpponent, type Look } from '../teams';
-import { setTeamLooks, teamStyle } from './teamStyle';
+import { setPlayerNames, setTeamLooks, teamStyle } from './teamStyle';
 import { roleOf } from '../sim/ai';
 import { lastTouchText } from '../matchStats';
 import { heldAim, heldChargeTime, pendingHeldRestart } from '../sim/setpiece';
@@ -62,6 +64,7 @@ import { GuestLobby, GuestMatch } from '../net/client';
 import { HostLobby, HostMatch } from '../net/host';
 import type { MatchDriver, NetOverlay } from '../net/match';
 import type { Lobby } from '../net/peer';
+import { teamOf } from '../net/protocol';
 
 /** How MatchScene is started: offline vs the AI by default; online (from the lobby) with the player's team. */
 export interface MatchSceneData {
@@ -76,6 +79,8 @@ export interface MatchSceneData {
   looks?: [Look, Look];
   /** Match rules (T15; default: from the settings). Online, the host's. */
   rules?: MatchRules;
+  /** The human player's name on each team ('' = none), indexed by team (T21; default: your saved name on your team). */
+  names?: [string, string];
 }
 
 /** How long the final whistle is left alone before the results screen appears. */
@@ -139,6 +144,9 @@ export class MatchScene extends Phaser.Scene {
   private resultsShown = false;
   private fullTimeFor = 0;
   private onlineLabel?: Phaser.GameObjects.Text;
+  /** T21: quick-chat bubbles above each team's controlled player, and whether we are going back to the lobby (keep the connection). */
+  private readonly bubbles: Phaser.GameObjects.Text[] = [];
+  private toLobbyNow = false;
   /** Network debug overlay (toggle with F3): ping, snapshot rate, buffer, loss. */
   private debugNet = false;
   private netText!: Phaser.GameObjects.Text;
@@ -156,6 +164,8 @@ export class MatchScene extends Phaser.Scene {
     this.looks = data.looks ?? [settings.look, randomOpponent(settings.look)];
     this.rules = data.rules ?? matchRulesSetting();
     setTeamLooks(this.looks);
+    setPlayerNames(data.names ?? (this.humanTeam === 0 ? [settings.playerName, ''] : ['', settings.playerName]));
+    this.toLobbyNow = false;
     this.pauseOpen = false;
     this.frozen = false;
     this.resultsShown = false;
@@ -206,6 +216,16 @@ export class MatchScene extends Phaser.Scene {
       this.numberLabels[team] = label;
       world.push(label);
     }
+    this.bubbles.length = 0;
+    for (const team of [0, 1]) {
+      const bubble = this.add
+        .text(0, 0, '', { fontFamily: 'sans-serif', fontSize: '20px', fontStyle: 'bold', color: '#14201a', backgroundColor: '#ffffff', padding: { x: 8, y: 4 } })
+        .setOrigin(0.5, 1)
+        .setDepth(12)
+        .setVisible(false);
+      this.bubbles[team] = bubble;
+      world.push(bubble);
+    }
     world.push(this.debugGfx, ...this.debugLabels);
     ui.push(this.debugTeams);
 
@@ -214,8 +234,17 @@ export class MatchScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.keyboard.dispose();
       for (const key of ['HudScene', 'PauseScene', 'ResultsScene']) this.scene.stop(key);
-      this.online?.leave();
+      if (!this.toLobbyNow) this.online?.leave();
     });
+    if (this.online) {
+      // T21: quick chat (1-6; M mutes the other player's) and "back to the lobby" after a match.
+      this.online.setChatMuted(settings.muteChat);
+      this.online.onBackToLobby = () => {
+        this.toLobbyNow = true;
+        this.scene.start('LobbyScene', { mode: 'back', lobby: this.online });
+      };
+      this.input.keyboard?.on('keydown', (e: KeyboardEvent) => this.onChatKey(e));
+    }
     // Esc: the pause menu (or, once the match is over for good, back to the menu).
     this.input.keyboard?.on('keydown-ESC', (e: KeyboardEvent) => {
       if (e.repeat || this.resultsShown) return; // the results screen has its own Esc
@@ -383,6 +412,7 @@ export class MatchScene extends Phaser.Scene {
     this.drawNets();
     this.drawEffects();
     this.drawOnlineStatus();
+    this.drawBubbles(state);
     this.netText.setVisible(this.debugNet);
     if (this.debugNet) this.netText.setText(this.driver.debugLines(now).join('\n'));
   }
@@ -523,7 +553,58 @@ export class MatchScene extends Phaser.Scene {
         : v.status === 'reconnecting'
           ? 'reconnecting…'
           : `disconnected${v.error ? ` (${v.error.title.toLowerCase()})` : ''}`;
-    this.onlineLabel.setText(`ONLINE · you are ${teamStyle(this.humanTeam).name} (${v.role}) · ${link} · F3: network info · Esc: menu`);
+    this.onlineLabel.setText(`ONLINE · you are ${teamStyle(this.humanTeam).name} (${v.role}) · ${link} · 1-6: quick chat${v.chatMuted ? ' (muted)' : ''} · M: mute · F3: network info · Esc: menu`);
+  }
+
+  /** Number keys 1-6 say a quick-chat message; M mutes (or unmutes) the other player's. Online only. */
+  private onChatKey(e: KeyboardEvent): void {
+    if (e.repeat || !this.online) return;
+    const id = emoteForKey(e.code);
+    if (id >= 0) this.online.sendEmote(id);
+    else if (e.code === 'KeyM') {
+      const muted = !settings.muteChat;
+      updateSettings({ muteChat: muted });
+      this.online.setChatMuted(muted);
+    }
+  }
+
+  /** A bubble above each team's controlled player while their latest quick-chat message is fresh. */
+  private drawBubbles(state: GameState): void {
+    const view = this.online?.view;
+    const now = performance.now();
+    for (const team of [0, 1] as const) {
+      const bubble = this.bubbles[team];
+      const item = view ? view.chat.bubble(teamOf(view.lobby, 'host') === team ? 'host' : 'guest', now) : null;
+      const id = state.controlled[team];
+      const p = id >= 0 ? state.players[id] : undefined;
+      bubble.setVisible(!!item && !!p);
+      if (!item || !p) continue;
+      bubble.setText(QUICK_CHAT[item.emote]).setPosition(p.pos.x, p.pos.y - p.radius - 36).setAlpha(Math.min(1, (EMOTE_BUBBLE_MS - (now - item.at)) / 400));
+    }
+  }
+
+  /** The recent quick-chat lines for the HUD's feed: who said what, and when. Empty offline. */
+  chatFeed(): { name: string; text: string; team: TeamId; at: number }[] {
+    const view = this.online?.view;
+    if (!view) return [];
+    return view.chat.feed(performance.now()).map((it) => {
+      const team = teamOf(view.lobby, it.from);
+      return { name: view.lobby.names[it.from === 'host' ? 0 : 1], text: QUICK_CHAT[it.emote], team, at: it.at };
+    });
+  }
+
+  /** Online: the lobby's view (names, series score), else null. */
+  onlineView(): Lobby['view'] | null {
+    return this.online?.view ?? null;
+  }
+
+  /** Online, at full time: back to the lobby (both players). */
+  backToLobby(): void {
+    this.online?.backToLobby();
+  }
+
+  resetSeries(): void {
+    this.online?.resetSeries();
   }
 
   private createDebugOverlay(): void {

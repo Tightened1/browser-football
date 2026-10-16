@@ -16,7 +16,13 @@ Online play is peer-to-peer, so you each need the game open in your own browser.
 4. **Ready up.** Both of you press **Ready** in the lobby. The lobby shows each other's connection type and ping.
 5. **Kick off.** The host presses **Start match**.
 
-After full time, either player can press **Rematch**. The match starts again once you both accept. **Menu** takes you back to the title screen.
+After full time, either player can press **Rematch**. The match starts again once you both accept. **Back to lobby** returns you both to the lobby (same room, no new code), and **Menu** takes you back to the title screen.
+
+- **Names.** Type your name in the box on the title screen (up to 16 letters, digits, spaces, `_ - .`; it is saved). It shows in the lobby, under the team names and on the results screen.
+- **Quick chat.** Keys `1`–`6` say *Nice goal!*, *Unlucky*, *What a save!*, *Rematch?*, 😂 or *GG*, as a bubble over your player and a line in the feed (there is a short wait between messages). `M` mutes your friend's messages (also under **Settings**).
+- **Series.** Rematches in the same room keep a running score ("Series 3–2") on the results screen and in the lobby; **Reset series** clears it.
+- **Man of the match** and a stat line for each player (goals, assists, saves, tackles, shots) appear on the results screen.
+- **Refreshed the page?** The room code stays in the address bar, so a refresh in the lobby or in a match rejoins by itself (the host holds the match for 30 seconds).
 
 Both players must be running the same version of the game. If you see a "different game versions" message, reload the page (Ctrl+F5, or Cmd+Shift+R on a Mac).
 
@@ -47,7 +53,7 @@ Both players must be running the same version of the game. If you see a "differe
 
 **Fouls, free kicks and penalties:** a slide that hits the player instead of the ball, or comes in from behind, is a foul (and so is a clearly late challenge after someone has passed). The referee whistles at once and the fouled team gets a free kick on the spot, taken like a corner: aim with the arrow, pass = pass, hold and release shoot = shot. Near goal the AI puts one or two players in a wall. A foul inside the box is a **penalty**: aim up or down (or neither, for the middle), pass for a placed kick or hold shoot for a power kick. Facing one, you're the keeper: you stay on your line until you dive with up or down + tackle (or stand still to cover the middle). How strict the referee is comes from the match rules (Arcade: Lenient, no cards; Classic: Strict, with cards: a reckless slide is a yellow, two yellows and the player is off for the rest of the half), and Settings can change it (Fouls: Off / Lenient / Strict; Cards: on / off). **A draw** goes to a penalty shoot-out under Arcade (best of five, then sudden death), stays a draw under Classic, or goes to golden-goal extra time first (Settings: A draw).
 
-Move, pass, shoot, tackle, sprint, shield and switch can all be rebound under **Settings** (two keys per action). `Esc`, `Enter`, `Tab`, the F-keys, `` ` `` and `N` are reserved. **How to play** on the title screen shows the same table.
+Move, pass, shoot, tackle, sprint, shield and switch can all be rebound under **Settings** (two keys per action). `Esc`, `Enter`, `Tab`, the F-keys, `` ` ``, `N`, `M` and `1`–`6` are reserved. **How to play** on the title screen shows the same table.
 
 In menus, use the arrow keys or the mouse. `Enter` or `Space` selects.
 
@@ -93,7 +99,7 @@ Every push and pull request runs these in GitHub Actions (`.github/workflows/dep
 npm test            # Vitest: sim rules, AI, network protocol/snapshot round trips, determinism (~20 s)
 npm run test:sim    # sim regression: 8 fixed-seed AI-vs-AI matches each for Arcade and Classic; fails if an average is outside scripts/simRanges.json (~25 s)
 npm run build       # type-check and build (this is also a CI check)
-npm run test:e2e    # two-browser online smoke test with Playwright (headless Chromium)
+npm run test:e2e    # two-browser online tests with Playwright (headless Chromium): a synchronised match, a penalty, names/chat/series/MVP, and a guest refresh
 npm run test:all    # all of the above
 ```
 

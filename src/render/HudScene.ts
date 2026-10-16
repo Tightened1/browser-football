@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GOAL_PAUSE, GAME_WIDTH, HALVES, SHOOTOUT_KICKS, SIM_HZ } from '../config';
 import { keyLabel, settings, type ActionId } from '../settings';
-import { readableColor, teamStyle } from './teamStyle';
+import { playerName, readableColor, teamStyle } from './teamStyle';
+import { EMOTE_FEED_MS } from '../config';
 import { matchClock, periodLength } from '../sim/rules';
 import { shootoutTally } from '../sim/fouls';
 import type { GameState, MatchEvent, RestartType, ShootoutRecord, TeamId } from '../sim/types';
@@ -55,6 +56,9 @@ export class HudScene extends Phaser.Scene {
   private score!: [Phaser.GameObjects.Text, Phaser.GameObjects.Text];
   private names!: [Phaser.GameObjects.Text, Phaser.GameObjects.Text];
   private clock!: Phaser.GameObjects.Text;
+  /** T21: the human players' names under the team names, and the quick-chat feed (bottom left). */
+  private players!: [Phaser.GameObjects.Text, Phaser.GameObjects.Text];
+  private feed!: Phaser.GameObjects.Text[];
   private half!: Phaser.GameObjects.Text;
   private restartLabel!: Phaser.GameObjects.Text;
   private goalBanner!: Phaser.GameObjects.Container;
@@ -99,6 +103,8 @@ export class HudScene extends Phaser.Scene {
       bar.strokeRoundedRect(team === 0 ? CX - BAR_W / 2 + 8 : CX + BAR_W / 2 - 20, BAR_Y + 8, 12, BAR_H - 16, 3);
     }
     this.names = [this.text(CX - 190, BAR_Y + BAR_H / 2, 20), this.text(CX + 190, BAR_Y + BAR_H / 2, 20)];
+    this.players = [this.text(CX - 190, BAR_Y + 40, 11, '#cfe8d6', false), this.text(CX + 190, BAR_Y + 40, 11, '#cfe8d6', false)];
+    this.feed = [0, 1, 2, 3].map((i) => this.text(14, GAME_HEIGHT - 120 + i * 24, 17, '#ffffff', true).setOrigin(0, 0.5));
     this.score = [this.text(CX - 82, BAR_Y + BAR_H / 2, 32), this.text(CX + 82, BAR_Y + BAR_H / 2, 32)];
     this.clock = this.text(CX, BAR_Y + 18, 22);
     this.half = this.text(CX, BAR_Y + 39, 11, '#cccccc');
@@ -157,12 +163,17 @@ export class HudScene extends Phaser.Scene {
     const s = this.matchState();
     if (!s) return;
     for (const team of [0, 1] as const) {
-      this.names[team].setText(teamStyle(team).name);
+      const who = playerName(team);
+      // With a player name under it the team name sits a little higher and smaller.
+      this.names[team].setText(teamStyle(team).name).setFontSize(who ? 17 : 20).setY(who ? BAR_Y + 20 : BAR_Y + BAR_H / 2);
+      this.players[team].setText(who);
       this.score[team].setText(String(s.score[team]));
     }
     this.clock.setText(formatClock(matchClock(s)));
     const shootout = s.phase === 'shootout' || (s.phase === 'full-time' && !!s.shootout);
     this.half.setText(shootout ? 'PENALTIES' : `${halfLabel(s.half)}  ·  ${formatClock(s.clock)}/${formatClock(periodLength(s))}`);
+
+    this.drawFeed();
 
     // Set-piece label (not in a shoot-out: its scoreboard says it all).
     const r = s.restart;
@@ -203,6 +214,18 @@ export class HudScene extends Phaser.Scene {
       this.netBody.setText(net.body);
       this.netHint.setText(net.ended ? 'Press Enter or Esc to return to the menu' : 'Esc: menu');
     }
+  }
+
+  /** The last few quick-chat messages, bottom left, fading as they age. */
+  private drawFeed(): void {
+    const lines = this.match()?.chatFeed() ?? [];
+    const now = performance.now();
+    this.feed.forEach((t, i) => {
+      const line = lines[i - (this.feed.length - lines.length)];
+      t.setVisible(!!line);
+      if (!line) return;
+      t.setText(`${line.name}: ${line.text}`).setColor(hex(readableColor(line.team))).setAlpha(Math.min(1, (EMOTE_FEED_MS - (now - line.at)) / 1500));
+    });
   }
 
   /** Cards by each team's name: a yellow for each booked player, a red for each one sent off. */

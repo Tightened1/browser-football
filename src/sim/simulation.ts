@@ -83,6 +83,7 @@ import {
 } from './dribble';
 import { awardFoul, isFrozen, updateRules } from './rules';
 import { detectFoul } from './fouls';
+import { emptyTally, trackStats } from './playerStats';
 import { pendingHeldRestart, pendingPenalty, restartAim, takeHeldRestart } from './setpiece';
 import { CLASSIC_RULES, copyRules } from './matchRules';
 import { assistAim, curlBall, finesseShot, shotSpeed } from './shooting';
@@ -227,7 +228,8 @@ export function createInitialState(options: MatchOptions = {}): GameState {
     grace: null,
     events: [],
     nextEventId: 1,
-    stats: { shots: [0, 0], possession: [0, 0], goals: [], fouls: [0, 0], cards: [], penalties: [], shootout: null },
+    stats: emptyStats(players.length),
+    track: { touches: [], liveShot: null },
     penalty: null,
     shootout: null,
   };
@@ -267,6 +269,7 @@ export function cloneState(s: GameState): GameState {
     events: s.events.map((e) => ({ ...e, score: [e.score[0], e.score[1]] as [number, number] })),
     nextEventId: s.nextEventId,
     stats: cloneStats(s.stats),
+    track: { touches: s.track.touches.map((t) => ({ ...t })), liveShot: s.track.liveShot ? { ...s.track.liveShot } : null },
     penalty: s.penalty ? { ...s.penalty } : null,
     shootout: s.shootout ? { ...s.shootout, kicks: [...s.shootout.kicks] } : null,
   };
@@ -281,6 +284,23 @@ export function cloneStats(st: MatchStats): MatchStats {
     cards: st.cards.map((c) => ({ ...c })),
     penalties: st.penalties.map((x) => ({ ...x })),
     shootout: st.shootout ? { ...st.shootout, kicks: [...st.shootout.kicks] } : null,
+    players: st.players.map((p) => ({ ...p })),
+    humans: [{ ...st.humans[0] }, { ...st.humans[1] }],
+  };
+}
+
+/** Statistics at the start of a match with `players` players. */
+export function emptyStats(players: number): MatchStats {
+  return {
+    shots: [0, 0],
+    possession: [0, 0],
+    goals: [],
+    fouls: [0, 0],
+    cards: [],
+    penalties: [],
+    shootout: null,
+    players: Array.from({ length: players }, emptyTally),
+    humans: [emptyTally(), emptyTally()],
   };
 }
 
@@ -582,6 +602,12 @@ function keeperOnLine(state: GameState, p: PlayerState, input: InputFrame): Inpu
 
 /** inputs[team] is that team's human input; teams without one (or players not controlled) use the AI. */
 export function step(state: GameState, inputs: readonly (InputFrame | undefined)[], dt: number): GameState {
+  const next = stepInner(state, inputs, dt);
+  trackStats(state, next);
+  return next;
+}
+
+function stepInner(state: GameState, inputs: readonly (InputFrame | undefined)[], dt: number): GameState {
   const next = cloneState(state);
   const ball = next.ball;
 

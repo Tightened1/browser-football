@@ -289,6 +289,26 @@ export interface MatchStats {
   cards: CardRecord[];
   penalties: PenaltyRecord[];
   shootout: ShootoutRecord | null;
+  /** T21: what each player did (indexed by player id), and what each team's human did (indexed by team; see sim/playerStats.ts). */
+  players: PlayerTally[];
+  humans: [PlayerTally, PlayerTally];
+}
+
+/** T21: one player's match: goals (not own goals), assists, saves by a keeper, tackles won off the ball carrier, shots. */
+export interface PlayerTally {
+  goals: number;
+  assists: number;
+  saves: number;
+  tackles: number;
+  shots: number;
+}
+
+/** T21: the sim's memory for the per-player stats (who touched the ball last, the shot still in flight). Never sent. */
+export interface TouchTrack {
+  /** The last two different players to touch the ball, oldest first, and the tick of each touch. */
+  touches: { team: TeamId; player: number; tick: number }[];
+  /** A shot struck and not yet saved, blocked or scored. */
+  liveShot: { team: TeamId; player: number } | null;
 }
 
 /** A card (T19): to `team`'s player `player`. A second yellow is recorded as a red. */
@@ -376,6 +396,8 @@ export interface GameState {
   events: MatchEvent[];
   nextEventId: number;
   stats: MatchStats;
+  /** T21: memory for the per-player stats (host only; the guest gets the finished stats instead). */
+  track: TouchTrack;
   /** T19: a penalty struck and still being decided (else null). */
   penalty: LivePenalty | null;
   /** T19: the penalty shoot-out, once it has started (kept after it ends, for the HUD and results). */

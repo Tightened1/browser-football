@@ -1,18 +1,26 @@
 import Phaser from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH } from '../config';
+import { GAME_HEIGHT, GAME_WIDTH, REJOIN_RETRIES, REJOIN_RETRY_MS } from '../config';
 import { GuestLobby } from '../net/client';
 import { HostLobby } from '../net/host';
 import { describeRoute } from '../net/ice';
 import { inviteLink, type Lobby, type LobbyView } from '../net/peer';
 import { canStart, looksByTeam, teamOf } from '../net/protocol';
 import { matchRulesSetting, settings, updateSettings } from '../settings';
+import { nameOr, seriesPlayed, seriesText } from '../social';
 import { rulesLabel, rulesSummary } from '../sim/matchRules';
 import type { TeamId } from '../sim/types';
 import { cycleKit, cycleName, teamStyles, type Look } from '../teams';
 import type { MatchSceneData } from './MatchScene';
 import { button, copyText, Focus, label, UI_COLORS, type Button } from './ui';
 
-export type LobbySceneData = { mode: 'host'; look: Look } | { mode: 'join'; code: string; look: Look };
+/**
+ * host / join: a new lobby. join with `resumeToken` / `rejoin`: the page was refreshed and is rejoining its room (T21).
+ * back: after a match, the same lobby (and connection) again, with the series score and the names.
+ */
+export type LobbySceneData = { mode: 'host'; look: Look } | { mode: 'join'; code: string; look: Look; resumeToken?: string; rejoin?: boolean } | { mode: 'back'; lobby: Lobby };
+
+/** Retries of a failed rejoin so far (module-level: the scene restarts itself between tries). */
+let rejoinTries = 0;
 
 const CX = GAME_WIDTH / 2;
 const CARD_W = 400;
@@ -41,6 +49,9 @@ export class LobbyScene extends Phaser.Scene {
   private lobby!: Lobby;
   private data_!: LobbySceneData;
   private handedOver = false;
+  private retrying = false;
+  private seriesLabel!: Phaser.GameObjects.Text;
+  private resetSeries!: Button;
 
   private code!: Phaser.GameObjects.Text;
   private link!: Phaser.GameObjects.Text;
@@ -71,25 +82,32 @@ export class LobbyScene extends Phaser.Scene {
   init(data: LobbySceneData): void {
     this.data_ = data;
     this.handedOver = false;
+    this.retrying = false;
     this.focusedReady = false;
+    if (!(data.mode === 'join' && data.rejoin)) rejoinTries = 0;
   }
 
   create(): void {
     this.cameras.main.setBackgroundColor('#14361c');
+    const d = this.data_;
     this.lobby =
-      this.data_.mode === 'host'
-        ? new HostLobby({ look: this.data_.look, halfLength: settings.halfMinutes * 60, rules: matchRulesSetting() })
-        : new GuestLobby(this.data_.code, this.data_.look);
+      d.mode === 'back'
+        ? d.lobby
+        : d.mode === 'host'
+          ? new HostLobby({ name: nameOr(settings.playerName, 'Host'), look: d.look, halfLength: settings.halfMinutes * 60, rules: matchRulesSetting() })
+          : new GuestLobby(d.code, d.look, nameOr(settings.playerName, 'Guest'), d.resumeToken ?? '');
     this.lobby.onStart = (info) => {
       this.handedOver = true;
-      const data: MatchSceneData = { humanTeam: info.localTeam, seed: info.seed, online: this.lobby, halfLength: info.halfLength, looks: info.looks, rules: info.rules };
+      const l = this.lobby.view.lobby;
+      const names: [string, string] = teamOf(l, 'host') === 0 ? [l.names[0], l.names[1]] : [l.names[1], l.names[0]];
+      const data: MatchSceneData = { humanTeam: info.localTeam, seed: info.seed, online: this.lobby, halfLength: info.halfLength, looks: info.looks, rules: info.rules, names };
       this.scene.start('MatchScene', data);
     };
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       if (!this.handedOver) this.lobby.leave();
     });
 
-    const host = this.data_.mode === 'host';
+    const host = this.lobby.view.role === 'host';
     label(this, CX, 55, 40, UI_COLORS.text, true).setText(host ? 'HOST AN ONLINE GAME' : 'JOIN AN ONLINE GAME');
     label(this, CX, 112, 20, UI_COLORS.muted).setText('Room code');
     this.code = label(this, CX, 160, 60, UI_COLORS.warn, true).setStroke('#000000', 6);
@@ -100,8 +118,8 @@ export class LobbyScene extends Phaser.Scene {
 
     this.cards = [this.makeCard(0), this.makeCard(1)];
     // Your own team's name and kit can be changed here (the other player's kit and name are skipped).
-    this.kit = button(this, CARD_X[0], CARD_Y + 62, 'Change kit', () => this.changeKit(), { size: 18, width: 160, secondary: true });
-    this.name = button(this, CARD_X[0] + 170, CARD_Y + 62, 'Change name', () => this.changeName(), { size: 18, width: 160, secondary: true });
+    this.kit = button(this, CARD_X[0], CARD_Y + 62, 'Kit colour', () => this.changeKit(), { size: 18, width: 160, secondary: true });
+    this.name = button(this, CARD_X[0] + 170, CARD_Y + 62, 'Team name', () => this.changeName(), { size: 18, width: 160, secondary: true });
 
     this.swap = button(this, CX - 240, 618, 'Swap teams', () => this.lobby.swapTeams(), { size: 22, width: 200, secondary: true });
     this.ready = button(this, CX, 618, 'Ready', () => this.toggleReady(), { size: 22, width: 200 });
@@ -109,8 +127,11 @@ export class LobbyScene extends Phaser.Scene {
     this.notice = label(this, CX, 685, 19, UI_COLORS.warn).setWordWrapWidth(1000);
     // Match rules (T15): the host's choice, shown to both; the host can change it here.
     this.rulesText = label(this, CX, 722, 19, UI_COLORS.text).setWordWrapWidth(1050);
-    this.rulesBtn = button(this, CX - 230, GAME_HEIGHT - 60, 'Change rules', () => this.changeRules(), { size: 20, width: 200, secondary: true }).setVisible(host);
+    this.rulesBtn = button(this, CX - 250, GAME_HEIGHT - 60, 'Change rules', () => this.changeRules(), { size: 20, width: 200, secondary: true }).setVisible(host);
     const leave = button(this, CX, GAME_HEIGHT - 60, 'Leave', () => this.backToMenu(), { size: 20, width: 140, secondary: true });
+    // T21: the running score of the matches played in this session.
+    this.seriesLabel = label(this, CX, CARD_Y + CARD_H / 2 + 20, 22, UI_COLORS.warn, true);
+    this.resetSeries = button(this, CX + 250, GAME_HEIGHT - 60, 'Reset series', () => this.lobby.resetSeries(), { size: 20, width: 200, secondary: true }).setVisible(false);
     this.readyItem = { button: this.ready };
     this.focus = new Focus(
       this,
@@ -123,6 +144,7 @@ export class LobbyScene extends Phaser.Scene {
         this.readyItem,
         { button: this.start },
         { button: this.rulesBtn },
+        { button: this.resetSeries },
         { button: leave },
       ],
       5,
@@ -131,7 +153,7 @@ export class LobbyScene extends Phaser.Scene {
     this.makeErrorPanel();
     this.input.keyboard?.on('keydown-ESC', () => this.backToMenu());
     this.input.keyboard?.on('keydown-ENTER', () => {
-      if (this.errorPanel.visible) this.scene.restart(this.data_);
+      if (this.errorPanel.visible) this.retryOrMenu();
     });
   }
 
@@ -153,7 +175,7 @@ export class LobbyScene extends Phaser.Scene {
     this.errorTitle = label(this, CX, GAME_HEIGHT / 2 - 150, 38, UI_COLORS.bad, true);
     this.errorBody = label(this, CX, GAME_HEIGHT / 2 - 30, 21).setWordWrapWidth(740).setLineSpacing(6);
     const back = button(this, CX - 130, GAME_HEIGHT / 2 + 140, 'Back to menu', () => this.backToMenu(), { size: 22, width: 200, secondary: true });
-    const retry = button(this, CX + 130, GAME_HEIGHT / 2 + 140, 'Try again', () => this.scene.restart(this.data_), { size: 22, width: 200 });
+    const retry = button(this, CX + 130, GAME_HEIGHT / 2 + 140, 'Try again', () => this.retryOrMenu(), { size: 22, width: 200 });
     const hint = label(this, CX, GAME_HEIGHT / 2 + 195, 16, UI_COLORS.muted).setText('Enter: try again · Esc: back to menu');
     this.errorPanel = this.add.container(0, 0, [shade, box, this.errorTitle, this.errorBody, back.text, retry.text, hint]).setDepth(100).setVisible(false);
   }
@@ -197,6 +219,12 @@ export class LobbyScene extends Phaser.Scene {
     this.copiedTimer = this.time.delayedCall(1500, () => b.setLabel(original));
   }
 
+  /** "Try again" starts a new lobby of the same kind (a lobby carried back from a match is over: back to the menu). */
+  private retryOrMenu(): void {
+    if (this.data_.mode === 'back') this.backToMenu();
+    else this.scene.restart(this.data_);
+  }
+
   private backToMenu(): void {
     this.scene.start('MenuScene');
   }
@@ -225,12 +253,24 @@ export class LobbyScene extends Phaser.Scene {
     this.name.setEnabled(connected || v.role === 'host');
     this.ready.setEnabled(connected).setLabel(v.lobby.ready[me] ? 'Not ready' : 'Ready');
     this.start.setEnabled(canStart(v.lobby, connected));
-    this.notice.setText(v.notice ?? (connected && v.role === 'guest' && v.lobby.ready[1] ? 'Waiting for the host to start the match…' : ''));
     const rules = v.lobby.rules;
     this.rulesText.setText(`Match rules: ${rulesLabel(rules.preset)} (${rulesSummary(rules)})${v.role === 'guest' ? ' · chosen by the host' : ''}`);
 
 
-    const failed = v.status === 'failed' && v.error;
+    const played = seriesPlayed(v.lobby.series) > 0;
+    this.seriesLabel.setText(played ? seriesText(v.lobby.series, v.role) : '');
+    this.resetSeries.setVisible(played);
+    if (connected) rejoinTries = 0;
+    // A refreshed page that couldn't get back in yet (the host may not have noticed the old connection closing): try again.
+    const rejoining = this.data_.mode === 'join' && !!this.data_.rejoin;
+    const retry = v.status === 'failed' && rejoining && rejoinTries < REJOIN_RETRIES;
+    if (retry && !this.retrying) {
+      this.retrying = true;
+      rejoinTries++;
+      this.time.delayedCall(REJOIN_RETRY_MS, () => this.scene.restart(this.data_));
+    }
+    const failed = v.status === 'failed' && v.error && !retry;
+    this.notice.setText(v.notice ?? (retry ? `Rejoining room ${v.code}… (try ${rejoinTries} of ${REJOIN_RETRIES})` : rejoining && v.status !== 'connected' ? `Rejoining room ${v.code}…` : connected && v.role === 'guest' && v.lobby.ready[1] ? 'Waiting for the host to start the match…' : ''));
     this.errorPanel.setVisible(!!failed);
     this.focus.suspend(!!failed);
     // Once the other player is here, the obvious next step is Ready: start the keyboard focus there.

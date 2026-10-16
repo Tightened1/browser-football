@@ -26,6 +26,8 @@ const stats: MatchStats = {
   cards: [{ team: 1, player: 7, card: 'yellow', half: 1, clock: 80 }],
   penalties: [{ team: 0, player: 4, scored: true, half: 2, clock: 12 }],
   shootout: { first: 1, kicks: [true, false, true, true], winner: -1 },
+  players: [{ goals: 1, assists: 0, saves: 0, tackles: 2, shots: 3 }, { goals: 0, assists: 1, saves: 4, tackles: 0, shots: 0 }],
+  humans: [{ goals: 1, assists: 0, saves: 0, tackles: 2, shots: 3 }, { goals: 0, assists: 1, saves: 4, tackles: 0, shots: 0 }],
 };
 
 /** One example of every message. Typed as a full Record so adding a message type without a test fails to compile. */
@@ -37,6 +39,9 @@ const SAMPLES: Record<MessageType, Message> = {
   ready: { t: 'ready', ready: true },
   look: { t: 'look', look: { name: 2, kit: 5 } },
   swap: { t: 'swap' },
+  'series-reset': { t: 'series-reset' },
+  'lobby-back': { t: 'lobby-back' },
+  emote: { t: 'emote', id: 3 },
   start: { t: 'start', hostTeam: 1, seed: 424242, token: 'abc123', half: 180, rules: rulesFor('arcade') },
   ping: { t: 'ping', id: 9, sent: 123456.5 },
   pong: { t: 'pong', id: 9, sent: 123456.5 },
@@ -58,7 +63,7 @@ describe('protocol messages', () => {
   }
 
   it('has a sample for every validator (no message type is untested)', () => {
-    expect(Object.keys(SAMPLES).length).toBe(17);
+    expect(Object.keys(SAMPLES).length).toBe(20);
     for (const t of Object.keys(SAMPLES)) expect(decode(JSON.parse(JSON.stringify(SAMPLES[t as MessageType])))?.t).toBe(t);
   });
 
@@ -71,6 +76,12 @@ describe('protocol messages', () => {
     expect(decode({ ...SAMPLES.event, event: { ...event, type: 'dance' } })).toBeNull();
     expect(decode({ ...SAMPLES.lobby, lobby: { ...lobby, hostTeam: 2 } })).toBeNull();
     expect(decode({ t: 'fast', b: 'x'.repeat(5000) })).toBeNull();
+    // T21: quick chat is a preset index, never text; a lobby needs a valid series; stats need their tallies.
+    for (const id of [6, -1, 1.5, '0', null]) expect(decode({ t: 'emote', id })).toBeNull();
+    expect(decode({ t: 'emote', text: 'hello' })).toBeNull();
+    expect(decode({ ...SAMPLES.lobby, lobby: { ...lobby, series: { host: -1, guest: 0, draws: 0 } } })).toBeNull();
+    expect(decode({ ...SAMPLES.lobby, lobby: { ...lobby, series: undefined } })).toBeNull();
+    expect(decode({ ...SAMPLES.stats, stats: { ...stats, players: [{ goals: 'x' }] } })).toBeNull();
   });
 });
 

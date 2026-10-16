@@ -18,6 +18,7 @@ import type { NetError } from './errors';
 import { hasTurn, parseIceServersResponse, selectedRoute, type Route, type StatsEntry } from './ice';
 import { NetConditioner } from './netsim';
 import { decode, fromBase64, toBase64, type LobbyState, type Message } from './protocol';
+import type { ChatFeed } from '../social';
 import type { MatchRules, TeamId } from '../sim/types';
 import type { Look } from '../teams';
 
@@ -290,6 +291,10 @@ export interface LobbyView {
   reconnectUntil: number | null;
   /** Full-time rematch: whether I want one, and whether the other player does. Both = it starts. */
   rematch: { mine: boolean; theirs: boolean };
+  /** T21: the quick-chat messages of the session (bubbles and feed read them). */
+  chat: ChatFeed;
+  /** T21: the other player's messages are being ignored. */
+  chatMuted: boolean;
 }
 
 export interface StartInfo {
@@ -319,6 +324,15 @@ export interface Lobby {
   onRestart: (seed: number) => void;
   /** Host only: start the match if both are ready. */
   start(): void;
+  /** T21: say quick-chat message `id` (false if it was refused: not a message, or sent too fast). */
+  sendEmote(id: number): boolean;
+  /** T21: ignore (or hear again) the other player's quick chat. */
+  setChatMuted(muted: boolean): void;
+  /** T21: reset the series score to 0-0 for both players. */
+  resetSeries(): void;
+  /** T21: after a match, go back to the lobby (both players). `onBackToLobby` fires on this side when it happens. */
+  backToLobby(): void;
+  onBackToLobby: () => void;
   /** Leave: tell the other side, close the connection and unregister from the broker. */
   leave(): void;
   /** During the match: the link to the other player while connected (it changes after a reconnect). */

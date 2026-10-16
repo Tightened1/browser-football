@@ -17,3 +17,15 @@ export function teamStyle(team: 0 | 1): TeamStyle {
 export function readableColor(team: 0 | 1): number {
   return readableOn(styles[team]);
 }
+
+let names: [string, string] = ['', ''];
+
+/** Called when a match starts: the human player's name for each team ('' = nobody, e.g. the AI's team). */
+export function setPlayerNames(next: readonly [string, string]): void {
+  names = [next[0], next[1]];
+}
+
+/** The human player on a team ('' if none). */
+export function playerName(team: 0 | 1): string {
+  return names[team];
+}

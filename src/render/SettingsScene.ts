@@ -67,6 +67,7 @@ export class SettingsScene extends Phaser.Scene {
   private rulesInfo!: Phaser.GameObjects.Text;
   private volume!: Button;
   private overlay!: Button;
+  private chat!: Button;
   private camera!: Button;
   private readonly slots = new Map<string, Button>();
   private capturing: { action: ActionId; slot: 0 | 1 } | null = null;
@@ -103,7 +104,8 @@ export class SettingsScene extends Phaser.Scene {
     });
     this.camera = right(3, (d) => this.set({ camera: step(CAMERA_OPTIONS, settings.camera, d) }));
     this.overlay = right(4, () => this.set({ showControls: !settings.showControls }));
-    this.rulesInfo = label(this, CX + COL, VALUE_Y + VALUE_STEP * 5.1, 14, UI_COLORS.muted).setWordWrapWidth(500);
+    this.chat = right(5, () => this.set({ muteChat: !settings.muteChat }));
+    this.rulesInfo = label(this, CX + COL, VALUE_Y + VALUE_STEP * 6.1, 14, UI_COLORS.muted).setWordWrapWidth(500);
 
     label(this, CX, 452, 22, UI_COLORS.warn, true).setText('KEY BINDINGS');
     ACTIONS.forEach((a, i) => {
@@ -121,7 +123,7 @@ export class SettingsScene extends Phaser.Scene {
     const back = button(this, CX + 130, 774, 'Back', () => this.scene.start('MenuScene'), { size: 22, width: 210 });
     items.push({ button: reset }, { button: back });
     this.message = label(this, CX, 742, 18, UI_COLORS.warn).setWordWrapWidth(1000);
-    label(this, CX, GAME_HEIGHT - 14, 14, UI_COLORS.muted).setText('Esc: back · reserved keys (Esc, Enter, Tab, F-keys, `, N) cannot be bound');
+    label(this, CX, GAME_HEIGHT - 14, 14, UI_COLORS.muted).setText('Esc: back · reserved keys (Esc, Enter, Tab, F-keys, `, N, M, 1-6) cannot be bound');
 
     this.focus = new Focus(this, items);
     this.input.keyboard?.on('keydown-ESC', () => {
@@ -148,6 +150,7 @@ export class SettingsScene extends Phaser.Scene {
     this.volume.setLabel(`Sound volume:   ◀  ${settings.volume}%  ▶`);
     this.camera.setLabel(`Camera:   ◀  ${CAMERA_LABEL[settings.camera]}  ▶`);
     this.overlay.setLabel(`Controls overlay:   ◀  ${settings.showControls ? 'On' : 'Off'}  ▶`);
+    this.chat.setLabel(`Online quick chat (1-6):   ◀  ${settings.muteChat ? 'Muted' : 'On'}  ▶`);
     for (const a of ACTIONS) {
       for (const slot of [0, 1] as const) {
         const cap_ = this.capturing?.action === a.id && this.capturing.slot === slot;

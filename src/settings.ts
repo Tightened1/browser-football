@@ -3,6 +3,7 @@
 import { AI_DIFFICULTY, CAMERA_DEFAULT_MODE, DEFAULT_RULES_PRESET, type CameraMode } from './config';
 import { AI_DEFENDING_LEVELS, DRAW_RULES, FOUL_LEVELS, KEEPER_LEVELS, RULES_PRESETS, rulesFor } from './sim/matchRules';
 import type { AiDefending, Difficulty, DrawRule, FoulStrictness, KeeperLevel, MatchRules, RulesPreset } from './sim/types';
+import { sanitizeName } from './social';
 import { DEFAULT_LOOK, sanitizeLook, type Look } from './teams';
 
 export type ActionId = 'up' | 'down' | 'left' | 'right' | 'pass' | 'shoot' | 'tackle' | 'sprint' | 'shield' | 'switch';
@@ -42,7 +43,7 @@ export const DEFAULT_BINDINGS: Bindings = {
 const NEW_ACTIONS: readonly ActionId[] = ['sprint', 'shield'];
 
 /** Keys that can't be bound: they belong to the menus and the debug overlays. */
-export const RESERVED_KEYS: readonly string[] = ['Escape', 'Enter', 'NumpadEnter', 'Tab', 'Backquote', 'KeyN', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
+export const RESERVED_KEYS: readonly string[] = ['Escape', 'Enter', 'NumpadEnter', 'Tab', 'Backquote', 'KeyN', 'KeyM', 'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
 
 export const MATCH_LENGTH_OPTIONS = [1, 2, 3, 5] as const;
 export const DIFFICULTY_OPTIONS: readonly Difficulty[] = ['easy', 'normal', 'hard'];
@@ -84,12 +85,16 @@ export interface Settings {
   bindings: Bindings;
   /** The player's last team name and kit. */
   look: Look;
+  /** T21: the player's name shown to a friend online ('' = not chosen: Host / Guest are used). */
+  playerName: string;
+  /** T21: ignore the other player's quick chat. */
+  muteChat: boolean;
 }
 
 export function defaultSettings(): Settings {
   const bindings = {} as Bindings;
   for (const a of ACTIONS) bindings[a.id] = [...DEFAULT_BINDINGS[a.id]] as [string, string];
-  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, rules: DEFAULT_RULES_PRESET, keepers: 'rules', aiDefending: 'rules', fouls: 'rules', cards: 'rules', draws: 'rules', volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK } };
+  return { halfMinutes: 3, difficulty: AI_DIFFICULTY, rules: DEFAULT_RULES_PRESET, keepers: 'rules', aiDefending: 'rules', fouls: 'rules', cards: 'rules', draws: 'rules', volume: 70, camera: CAMERA_DEFAULT_MODE, showControls: true, bindings, look: { ...DEFAULT_LOOK }, playerName: '', muteChat: false };
 }
 
 /** Left and right Shift (Ctrl, Alt) count as one key. */
@@ -157,6 +162,8 @@ export function sanitizeSettings(raw: unknown): Settings {
     showControls: typeof r.showControls === 'boolean' ? r.showControls : d.showControls,
     bindings: sanitizeBindings(r.bindings),
     look: sanitizeLook(r.look),
+    playerName: sanitizeName(r.playerName),
+    muteChat: typeof r.muteChat === 'boolean' ? r.muteChat : d.muteChat,
   };
 }
 

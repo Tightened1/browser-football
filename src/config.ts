@@ -915,3 +915,26 @@ export const FX_RIPPLE_SECONDS = 1.1;
 export const FX_RIPPLE_AMPLITUDE = 14;
 /** Net mesh spacing (px). */
 export const NET_CELL = 7;
+
+/* ---- Online extras (T21) ------------------------------------------------------------------------ */
+
+/** Player names: longest allowed (characters) and the defaults for a missing / emptied name. */
+export const NAME_MAX_LENGTH = 16;
+export const DEFAULT_PLAYER_NAME = 'Player';
+/** Quick chat: at least this long between two messages from one player (ms), and at most this many in the window. */
+export const EMOTE_MIN_GAP_MS = 1200;
+export const EMOTE_WINDOW_MS = 10000;
+export const EMOTE_MAX_PER_WINDOW = 4;
+/** How long an emote bubble stays above a player (ms), and how long a line stays in the feed. */
+export const EMOTE_BUBBLE_MS = 3000;
+export const EMOTE_FEED_MS = 9000;
+export const EMOTE_FEED_LINES = 4;
+/** An assist: the pass must come from the previous toucher of the ball, at most this many seconds before the goal. */
+export const ASSIST_WINDOW = 6;
+/** Man of the match: points per goal, assist, save, tackle won (and a small one for the winning side to break ties). */
+export const MVP_POINTS = { goal: 5, assist: 3, save: 2, tackle: 1, shot: 0.25 } as const;
+/** A guest that refreshes the page rejoins its room if it left less than this long ago (ms). */
+export const SESSION_REJOIN_MS = 10 * 60 * 1000;
+/** Automatic retries of a rejoin that failed (the host may not have noticed the old connection closing yet). */
+export const REJOIN_RETRIES = 5;
+export const REJOIN_RETRY_MS = 2000;

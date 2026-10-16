@@ -49,14 +49,26 @@ import { seconds, type MatchDriver, type NetOverlay } from './match';
 import { describeRoute } from './ice';
 import { describeConditions } from './netsim';
 import { CONNECT_OPTIONS, createPeer, Link, loadIceServers, peerErrorType, peerIdForRoom, type IceSetup, type Lobby, type LobbyView, type StartInfo } from './peer';
-import { createLobbyState, GUEST_NAME, hello, HOST_NAME, looksByTeam, teamOf, versionMismatch, type Message } from './protocol';
+import { createLobbyState, GUEST_NAME, hello, HOST_NAME, looksByTeam, teamOf, versionMismatch, type LobbyState, type Message } from './protocol';
+import { nameOr } from '../social';
+import { QuickChat } from './chat';
+import { clearSession, saveSession, setRoomInUrl } from './session';
 import { applySnapshot, decodeSnapshot, encodeInputs, PACKET_SNAPSHOT, packetType, quantizeInput, type Snapshot } from './snapshot';
 import { LossMeter, RateMeter } from './stats';
+
+/** `lastEvent` of a rejoin after a page refresh: "I have seen everything", so the host resends no old events. */
+const ALL_EVENTS_SEEN = 1e9;
+
+/** A lobby from the other side with its names cleaned up (we never trust what arrives over the wire to be display-safe). */
+function cleanLobby(l: LobbyState): LobbyState {
+  return { ...l, names: [nameOr(l.names[0], HOST_NAME), nameOr(l.names[1], GUEST_NAME)] };
+}
 
 export class GuestLobby implements Lobby {
   readonly view: LobbyView;
   onStart: (info: StartInfo) => void = () => {};
   onRestart: (seed: number) => void = () => {};
+  onBackToLobby: () => void = () => {};
   /** Match messages from the host (events, final stats). */
   onMatchMessage: (msg: Message) => void = () => {};
   /** The newest event id the match has received (sent when rejoining, so the host resends only what's missing). */
@@ -66,6 +78,7 @@ export class GuestLobby implements Lobby {
   private link: Link | null = null;
   private inMatch = false;
   private token = '';
+  private readonly chat = new QuickChat('guest');
   private timer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private pendingConn: DataConnection | null = null;
@@ -74,11 +87,23 @@ export class GuestLobby implements Lobby {
   /** After a failed first attempt, every connection (including mid-match reconnects) goes through the relay. */
   private relayOnly = false;
 
-  /** Closing the tab: say bye, so the other player hears straight away instead of after a timeout. */
-  private readonly onPageHide = (): void => this.leave();
+  /**
+   * Closing or refreshing the tab. In the lobby: say bye, so the host hears straight away. In a match: say nothing, so
+   * the host holds the match for the page to come back (T21: a refresh rejoins by the room code in the URL); the
+   * price is that closing the tab for good is noticed after a few seconds' silence rather than at once.
+   */
+  private readonly onPageHide = (): void => {
+    if (this.inMatch || !this.isActive()) return;
+    this.shutdown();
+    this.view.status = 'closed';
+  };
 
-  /** `look`: this player's team name and kit. */
-  constructor(code: string, private look: Look) {
+  /**
+   * `look`: this player's team name and kit; `name`: the player's name (already cleaned up). `resumeToken`: set when the
+   * page was refreshed during a match (it came from sessionStorage), so the host takes us back into it.
+   */
+  constructor(code: string, private look: Look, private readonly name: string = GUEST_NAME, private readonly resumeToken = '') {
+    this.token = resumeToken;
     this.view = {
       role: 'guest',
       code,
@@ -90,6 +115,8 @@ export class GuestLobby implements Lobby {
       error: null,
       reconnectUntil: null,
       rematch: { mine: false, theirs: false },
+      chat: this.chat.feed,
+      chatMuted: false,
     };
     window.addEventListener('pagehide', this.onPageHide);
     // The broker timeout also covers fetching TURN credentials (which gives up well before it).
@@ -148,7 +175,9 @@ export class GuestLobby implements Lobby {
       if (!this.isActive() || peer !== this.peer) return;
       clearTimeout(this.timer);
       this.attach(new Link(conn));
-      this.link?.send(hello(GUEST_NAME));
+      this.link?.send(hello(this.name));
+      // After a refresh in a match, say who we were (the host answers with welcome + start, or turns us away).
+      if (this.resumeToken) this.link?.send({ t: 'rejoin', token: this.resumeToken, lastEvent: ALL_EVENTS_SEEN });
       this.timer = setTimeout(() => this.fail('timeout'), NET_HANDSHAKE_TIMEOUT_MS);
     });
   }
@@ -229,7 +258,7 @@ export class GuestLobby implements Lobby {
       }
       this.pendingConn = null;
       this.attach(new Link(conn));
-      this.link?.send(hello(GUEST_NAME));
+      this.link?.send(hello(this.name));
       this.link?.send({ t: 'rejoin', token: this.token, lastEvent: this.lastEventId() });
       // The host answers with welcome + start; the retry timer covers it not answering.
     });
@@ -244,10 +273,13 @@ export class GuestLobby implements Lobby {
           this.fail('version-mismatch', mismatch);
           return;
         }
-        this.view.lobby = msg.lobby;
+        this.view.lobby = cleanLobby(msg.lobby);
         this.view.notice = null;
+        setRoomInUrl(this.view.code);
+        saveSession(this.view.code, this.token);
         // Tell the host which team we'd like to be (it answers with the lobby, with any clash resolved).
-        if (!this.inMatch) this.link?.send({ t: 'look', look: this.look });
+        // (Not after a refresh in a match: the host already has our look.)
+        if (!this.inMatch && !this.resumeToken) this.link?.send({ t: 'look', look: this.look });
         if (this.inMatch) {
           // Back in: keep the give-up timer running until `start` confirms it.
           this.timer = setTimeout(() => this.fail('host-lost'), Math.max(0, (this.view.reconnectUntil ?? 0) - performance.now()));
@@ -259,12 +291,13 @@ export class GuestLobby implements Lobby {
         else this.fail(this.inMatch ? 'host-lost' : 'room-full');
         break;
       case 'lobby':
-        this.view.lobby = msg.lobby;
+        this.view.lobby = cleanLobby(msg.lobby);
         // Remember what the host settled on, so a reconnect or a later change starts from it.
         this.look = msg.lobby.looks[1];
         break;
       case 'start':
         this.token = msg.token;
+        saveSession(this.view.code, msg.token);
         if (this.inMatch) {
           clearTimeout(this.timer);
           clearTimeout(this.retryTimer);
@@ -284,6 +317,17 @@ export class GuestLobby implements Lobby {
       case 'rematch':
         this.view.rematch = { ...this.view.rematch, theirs: msg.want };
         break;
+      case 'emote':
+        this.chat.receive(msg.id);
+        break;
+      case 'lobby-back':
+        if (!this.inMatch) break;
+        this.inMatch = false;
+        this.token = '';
+        saveSession(this.view.code, '');
+        this.view.rematch = { mine: false, theirs: false };
+        this.onBackToLobby();
+        break;
       case 'restart':
         this.view.rematch = { mine: false, theirs: false };
         this.onRestart(msg.seed);
@@ -299,6 +343,8 @@ export class GuestLobby implements Lobby {
 
   private fail(kind: NetErrorKind, message?: string): void {
     if (!this.isActive()) return;
+    clearSession();
+    setRoomInUrl(null);
     this.shutdown();
     this.view.status = 'failed';
     this.view.error = netError(kind, message);
@@ -323,12 +369,32 @@ export class GuestLobby implements Lobby {
     this.link?.send({ t: 'rematch', want });
   }
 
+  sendEmote(id: number): boolean {
+    return this.chat.send(id, this.view.status === 'connected' ? this.link : null);
+  }
+
+  setChatMuted(muted: boolean): void {
+    this.chat.muted = muted;
+    this.view.chatMuted = muted;
+  }
+
+  resetSeries(): void {
+    this.link?.send({ t: 'series-reset' });
+  }
+
+  backToLobby(): void {
+    // The host does it and tells us (a `lobby-back` message back), so both of us move together.
+    if (this.inMatch && this.view.status === 'connected') this.link?.send({ t: 'lobby-back' });
+  }
+
   start(): void {
     // Only the host starts the match.
   }
 
   leave(): void {
     if (this.view.status === 'closed') return;
+    clearSession();
+    setRoomInUrl(null);
     this.shutdown();
     this.view.status = 'closed';
   }

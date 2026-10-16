@@ -1,14 +1,15 @@
 // Network messages: typed, versioned, validated on receipt. Pure: no PeerJS, no DOM.
 import { version as packageVersion } from '../../package.json';
 import { copyRules, isMatchRules, rulesFor } from '../sim/matchRules';
-import type { CardRecord, GoalRecord, MatchEvent, MatchEventType, MatchRules, MatchStats, PenaltyRecord, ShootoutRecord, TeamId } from '../sim/types';
+import { emptySeries, isEmoteId, isSeries, type Series } from '../social';
+import type { CardRecord, GoalRecord, MatchEvent, MatchEventType, MatchRules, MatchStats, PenaltyRecord, PlayerTally, ShootoutRecord, TeamId } from '../sim/types';
 import { DEFAULT_LOOK, isLook, type Look } from '../teams';
 
 /**
  * Bump whenever any message below changes shape or meaning. The `hello` message itself must never change,
  * so that two different versions can always tell each other apart.
  */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 /** The game version (package.json). Both players must run the same one; bump it with each task that ships. */
 export const GAME_VERSION: string = packageVersion;
 
@@ -24,6 +25,8 @@ export interface LobbyState {
   looks: [Look, Look];
   /** The match rules (T15): the host's choice, shown to the guest. */
   rules: MatchRules;
+  /** T21: the running score of the session's matches (by player, not by team). */
+  series: Series;
 }
 
 /* ---- Handshake ---------------------------------------------------------------------------- */
@@ -46,6 +49,12 @@ export interface ReadyMsg { t: 'ready'; ready: boolean }
 export interface LookMsg { t: 'look'; look: Look }
 /** Guest -> host: please swap the teams (clears both ready flags). */
 export interface SwapMsg { t: 'swap' }
+/** Guest -> host: reset the series score to 0-0 (the host does the same by itself and sends the lobby). */
+export interface SeriesResetMsg { t: 'series-reset' }
+/** Guest -> host: back to the lobby after a match (the host does it and tells the guest with the same message). */
+export interface LobbyBackMsg { t: 'lobby-back' }
+/** Either way: a quick-chat message (index into QUICK_CHAT). */
+export interface EmoteMsg { t: 'emote'; id: number }
 /**
  * Host -> guest: the match is starting (or, after a reconnect, carrying on). `token` proves the guest is the
  * same player when it reconnects mid-match.
@@ -82,7 +91,7 @@ export interface FastMsg { t: 'fast'; b: string }
 
 export type Message =
   | HelloMsg | WelcomeMsg | RejectMsg
-  | LobbyMsg | ReadyMsg | LookMsg | SwapMsg | StartMsg
+  | LobbyMsg | ReadyMsg | LookMsg | SwapMsg | StartMsg | SeriesResetMsg | LobbyBackMsg | EmoteMsg
   | PingMsg | PongMsg | ByeMsg
   | EventMsg | StatsMsg | RematchMsg | RestartMsg | RejoinMsg | FastMsg;
 export type MessageType = Message['t'];
@@ -97,7 +106,7 @@ const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 const isTeam = (v: unknown): v is TeamId => v === 0 || v === 1;
 const isPair = <T>(v: unknown, f: (x: unknown) => x is T): v is [T, T] => Array.isArray(v) && v.length === 2 && f(v[0]) && f(v[1]);
 const isLobby = (v: unknown): v is LobbyState =>
-  isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr) && isPair(v.looks, isLook) && isMatchRules(v.rules);
+  isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr) && isPair(v.looks, isLook) && isMatchRules(v.rules) && isSeries(v.series);
 const isVersioned = (m: Obj): boolean => isNum(m.protocol) && isStr(m.game);
 const EVENT_TYPES: readonly MatchEventType[] = [
   'kickoff', 'goal', 'throw-in', 'goal-kick', 'corner', 'half-time', 'second-half', 'full-time',
@@ -124,6 +133,8 @@ const isPenalty = (v: unknown): v is PenaltyRecord => isObj(v) && isTeam(v.team)
 const isShootout = (v: unknown): v is ShootoutRecord =>
   isObj(v) && isTeam(v.first) && Array.isArray(v.kicks) && v.kicks.length <= 200 && v.kicks.every(isBool) && (v.winner === -1 || isTeam(v.winner));
 const isList = <T>(v: unknown, f: (x: unknown) => x is T): v is T[] => Array.isArray(v) && v.length <= 100 && v.every(f);
+const isTally = (v: unknown): v is PlayerTally =>
+  isObj(v) && [v.goals, v.assists, v.saves, v.tackles, v.shots].every((n) => isNum(n) && n >= 0 && n <= 999);
 const isStats = (v: unknown): v is MatchStats =>
   isObj(v) &&
   isPair(v.shots, isNum) &&
@@ -132,7 +143,9 @@ const isStats = (v: unknown): v is MatchStats =>
   isPair(v.fouls, isNum) &&
   isList(v.cards, isCard) &&
   isList(v.penalties, isPenalty) &&
-  (v.shootout === null || isShootout(v.shootout));
+  (v.shootout === null || isShootout(v.shootout)) &&
+  isList(v.players, isTally) &&
+  isPair(v.humans, isTally);
 
 const VALIDATORS: Record<MessageType, (m: Obj) => boolean> = {
   hello: (m) => isVersioned(m) && isStr(m.name),
@@ -142,6 +155,9 @@ const VALIDATORS: Record<MessageType, (m: Obj) => boolean> = {
   ready: (m) => isBool(m.ready),
   look: (m) => isLook(m.look),
   swap: () => true,
+  'series-reset': () => true,
+  'lobby-back': () => true,
+  emote: (m) => isEmoteId(m.id),
   start: (m) => isTeam(m.hostTeam) && isNum(m.seed) && isStr(m.token) && isNum(m.half) && m.half >= 10 && m.half <= 1800 && isMatchRules(m.rules),
   ping: (m) => isNum(m.id) && isNum(m.sent),
   pong: (m) => isNum(m.id) && isNum(m.sent),
@@ -179,7 +195,7 @@ export const GUEST_NAME = 'Guest';
 /* ---- Lobby rules ------------------------------------------------------------------------------ */
 
 export function createLobbyState(hostName: string, guestName: string, hostLook: Look = DEFAULT_LOOK, guestLook: Look = DEFAULT_LOOK, rules: MatchRules = rulesFor('arcade')): LobbyState {
-  return { hostTeam: 0, ready: [false, false], names: [hostName, guestName], looks: [{ ...hostLook }, { ...guestLook }], rules: copyRules(rules) };
+  return { hostTeam: 0, ready: [false, false], names: [hostName, guestName], looks: [{ ...hostLook }, { ...guestLook }], rules: copyRules(rules), series: emptySeries() };
 }
 
 /** The host changes the match rules: both players must confirm ready again. */

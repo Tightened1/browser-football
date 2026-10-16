@@ -16,6 +16,8 @@ import {
   SIM_DT,
 } from '../config';
 import { createMatchState, NEUTRAL_INPUT, step } from '../sim/simulation';
+import { emptySeries, nameOr, seriesAfter, uniqueName } from '../social';
+import { QuickChat } from './chat';
 import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
 import type { Difficulty, GameState, InputFrame, MatchRules, MatchStats, TeamId } from '../sim/types';
 import { kindForPeerError, netError, NETWORK_HINT } from './errors';
@@ -56,6 +58,8 @@ import {
 } from './protocol';
 
 export interface HostLobbyOptions {
+  /** The host's player name (T21; already cleaned up). */
+  name: string;
   /** The host's team name and kit. */
   look: Look;
   /** Seconds per half for the match (the host's setting; the guest follows it). */
@@ -70,6 +74,8 @@ export class HostLobby implements Lobby {
   onRestart: (seed: number) => void = () => {};
   /** Mid-match, the guest came back: `lastEvent` is the newest event id it had received. */
   onRejoin: (lastEvent: number) => void = () => {};
+  onBackToLobby: () => void = () => {};
+  private readonly chat = new QuickChat('host');
 
   private peer: Peer | null = null;
   /** The guest's link once its connection is open (accepted or still handshaking). */
@@ -95,13 +101,15 @@ export class HostLobby implements Lobby {
       role: 'host',
       code: '',
       status: 'opening',
-      lobby: createLobbyState(HOST_NAME, GUEST_NAME, opts.look, resolveClash(DEFAULT_LOOK, opts.look), opts.rules),
+      lobby: createLobbyState(opts.name || HOST_NAME, GUEST_NAME, opts.look, resolveClash(DEFAULT_LOOK, opts.look), opts.rules),
       pingMs: null,
       route: null,
       notice: null,
       error: null,
       reconnectUntil: null,
       rematch: { mine: false, theirs: false },
+      chat: this.chat.feed,
+      chatMuted: false,
     };
     // The broker timeout also covers fetching TURN credentials (which gives up well before it).
     this.brokerTimer = setTimeout(() => this.fail('broker-unreachable'), NET_BROKER_TIMEOUT_MS);
@@ -228,9 +236,9 @@ export class HostLobby implements Lobby {
         return;
       }
       this.accepted = true;
-      this.view.lobby = { ...this.lobby, ready: [false, false], names: [HOST_NAME, msg.name || GUEST_NAME], looks: [this.lobby.looks[0], resolveClash(DEFAULT_LOOK, this.lobby.looks[0])] };
+      this.view.lobby = { ...this.lobby, ready: [false, false], names: [this.lobby.names[0], uniqueName(nameOr(msg.name, GUEST_NAME), this.lobby.names[0])], looks: [this.lobby.looks[0], resolveClash(DEFAULT_LOOK, this.lobby.looks[0])] };
       this.view.status = 'connected';
-      link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: HOST_NAME, lobby: this.lobby });
+      link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: this.lobby.names[0], lobby: this.lobby });
       return;
     }
     switch (msg.t) {
@@ -247,6 +255,15 @@ export class HostLobby implements Lobby {
       case 'rematch':
         this.view.rematch = { ...this.view.rematch, theirs: msg.want };
         this.maybeRematch();
+        break;
+      case 'emote':
+        this.chat.receive(msg.id);
+        break;
+      case 'series-reset':
+        this.resetSeries();
+        break;
+      case 'lobby-back':
+        this.backToLobby();
         break;
       default:
         break; // inputs and snapshots arrive on the fast channel, see HostMatch
@@ -302,7 +319,7 @@ export class HostLobby implements Lobby {
     this.view.status = 'connected';
     this.view.reconnectUntil = null;
     this.view.notice = null;
-    link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: HOST_NAME, lobby: this.lobby });
+    link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: this.lobby.names[0], lobby: this.lobby });
     link.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed: 0, token: this.token, half: this.opts.halfLength, rules: this.lobby.rules });
     // It lost whatever rematch messages were in flight: start that conversation again.
     link.send({ t: 'rematch', want: this.view.rematch.mine });
@@ -335,7 +352,7 @@ export class HostLobby implements Lobby {
     clearTimeout(this.guestTimer);
     this.guest = null;
     this.accepted = false;
-    this.view.lobby = { ...this.lobby, ready: [false, false], names: [HOST_NAME, GUEST_NAME], looks: [this.lobby.looks[0], resolveClash(DEFAULT_LOOK, this.lobby.looks[0])] };
+    this.view.lobby = { ...this.lobby, ready: [false, false], names: [this.lobby.names[0], GUEST_NAME], looks: [this.lobby.looks[0], resolveClash(DEFAULT_LOOK, this.lobby.looks[0])] };
     this.view.pingMs = null;
     this.view.route = null;
     if (this.isActive()) {
@@ -386,6 +403,36 @@ export class HostLobby implements Lobby {
     this.view.rematch = { ...this.view.rematch, mine: want };
     this.guest?.send({ t: 'rematch', want });
     this.maybeRematch();
+  }
+
+  sendEmote(id: number): boolean {
+    return this.chat.send(id, this.accepted ? this.guest : null);
+  }
+
+  setChatMuted(muted: boolean): void {
+    this.chat.muted = muted;
+    this.view.chatMuted = muted;
+  }
+
+  /** The series score goes back to 0-0 (either player can ask). */
+  resetSeries(): void {
+    this.update({ ...this.lobby, series: emptySeries() });
+  }
+
+  /** Full time over: add the result to the series (once per match; HostMatch calls it). */
+  recordResult(score: readonly [number, number], shootoutWinner: number | null | undefined): void {
+    this.update({ ...this.lobby, series: seriesAfter(this.lobby.series, this.lobby.hostTeam, score, shootoutWinner) });
+  }
+
+  /** After a match: both players go back to the lobby (names, kits, teams and the series are kept; ready is cleared). */
+  backToLobby(): void {
+    if (!this.inMatch || !this.accepted) return;
+    this.inMatch = false;
+    this.token = '';
+    this.view.rematch = { mine: false, theirs: false };
+    this.update({ ...this.lobby, ready: [false, false] });
+    this.guest?.send({ t: 'lobby-back' });
+    this.onBackToLobby();
   }
 
   /** Both players want one: the host starts it. */
@@ -613,6 +660,7 @@ export class HostMatch implements MatchDriver {
     if (this.state.phase === 'full-time' && !this.statsSent) {
       this.statsSent = true;
       this.link?.send({ t: 'stats', stats: this.state.stats });
+      this.opts.lobby?.recordResult(this.state.score, this.state.stats.shootout?.winner);
     }
   }
 
