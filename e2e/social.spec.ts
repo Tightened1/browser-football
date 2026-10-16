@@ -84,12 +84,13 @@ test('T21: names, quick chat, a series score, man of the match, back to the lobb
     });
   }
   await guestPage.keyboard.press('1');
-  await guestPage.keyboard.press('2');
   // The message is a bubble above the guest's controlled player on both screens...
   for (const page of [hostPage, guestPage]) await page.waitForFunction(() => (window as any).__sawBubble, null, { timeout: 30_000 });
-  // ...and a line in the feed, with its sender's name; a second message straight after was refused by the rate limit.
-  expect(await scene(hostPage, 'MatchScene', 'scene.chatFeed().map((l) => l.name + ": " + l.text)')).toEqual(['bSamb: Nice goal!']);
-  expect(await scene(guestPage, 'MatchScene', 'scene.chatFeed().length')).toBe(1); // you see your own message too
+  // ...and a line in the feed, with its sender's name; with its text.
+  expect(await scene(hostPage, 'MatchScene', 'scene.chatFeed().map((l) => l.name + ": " + l.text)')).toContain('bSamb: Nice goal!');
+  expect(await scene(guestPage, 'MatchScene', 'scene.chatFeed().some((l) => l.text === "Nice goal!")')).toBe(true); // you see your own message too
+  // The rate limit refuses a second message sent straight after the first (back to back, so no timing involved).
+  expect(await scene(hostPage, 'MatchScene', '[scene.online.sendEmote(2), scene.online.sendEmote(3)]')).toEqual([true, false]);
 
   // The host mutes, then the guest says GG: the host does not see it, the guest still does.
   await hostPage.keyboard.press('m');

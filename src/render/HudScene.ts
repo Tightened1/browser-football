@@ -68,6 +68,8 @@ export class HudScene extends Phaser.Scene {
   /** T21: the human players' names under the team names, and the quick-chat feed (bottom left). */
   private players!: [Phaser.GameObjects.Text, Phaser.GameObjects.Text];
   private feed!: Phaser.GameObjects.Text[];
+  private readonly hasPlayerName: [boolean, boolean] = [false, false];
+  private readonly feedColor: string[] = [];
   private half!: Phaser.GameObjects.Text;
   private restartLabel!: Phaser.GameObjects.Text;
   private goalBanner!: Phaser.GameObjects.Container;
@@ -194,7 +196,12 @@ export class HudScene extends Phaser.Scene {
     for (const team of [0, 1] as const) {
       const who = playerName(team);
       // With a player name under it the team name sits a little higher and smaller.
-      this.names[team].setText(teamStyle(team).name).setFontSize(who ? 17 : 20).setY(who ? BAR_Y + 20 : BAR_Y + BAR_H / 2);
+      // (Changing a font size or colour redraws the text's canvas, so it is only done when it actually changes.)
+      this.names[team].setText(teamStyle(team).name);
+      if (this.hasPlayerName[team] !== !!who) {
+        this.hasPlayerName[team] = !!who;
+        this.names[team].setFontSize(who ? 17 : 20).setY(who ? BAR_Y + 20 : BAR_Y + BAR_H / 2);
+      }
       this.players[team].setText(who);
       this.score[team].setText(String(s.score[team]));
     }
@@ -278,7 +285,12 @@ export class HudScene extends Phaser.Scene {
       const line = lines[i - (this.feed.length - lines.length)];
       t.setVisible(!!line);
       if (!line) return;
-      t.setText(`${line.name}: ${line.text}`).setColor(hex(readableColor(line.team))).setAlpha(Math.min(1, (EMOTE_FEED_MS - (now - line.at)) / 1500));
+      const color = hex(readableColor(line.team));
+      t.setText(`${line.name}: ${line.text}`).setAlpha(Math.min(1, (EMOTE_FEED_MS - (now - line.at)) / 1500));
+      if (this.feedColor[i] !== color) {
+        this.feedColor[i] = color;
+        t.setColor(color);
+      }
     });
   }
 
