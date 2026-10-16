@@ -961,3 +961,12 @@ export const BIG_SAVE_SPEED = 600;
 export const REPLAY_CAMERA_ZOOM = 1.6;
 /** At most this many clips are kept for the full-time highlights (the oldest saves go first). */
 export const REPLAY_MAX_CLIPS = 24;
+
+/**
+ * T24 kit clash prevention: two shirt colours closer than this (CIEDE2000, ~1 = barely visible, 20+ = clearly different)
+ * count as a clash, and a shirt closer than KIT_GRASS_DELTA_E to the pitch green disappears on it.
+ */
+export const KIT_CLASH_DELTA_E = 22;
+export const KIT_GRASS_DELTA_E = 16;
+/** How long (s) the name of the player you just switched to shows above them. */
+export const SWITCH_NAME_SECONDS = 1.6;

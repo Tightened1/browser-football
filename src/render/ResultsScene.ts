@@ -1,11 +1,11 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH } from '../config';
-import { formatTime, manOfTheMatch, possessionPercent, tallyText } from '../matchStats';
+import { manOfTheMatch, matchMinute, possessionPercent, tallyText } from '../matchStats';
 import { seriesPlayed, seriesText } from '../social';
 import { shootoutTally } from '../sim/fouls';
 import type { GameState, GoalRecord, MatchStats, ShootoutRecord, TeamId } from '../sim/types';
 import type { MatchScene } from './MatchScene';
-import { playerName, readableColor, teamStyle } from './teamStyle';
+import { playerName, playerNameById, readableColor, shirtNumber, squadPlayerById, teamStyle } from './teamStyle';
 import { button, Focus, label, UI_COLORS, type Button } from './ui';
 
 const CX = GAME_WIDTH / 2;
@@ -130,7 +130,7 @@ export class ResultsScene extends Phaser.Scene {
     for (const t of [0, 1] as const) {
       const who = playerName(t);
       if (!who || !stats.humans) continue;
-      add(label(this, CX, y, 18, hex(readableColor(t))).setText(`${who}:  ${tallyText(stats.humans[t])}`).setStroke('#000000', 3));
+      add(label(this, CX, y, 18, hex(readableColor(t))).setText(`Manager ${who}:  ${tallyText(stats.humans[t])}`).setStroke('#000000', 3));
       y += 25;
     }
 
@@ -140,7 +140,7 @@ export class ResultsScene extends Phaser.Scene {
       const p = players[mvp.player];
       const team = (p?.team ?? 0) as TeamId;
       y += 6;
-      add(label(this, CX, y, 22, UI_COLORS.warn, true).setText(`★ MAN OF THE MATCH:  #${p?.number ?? '?'} ${teamStyle(team).name}${p?.role === 'keeper' ? ' (GK)' : ''}`).setStroke('#000000', 4));
+      add(label(this, CX, y, 22, UI_COLORS.warn, true).setText(`★ MAN OF THE MATCH:  ${p ? `${squadPlayerById(p.id).name} #${shirtNumber(p)}` : '?'} · ${teamStyle(team).name}${p?.role === 'keeper' ? ' (GK)' : ''}`).setStroke('#000000', 4));
       add(label(this, CX, y + 25, 17, UI_COLORS.muted).setText(tallyText(stats.players[mvp.player])));
       y += 52;
     }
@@ -155,9 +155,9 @@ export class ResultsScene extends Phaser.Scene {
     const shown = stats.goals.slice(0, Math.max(1, Math.floor((660 - goalsY) / 24) - 1));
     shown.forEach((g: GoalRecord, i: number) => {
       const gy = goalsY + 32 + i * 24;
-      const time = formatTime((g.half - 1) * halfLength + g.clock);
-      const who = g.player >= 0 ? ` · #${(g.player % 5) + 1}` : '';
-      const text = `${time}  ${teamStyle(g.team).name}${who}${g.ownGoal ? ' (own goal)' : ''}`;
+      const minute = `${matchMinute(g.half, g.clock, halfLength)}'`;
+      const who = g.player >= 0 ? `${playerNameById(g.player)} · ` : '';
+      const text = `${minute}  ${who}${teamStyle(g.team).name}${g.ownGoal ? ' (own goal)' : ''}`;
       add(label(this, CX, gy, 19, hex(readableColor(g.team))).setText(text).setStroke('#000000', 3));
     });
     if (stats.goals.length > shown.length) add(label(this, CX, goalsY + 32 + shown.length * 24, 17, UI_COLORS.muted).setText(`…and ${stats.goals.length - shown.length} more`));

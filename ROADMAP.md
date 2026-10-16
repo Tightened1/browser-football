@@ -32,7 +32,8 @@ src/
   main.ts              Phaser game bootstrap
   config.ts            All tunable constants (pitch size, speeds, friction, match length…)
   settings.ts          Player settings in localStorage (try/catch), key bindings and their validation (pure apart from storage)
-  teams.ts             Preset team names and kit colours, clash prevention (pure)
+  teams.ts             T24: looks (club + kit indices), CIEDE2000 colour difference, kit-clash prevention, team drawing styles (pure)
+  data/clubs.ts        T24: the 20 Premier League clubs: names, kits, 5-player squads. Pure data, easy to correct by hand (docs/UPDATING_SQUADS.md)
   matchStats.ts        Results-screen helpers: clock text, possession %, man of the match, stat lines (pure)
   social.ts            T21: player-name sanitising, quick-chat presets / rate limit / feed, series score (pure)
   sim/                 PURE TypeScript — no Phaser, no DOM, no network imports
@@ -51,10 +52,10 @@ src/
   render/              Phaser scenes that DRAW a GameState (never change it)
     MatchScene.ts
     MenuScene.ts       Title screen
-    SettingsScene.ts / HowToPlayScene.ts / JoinScene.ts / TeamPickScene.ts / LobbyScene.ts / DiagnosticsScene.ts
+    SettingsScene.ts / HowToPlayScene.ts / JoinScene.ts / TeamPickScene.ts (club picker) / LobbyScene.ts / DiagnosticsScene.ts
     HudScene.ts / PauseScene.ts / ResultsScene.ts   (drawn over MatchScene)
     effects.ts         Dust/confetti particles, net ripple, fake ball height, camera aim (render maths, tested)
-    teamStyle.ts       The names and kit colours the current match is drawn with
+    teamStyle.ts       The club names, kit colours and players the current match is drawn with
     ui.ts              Shared buttons/labels and `Focus` (keyboard navigation) for all menu screens
   audio/
     cues.ts            What the match sounds like, from the drawn state: new events, kicks/post hits seen in the ball's motion (pure)
@@ -165,6 +166,8 @@ Status key: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 | T19 | Fouls, free kicks, penalties & penalty shoot-outs | T17 | **Opus 5.5** | [x] |
 | T21 | Online extras: names, quick chat, series score, MVP | T16 | Sonnet 5.5 | [x] |
 | T23 | Goal replays & highlights | T19 | **Opus 5.5** | [x] |
+| T24 | Premier League clubs: names, home/away kits & real player names | T23 | Sonnet 5.5 | [x] |
+| T20 | Xbox / PlayStation controller support | T24 | Sonnet 5.5 | [ ] |
 
 ### Which model, and why
 
@@ -724,12 +727,80 @@ Finally, mark T23 as [x] in the ROADMAP.md task queue, add a change log entry, c
 
 ---
 
+### T24 — Premier League clubs: names, home/away kits & real player names
+**Model:** Sonnet 5.5 (data research plus UI and protocol changes with a clear spec; it needs web search to get current squads right)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture and golden rules exactly. You are doing task T24.
+
+Goal: replace the generic team names (Rovers, United…) and kit colour presets in src/teams.ts with the current Premier League clubs, their real home/away kit colours and a 5-a-side squad of real players per club.
+
+Decisions already made (don't change them):
+- Real club and player names, but NO crests, badges, logos or sponsor names anywhere — colours and text only. Add a short "Unofficial fan game, not affiliated with the Premier League or any club" note to the README and the title/about screen.
+- Clubs are cosmetic only: every club plays identically (no ratings).
+- Each club has a fixed squad of 5: 1 goalkeeper + 4 of its best-known outfield players (e.g. 2 defenders/midfielders + 2 attackers), each with their real current shirt number.
+- Both players may pick the same club online; colours must never clash (see step 4).
+
+Do the following:
+1. Research (use web search; don't rely on memory) the 20 clubs in the Premier League for the CURRENT season as of today, their current home, away and third kit colours, and their current squads. Pick 5 players per club as above. Note the date and the sources you used in a comment at the top of the data file.
+2. Put all of this in ONE pure data file, src/data/clubs.ts (no Phaser/DOM), so it's easy to correct by hand or swap to made-up names later. For each club: full name, short name (≤12 chars for the HUD), 3-letter code (e.g. ARS), kits (home/away/third: shirt colour, secondary/outline colour, number colour) and a goalkeeper kit; players: display name (surname, or the name they're known by), shirt number and role (GK/DEF/MID/FWD), mapped onto the game's existing formation slots/roles. Add docs/UPDATING_SQUADS.md explaining how to refresh the data for a new season or transfer window.
+3. Club picker (replace the current team picker): browse the 20 clubs, see the 5 players with their numbers, and choose Home / Away / Third kit. Remember the last choice (localStorage, wrapped in try/catch; migrate or reset old saved looks safely). Offline, the AI opponent gets a random different club (or a "choose opponent" option).
+4. Kit clash prevention: compute a perceptual colour difference (e.g. CIE76/CIEDE2000 on shirt colours, also checking goalkeeper kits against both outfield kits, and both against the grass green). If the two teams' chosen kits clash, the away team (online: the guest; offline: the AI) is automatically switched to its next non-clashing kit, and the picker shows why ("Kit changed to avoid a colour clash"). Online, the host is the authority; the lobby shows both final kits before the match. If somehow no kit works, fall back to a neutral bib colour.
+5. Player names in the game:
+   - During the match, players still show their kit number (now the real shirt number).
+   - The controlled player's name shows briefly when you switch to them, and in the goal banner/feed ("GOAL! Saka 23'").
+   - Stats, the results screen, man of the match, replays/highlights captions and penalty shoot-out takers use player names. The human players' own names (from T21) are still shown as the "manager" of each side.
+6. HUD and scoreboard use the club short name/code and kit colours.
+7. Network: send only small indices (club index + kit choice) in the protocol, validate them on receipt, and bump the protocol version. Include a hash/version of the clubs data in the handshake so mismatched builds give a clear "please refresh" message.
+8. Update the tests (picker data validity: 20 clubs, 5 players each, exactly 1 GK, unique shirt numbers per club, valid colours; clash detection cases including same club home vs away; protocol round-trip), the T18 e2e test and the sim regression if team data is involved. Update How-to-play/README.
+
+Done when: I can choose any current Premier League club and kit, see real player names in stats and man of the match, two players picking clashing colours (or the same club) always end up in clearly different kits, and `npm test`, `npm run build` and the CI e2e tests pass.
+Finally, mark T24 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
+### T20 — Xbox / PlayStation controller support
+**Model:** Sonnet 5.5 (standard browser API work behind the existing InputFrame abstraction)
+
+```text
+You are working on a browser football game in C:\Projects\Game. Read ROADMAP.md first — follow the architecture exactly (input only produces InputFrames; menus read input through the existing scene code). You are doing task T20.
+
+Goal: play everything with an Xbox or PlayStation controller, alongside the keyboard.
+
+Do the following:
+1. Read src/settings.ts and src/input/keyboard.ts to see every current action (move, pass, shoot, tackle, sprint, shield, switch, feint via double-tap, quick chat, pause, set-piece aiming, penalty keeper dives, skipping replays). Add src/input/gamepad.ts using the browser Gamepad API with the "standard" mapping. Suggested default layout (Xbox names / PlayStation names):
+   - Left stick (and d-pad) = move / aim; flicking the stick twice quickly = feint
+   - A / Cross = pass (short throw)
+   - X / Square = shoot (hold to charge; long throw)
+   - B / Circle = tackle (and keeper dive in penalties)
+   - RT / R2 = sprint (analogue trigger: treat past ~30% as held)
+   - LT / L2 = shield
+   - LB / L1 = switch player
+   - D-pad (while not moving with it) or RB / R1 + face button = quick chat
+   - Start / Options = pause; any face button skips a replay
+   Adjust if something conflicts, and explain your final layout.
+2. Analogue movement: stick magnitude scales speed (walk → run) with a configurable dead zone; set-piece, shot and penalty aiming use the stick direction precisely.
+3. Keyboard and controller both work at the same time. The most recently used device decides the on-screen prompts (e.g. "Press A" / "Press ✕" vs "Press X key"). Detect Xbox vs PlayStation from the gamepad id where possible; default to Xbox labels.
+4. Menus, the club/kit picker, lobby, settings, pause and results screens are fully navigable with the d-pad/stick, A/Cross = confirm and B/Circle = back.
+5. Online: the controller just produces InputFrames, so nothing changes in the protocol — confirm the guest's prediction works with analogue movement.
+6. Optional rumble (vibration) on kicks, tackles, goals and saves where supported, with a setting to turn it off.
+7. Settings: show "Controller connected" with its type, allow rebinding buttons (like the keyboard rebinding), and adjust the dead zone and trigger threshold. Handle a controller being unplugged mid-match (pause offline; online, fall back to the keyboard and show a notice).
+8. Update How-to-play with a controller diagram/table and the README.
+9. Tests (Vitest) for the pure gamepad → InputFrame mapping: dead zone, normalisation, trigger threshold, feint flick detection, rebinding.
+
+Done when: I can play a full online and offline match, take set pieces and penalties, use quick chat and navigate every menu with an Xbox or PlayStation controller. `npm test`, `npm run build` and the CI tests pass.
+Finally, mark T20 as [x] in the ROADMAP.md task queue, add a change log entry, commit and push (this deploys to GitHub Pages).
+```
+
+---
+
 ## 6. Backlog (after v1)
 
 | # | Idea | Suggested model |
 |---|---|---|
 | B01 | Pixel-art sprites & animations for players | Sonnet 5.5 |
-| B02 | ~~Gamepad support~~ — dropped | — |
+| B02 | ~~Gamepad support~~ → back in as T20 | — |
 | B03 | Mobile touch controls (virtual joystick) | Sonnet 5.5 |
 | B04 | 2v2 humans online (more peers, more controlled players per team) | Opus 5.5 |
 | B05 | Switch to a Node/Socket.io server if P2P is unreliable (plan: `docs/RELAY_SERVER_OPTION.md`) | Opus 5.5 |
@@ -765,3 +836,5 @@ Finally, mark T23 as [x] in the ROADMAP.md task queue, add a change log entry, c
 - 2026-10-16 — T19 (game 1.5.0, protocol 7): **fouls, free kicks, penalties and shoot-outs.** New `sim/fouls.ts` (the referee, walls, penalty and shoot-out helpers); `MatchRules` gains `fouls` (Off / Lenient / Strict; Arcade Lenient, Classic Strict, Off = the old game), `cards` (Arcade off, Classic on) and `draws` (Off / Shoot-out / Golden goal; Arcade shoot-out, Classic off), all overridable in Settings and sent with the rules. A slide that hits the player hard before (instead of) the ball, or from behind, is a foul, as is a clearly late challenge; measured first, "any contact before the ball" gave 44 fouls a match, so Lenient only calls clear misses on the player on the ball (`FOUL_PROFILES`), and the AI slides less in its own box and rarely from behind. Free kicks (on the spot, held like a corner, 1-2 player AI wall near goal) and penalties (taker aims left / centre / right, pass = placed, shoot = power; the keeper waits on its line and dives with move + tackle; a human team controls its keeper; the AI takes and saves on difficulty-based odds: a tell and a read chance). Cards: a reckless slide is a yellow, two = sent off for the rest of the half (parked off the pitch). Draws: golden-goal extra time and/or a best-of-5 shoot-out with sudden death and a HUD scoreboard. Network: new restart types, phase `shootout`, events (foul, cards, free kick, penalty, penalty-result, extra time, shoot-out), snapshot fields (shoot-out kicks, per-player cards; 176 bytes), richer stats message; the guest controls its own taker / keeper with no prediction at set pieces. HUD: FOUL! / card banner, cards by the team names, penalty hints and SCORED / SAVED / MISSED, shoot-out board; results: fouls, cards, penalties, shoot-out; a sharper foul whistle. Numbers (AI vs AI, normal): Arcade 3.4 fouls and 6.7 goals a match (holdout 3.2 / 5.5), Classic 10.1 fouls, 2.4 yellows, 5.2 goals. Tests: `tests/fouls.test.ts` (23), a second e2e test (an online penalty, guest taking, host in goal). Details and hand-test list: `docs/PLAYTEST_NOTES.md` (T19).
 - 2026-10-16 — T21 (game 1.6.0, protocol 8): **online sessions are more social.** **Names:** typed on the title screen (saved in `settings.playerName`, localStorage in try/catch), cleaned by `sanitizeName` (letters of any script, digits, space, `_ - .`; max 16 characters; markup, quotes, controls and emoji are removed) on entry, in the handshake (`hello.name`, host cleans it and renames a guest who has the host's name) and again on receipt of any lobby; shown in the lobby cards, under the team names in the HUD and in the results. **Quick chat:** keys `1`–`6` send a preset index (`emote` message, never text; `Digit1-6` and `M` are now reserved keys); `net/chat.ts` rate-limits both ways (`EMOTE_MIN_GAP_MS` between messages, `EMOTE_MAX_PER_WINDOW` per `EMOTE_WINDOW_MS`, so a modified client can't flood), shows a bubble above the sender's controlled player (3 s) and a small feed bottom-left; `M` or Settings → Online quick chat mutes the other player's (yours still show to you). **Series:** `LobbyState.series` (host wins / guest wins / draws, by player, so swapping teams doesn't matter; a shoot-out winner counts) is updated by the host once at full time and sent to the guest; shown on the results screen and in the lobby, with **Reset series** (either player). New results button **Back to lobby** (either player; `lobby-back` message): the same connection returns to the lobby with names, kits and series kept and ready cleared, so several matches in a row don't need a new room. **Man of the match:** new `sim/playerStats.ts` watches each tick's changes (shot count up = shot; a keeper touch while an opponent's shot is live = save; the carrier's ball taken by an opponent = tackle won; a goal plus the previous toucher on the same side within `ASSIST_WINDOW` s = assist, never from own goals or penalties) into `stats.players` (per player) and `stats.humans` (per team's human, only while they controlled that player); points `MVP_POINTS` (goal 5, assist 3, save 2, tackle 1, shot 0.25; a tie goes to the winning side, then the lower id). The results screen shows the MVP with their stat line and one line per named human. **Reconnect:** the guest puts `?room=CODE` in the URL and the code and match token in sessionStorage; on a refresh the title screen sees them (under `SESSION_REJOIN_MS`) and goes straight to the lobby scene, which rejoins (retrying a few times, as the host may not have seen the old connection close); in a match it sends `rejoin` with the token and the host puts it back into the running match (the page closing in a match no longer sends `bye`, so the host holds the match for `NET_RECONNECT_WINDOW_MS` — closing the tab for good is noticed after the silence timeout instead of at once). Tests: `tests/social.test.ts` (29: name sanitising, limiter, series counting, MVP, the stat tracker incl. a whole simulated match), protocol round trips for the new messages, and `e2e/social.spec.ts` (two browsers: names, chat bubbles/feed/mute, two matches with series 1–0 then 1–1, MVP and stat lines, back to lobby, reset series, and a guest refresh in the lobby and in a match).
 - 2026-10-16 — T23 (game 1.7.0, protocol 9): **goal replays and full-time highlights.** New pure `net/replay.ts`: `ReplayRing` keeps the last `REPLAY_BUFFER_SECONDS` (6.5 s) of **encoded binary snapshots** (the T07 wire format, one every `NET_SNAPSHOT_INTERVAL_TICKS`) in one preallocated slab (~34 KB for 5-a-side; frames copied out on read, out-of-order ticks refused); `Replays` cuts a clip around each goal (5 s build-up, 1 s after) and each **big save** (new sim event `save`: a keeper save of a shot at `BIG_SAVE_SPEED`+, pushed by `trackStats`), and plays one into a `structuredClone` of the match state with no events (so nothing fires twice). The live `GameState` is never touched: MatchScene just draws the replay's state while it runs. Timing (`replayTiming`/`replayTickAt`): normal speed, then the last `REPLAY_SLOWMO_SECONDS` before the goal and 0.3 s after it at `REPLAY_SLOWMO_SPEED` (0.35×); a clip starts after the previous dead-ball spell, so a quick goal doesn't replay the last one. The host records the snapshots it encodes (offline too), the guest the ones it receives (same clips from its own buffer, no extra bandwidth). **Flow:** the replay starts as the 2 s goal pause ends; `HostMatch` doesn't step the sim while it plays, so the clock is still and the kickoff waits; snapshots keep flowing at the frozen tick, as in a pause. **Online, one shared replay:** the host sends `replay {on, moment}` (reliable), the guest plays the same goal and holds its live view, and either player pressing a key ends it for both (`replay-skip`); a guest with replays Off skips at once. Chosen because the kickoff has to wait for the replay anyway: watching independently would leave one player staring at a frozen pitch while the other watches, or one player's skip would restart play under the other's replay. Full-time **highlights** (every goal, plus big saves not already in a goal's build-up, in match order, capped at `REPLAY_MAX_CLIPS`) run per player after the final whistle, before the results; a key skips the reel. The camera follows the ball at `REPLAY_CAMERA_ZOOM` whatever the camera setting; HUD: a red REPLAY / HIGHLIGHTS n/m tag, SLOW MOTION, what and when ("GOAL — Rovers · 1st half 00:43"), a progress bar and the skip hint, with the live match's banners hidden meanwhile. New setting **Replays**: Off / Goals only / Goals + full-time highlights (default). A guest that rejoins mid-replay is told about it. Tests: `tests/replay.test.ts` (17: ring buffer order, wrap, copies, growth and size; timing and slow motion; clip trimming; highlight reel; the offline host holding the clock and kickoff, skip, replays off, highlights; a guest's lossy, out-of-order recording), protocol samples, and `e2e/replay.spec.ts` (two browsers: the replay on both, host held, the guest skips for both, a replay that plays out, full-time highlights of both goals skipped separately, then the results).
+- 2026-10-16 — Added T24 (Premier League clubs, home/away/third kits with clash prevention, real player names; no crests or logos; clubs cosmetic only; fixed 5-player squads; same club allowed in home vs away) and brought back T20 (Xbox/PlayStation controller support, covering sprint, shield, quick chat, set pieces and penalties). Run T24 first.
+- 2026-10-16 — T24 (game 1.8.0, protocol 10): **Premier League clubs, kits and real players.** New pure data file `src/data/clubs.ts`: the 20 clubs of 2026-27 (researched 2026-10-16: squads from Wikipedia club/season pages and club announcements, kits from footyheadlines, footballfashion, goal.com and club launch pages; the sources and the caveats are in the file's header comment). Each club: full name, short name (≤12 chars), code, home/away/third kit (shirt, trim, number colour), a goalkeeper kit and a fixed squad of 5 in the formation slots (GK, two DEF/MID in the back slots, two FWD in the front slots) with real shirt numbers. **All colour values are estimates** (no source gave exact hex values) and several third and goalkeeper kits are leaks or stand-ins; the data is meant to be corrected by hand (`docs/UPDATING_SQUADS.md`). Clubs are cosmetic (the sim is untouched: the sim's `number` is still slot+1 and the renderer maps slot -> real player, so the sim regression and snapshots did not change). No crests, badges, logos or sponsors; "Unofficial fan game, not affiliated with the Premier League or any club" is on the title screen, the picker, How to play and the README. **Look** is now `{club, kit}` (kit 0/1/2 = home/away/third, 3-5 plain bibs as the last resort); old saved `{name, kit}` looks fail validation and reset to the default. **Clash prevention** (`teams.ts`): CIEDE2000 on shirt colours (`KIT_CLASH_DELTA_E` 22, grass `KIT_GRASS_DELTA_E` 16, in `config.ts`); the host's kit stays (unless it vanishes into the grass: Everton's green third), the guest (offline: the AI) moves to its next non-clashing kit, same club included; goalkeepers are checked against both outfield shirts, each other and the grass and fall back to a neutral shirt colour; an exhaustive test covers all 3,600 club/kit pairings (no bibs were needed). The host keeps what each player asked for (`guestWanted`) so a clash that goes away moves the guest back; `LobbyState.changed` tells both lobbies, which show both final kits and "Kit changed to avoid a colour clash". **Club picker** replaces the team picker: club and kit rows with the squad line-up (names and numbers) in the kit; offline an opponent row (random club, or choose). **Names in the game:** real shirt numbers on the pitch, the controlled player's name for `SWITCH_NAME_SECONDS` after a switch, "Saka 23' · Arsenal" in the goal banner (the football minute stretches the halves over 90), replay captions, card banners, penalty takers and results, man of the match and goals list; the T21 human names are shown as "Manager …". HUD/scoreboard/lobby use the club short name and kit colours. **Network:** protocol 10; the lobby/`look` messages carry only club and kit indices, validated on receipt (range, integer); the hash of the clubs data (`clubsHash()`) goes in `hello` (optional field, so `hello` keeps its shape) and `welcome`, and a mismatch (also a new `clubs` reject reason) gives a "please refresh" message. Tests: `tests/clubs.test.ts` (data validity, colour maths, clash cases incl. same club home v home, protocol), updated menus/net/protocol tests; the e2e tests now have both players pick the same club and kit and check the lobbies agree on the settled kits.

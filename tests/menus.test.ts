@@ -16,7 +16,7 @@ import {
 import { HALF_LENGTH_SECONDS, SIM_DT, STAT_SHOT_RANGE } from '../src/config';
 import { matchClock } from '../src/sim/rules';
 import { cloneState, createInitialState, createMatchState, step } from '../src/sim/simulation';
-import { cycleKit, cycleName, KIT_PRESETS, randomOpponent, resolveClash, sanitizeLook, teamStyles, TEAM_NAMES } from '../src/teams';
+import { sanitizeLook } from '../src/teams';
 import type { GameState, InputFrame } from '../src/sim/types';
 
 describe('settings', () => {
@@ -28,8 +28,8 @@ describe('settings', () => {
   });
 
   it('keeps valid values and rounds the volume', () => {
-    const s = sanitizeSettings({ halfMinutes: 5, difficulty: 'hard', volume: 43, showControls: false, look: { name: 2, kit: 4 } });
-    expect(s).toMatchObject({ halfMinutes: 5, difficulty: 'hard', volume: 40, showControls: false, look: { name: 2, kit: 4 } });
+    const s = sanitizeSettings({ halfMinutes: 5, difficulty: 'hard', volume: 43, showControls: false, look: { club: 2, kit: 1 } });
+    expect(s).toMatchObject({ halfMinutes: 5, difficulty: 'hard', volume: 40, showControls: false, look: { club: 2, kit: 1 } });
     expect(sanitizeSettings({ volume: 400 }).volume).toBe(100);
     expect(sanitizeSettings({ volume: -5 }).volume).toBe(0);
   });
@@ -84,54 +84,18 @@ describe('settings', () => {
 });
 
 describe('team looks', () => {
-  it('sanitises anything into a valid look', () => {
-    expect(sanitizeLook({ name: 1, kit: 2 })).toEqual({ name: 1, kit: 2 });
-    expect(sanitizeLook({ name: 1.5, kit: 2 })).toEqual({ name: 0, kit: 0 });
-    expect(sanitizeLook(null)).toEqual({ name: 0, kit: 0 });
-  });
-
-  it('cycles kit and name, skipping what the other team uses', () => {
-    expect(cycleKit({ name: 0, kit: 0 }, 1).kit).toBe(1);
-    expect(cycleKit({ name: 0, kit: 0 }, 1, { name: 3, kit: 1 }).kit).toBe(2);
-    expect(cycleKit({ name: 0, kit: 0 }, -1).kit).toBe(KIT_PRESETS.length - 1);
-    expect(cycleName({ name: TEAM_NAMES.length - 1, kit: 0 }, 1).name).toBe(0);
-    expect(cycleName({ name: 0, kit: 0 }, 1, { name: 1, kit: 5 }).name).toBe(2);
-  });
-
-  it('prevents clashes: kit colour and team name', () => {
-    const host = { name: 0, kit: 0 };
-    expect(resolveClash({ name: 1, kit: 2 }, host)).toEqual({ name: 1, kit: 2 });
-    const same = resolveClash({ name: 0, kit: 0 }, host);
-    expect(same.kit).not.toBe(host.kit);
-    expect(same.name).not.toBe(host.name);
-    // Whatever the guest asks for, it never ends up with the host's kit.
-    for (let k = 0; k < KIT_PRESETS.length; k++) expect(resolveClash({ name: 4, kit: k }, host).kit).not.toBe(host.kit);
-  });
-
-  it('gives an offline opponent a different look', () => {
-    for (let i = 0; i < 20; i++) {
-      const mine = { name: i % TEAM_NAMES.length, kit: i % KIT_PRESETS.length };
-      const opp = randomOpponent(mine, () => (i * 0.137) % 1);
-      expect(opp.kit).not.toBe(mine.kit);
-      expect(opp.name).not.toBe(mine.name);
-    }
-  });
-
-  it('never gives both keepers the same shirt', () => {
-    for (let a = 0; a < KIT_PRESETS.length; a++) {
-      for (let b = 0; b < KIT_PRESETS.length; b++) {
-        if (a === b) continue;
-        const [x, y] = teamStyles([{ name: 0, kit: a }, { name: 1, kit: b }]);
-        expect(x.keeper).not.toBe(y.keeper);
-        expect(y.keeper).not.toBe(x.kit);
-      }
-    }
+  it('sanitises anything into a valid look, and resets a pre-T24 saved look', () => {
+    expect(sanitizeLook({ club: 5, kit: 2 })).toEqual({ club: 5, kit: 2 });
+    expect(sanitizeLook({ club: 1.5, kit: 2 })).toEqual({ club: 0, kit: 0 });
+    expect(sanitizeLook({ club: 999, kit: 0 })).toEqual({ club: 0, kit: 0 });
+    expect(sanitizeLook({ name: 1, kit: 2 })).toEqual({ club: 0, kit: 0 });
+    expect(sanitizeLook(null)).toEqual({ club: 0, kit: 0 });
   });
 
   it('maps the lobby looks to teams, whichever side the host is on', () => {
-    const lobby = createLobbyState('H', 'G', { name: 1, kit: 1 }, { name: 2, kit: 2 });
-    expect(looksByTeam(lobby)).toEqual([{ name: 1, kit: 1 }, { name: 2, kit: 2 }]);
-    expect(looksByTeam(swapTeams(lobby))).toEqual([{ name: 2, kit: 2 }, { name: 1, kit: 1 }]);
+    const lobby = createLobbyState('H', 'G', { club: 1, kit: 1 }, { club: 2, kit: 2 });
+    expect(looksByTeam(lobby)).toEqual([{ club: 1, kit: 1 }, { club: 2, kit: 2 }]);
+    expect(looksByTeam(swapTeams(lobby))).toEqual([{ club: 2, kit: 2 }, { club: 1, kit: 1 }]);
   });
 });
 

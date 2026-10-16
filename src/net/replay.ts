@@ -115,6 +115,8 @@ export interface ReplayClip {
   /** Goal: the scoring team. Save: the keeper's team. */
   team: TeamId;
   ownGoal: boolean;
+  /** T24: who scored (the last to touch it, for an own goal) or made the save: a player id, or -1. */
+  player: number;
   half: number;
   /** Seconds into the half. */
   clock: number;
@@ -318,7 +320,7 @@ export class Replays {
       if (!force && newest < e.tick + after) return true;
       const frames = this.ring.range(e.tick - before, e.tick + after).map((f) => f.frame);
       if (frames.length > 1) {
-        this.clips.push({ kind, moment: e.tick, team: e.team ?? 0, ownGoal: !!e.ownGoal, half: e.half, clock: e.clock, frames });
+        this.clips.push({ kind, moment: e.tick, team: e.team ?? 0, ownGoal: !!e.ownGoal, player: e.player ?? -1, half: e.half, clock: e.clock, frames });
         if (this.clips.length > REPLAY_MAX_CLIPS * 2) {
           // A very long match: drop the oldest save (or else the oldest goal) to bound memory.
           const save = this.clips.findIndex((c) => c.kind === 'save');

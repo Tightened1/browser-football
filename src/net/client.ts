@@ -41,7 +41,7 @@ import { CLASSIC_RULES, copyRules } from '../sim/matchRules';
 import { assistAim, finesseShot } from '../sim/shooting';
 
 import { advanceHold, heldBallSpot, holdOffLines, rollFreeBall, sharpTurnLosesBall, shieldHoldAngle, startFeint } from '../sim/dribble';
-import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
+import { DEFAULT_LOOK, type Look } from '../teams';
 import type { BallState, GameState, InputFrame, MatchEvent, MatchRules, MatchStats, PlayerState, Possession, TeamId } from '../sim/types';
 import { kindForPeerError, netError, type NetErrorKind } from './errors';
 import { PlaybackClock, SnapshotBuffer } from './interpolation';
@@ -49,7 +49,7 @@ import { seconds, type MatchDriver, type NetOverlay } from './match';
 import { describeRoute } from './ice';
 import { describeConditions } from './netsim';
 import { CONNECT_OPTIONS, createPeer, Link, loadIceServers, peerErrorType, peerIdForRoom, type IceSetup, type Lobby, type LobbyView, type StartInfo } from './peer';
-import { createLobbyState, GUEST_NAME, hello, HOST_NAME, looksByTeam, teamOf, versionMismatch, type LobbyState, type Message } from './protocol';
+import { clubsMismatch, createLobbyState, GUEST_NAME, hello, HOST_NAME, looksByTeam, teamOf, versionMismatch, type LobbyState, type Message } from './protocol';
 import { nameOr } from '../social';
 import { QuickChat } from './chat';
 import { clearSession, saveSession, setRoomInUrl } from './session';
@@ -109,7 +109,7 @@ export class GuestLobby implements Lobby {
       role: 'guest',
       code,
       status: 'opening',
-      lobby: createLobbyState(HOST_NAME, GUEST_NAME, resolveClash(DEFAULT_LOOK, look), look),
+      lobby: createLobbyState(HOST_NAME, GUEST_NAME, DEFAULT_LOOK, look),
       pingMs: null,
       route: null,
       notice: null,
@@ -269,7 +269,7 @@ export class GuestLobby implements Lobby {
     switch (msg.t) {
       case 'welcome': {
         clearTimeout(this.timer);
-        const mismatch = versionMismatch(msg, 'host');
+        const mismatch = versionMismatch(msg, 'host') ?? clubsMismatch(msg.clubs, 'host');
         if (mismatch) {
           this.fail('version-mismatch', mismatch);
           return;
@@ -289,12 +289,12 @@ export class GuestLobby implements Lobby {
       }
       case 'reject':
         if (msg.reason === 'version') this.fail('version-mismatch', versionMismatch(msg, 'host') ?? undefined);
+        else if (msg.reason === 'clubs') this.fail('version-mismatch', clubsMismatch(undefined, 'host') ?? undefined);
         else this.fail(this.inMatch ? 'host-lost' : 'room-full');
         break;
       case 'lobby':
         this.view.lobby = cleanLobby(msg.lobby);
-        // Remember what the host settled on, so a reconnect or a later change starts from it.
-        this.look = msg.lobby.looks[1];
+        // (The host settles the kits: this.look stays what we asked for, so the host can move us back if the clash goes away.)
         break;
       case 'start':
         this.token = msg.token;

@@ -15,18 +15,27 @@ export function possessionPercent(possession: readonly [number, number]): [numbe
   return [home, 100 - home];
 }
 
+/**
+ * The football minute of a moment in the match, as the commentators would say it: the two halves are stretched over
+ * 90 minutes (a 3-minute half reads as 45'), extra time carries on past 90 ("90+3'" is shown as 93').
+ */
+export function matchMinute(half: number, clock: number, halfLength: number): number {
+  const perHalf = 45 / Math.max(1, halfLength);
+  return Math.max(1, Math.ceil(half <= 2 ? ((half - 1) * halfLength + clock) * perHalf : 90 + (half - 3) * 15 + clock * perHalf));
+}
+
 const RESTART_NAMES = { kickoff: 'kickoff', 'throw-in': 'throw-in', 'goal-kick': 'goal kick', corner: 'corner', 'free-kick': 'free kick', penalty: 'penalty' } as const;
 
 /**
  * Debug overlay line (T16): who touched the ball last -- team, shirt number and role -- and the restart waiting to be
  * taken, if any. `teamName` gives each team's display name.
  */
-export function lastTouchText(state: GameState, teamName: (team: TeamId) => string): string {
+export function lastTouchText(state: GameState, teamName: (team: TeamId) => string, who: (p: GameState['players'][number]) => string = (p) => `#${p.number}`): string {
   const t = state.lastTouch;
   const p = t ? state.players[t.player] : undefined;
-  const who = t && p ? `${teamName(t.team)} #${p.number}${p.role === 'keeper' ? ' (GK)' : ''}` : 'nobody';
+  const text = t && p ? `${teamName(t.team)} ${who(p)}${p.role === 'keeper' ? ' (GK)' : ''}` : 'nobody';
   const r = state.restart;
-  return `last touch: ${who}${r ? `   restart: ${RESTART_NAMES[r.type]} to ${teamName(r.team)}` : ''}`;
+  return `last touch: ${text}${r ? `   restart: ${RESTART_NAMES[r.type]} to ${teamName(r.team)}` : ''}`;
 }
 
 /** A player's man-of-the-match points: goals, assists, saves and tackles won (weights in MVP_POINTS), shots a little. */

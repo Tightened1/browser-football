@@ -2,7 +2,8 @@
 // that refreshes the page (in the lobby and in a match) and rejoins its room by itself.
 import { expect, test, type Browser, type Page } from '@playwright/test';
 
-const look = { name: 0, kit: 0 };
+// T24: both players pick the same club and kit: the host settles it, the guest ends up in another kit.
+const look = { club: 0, kit: 0 };
 const SETTINGS_KEY = 'browser-football-settings-v1';
 
 async function openGame(page: Page, errors: string[], who: string, name: string): Promise<void> {
@@ -109,8 +110,8 @@ test('T21: names, quick chat, a series score, man of the match, back to the lobb
   for (const page of [hostPage, guestPage]) {
     await waitScene(page, 'ResultsScene', 'scene.statsLayer.list.some((t) => String(t.text).includes("MAN OF THE MATCH"))');
     const lines: string[] = await scene(page, 'ResultsScene', 'scene.statsLayer.list.map((t) => String(t.text))');
-    expect(lines.some((l) => l.startsWith('Kev:') && l.includes('2 goals'))).toBe(true);
-    expect(lines.some((l) => l.startsWith('bSamb:'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('Manager Kev:') && l.includes('2 goals'))).toBe(true);
+    expect(lines.some((l) => l.startsWith('Manager bSamb:'))).toBe(true);
   }
 
   // Rematch (both ask), then the guest wins 0-1: the series is level.

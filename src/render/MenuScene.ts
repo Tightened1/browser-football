@@ -4,6 +4,7 @@ import { normalizeRoomCode } from '../net/roomCode';
 import { GAME_VERSION } from '../net/protocol';
 import { loadSession } from '../net/session';
 import { NAME_MAX_LENGTH } from '../config';
+import { UNOFFICIAL_NOTE } from '../data/clubs';
 import { settings, updateSettings } from '../settings';
 import { sanitizeName } from '../social';
 import { button, drawBackdrop, Focus, label, UI_COLORS, UI_FONT } from './ui';
@@ -37,6 +38,7 @@ export class MenuScene extends Phaser.Scene {
     const nameInput = (dom.node as HTMLElement).querySelector('input')!;
     nameInput.value = settings.playerName;
 
+    label(this, CX, GAME_HEIGHT - 28, 15, UI_COLORS.muted).setText(UNOFFICIAL_NOTE);
     const wide = { width: 380 };
     const play = button(this, CX, 322, 'Play vs AI', () => this.pickTeam({ mode: 'offline' }), wide);
     const host = button(this, CX, 392, 'Host online', () => this.pickTeam({ mode: 'host' }), wide);

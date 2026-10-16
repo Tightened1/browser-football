@@ -3,13 +3,13 @@ import { version as packageVersion } from '../../package.json';
 import { copyRules, isMatchRules, rulesFor } from '../sim/matchRules';
 import { emptySeries, isEmoteId, isSeries, type Series } from '../social';
 import type { CardRecord, GoalRecord, MatchEvent, MatchEventType, MatchRules, MatchStats, PenaltyRecord, PlayerTally, ShootoutRecord, TeamId } from '../sim/types';
-import { DEFAULT_LOOK, isLook, type Look } from '../teams';
+import { clubsHash, DEFAULT_LOOK, isLook, type Look } from '../teams';
 
 /**
  * Bump whenever any message below changes shape or meaning. The `hello` message itself must never change,
  * so that two different versions can always tell each other apart.
  */
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 /** The game version (package.json). Both players must run the same one; bump it with each task that ships. */
 export const GAME_VERSION: string = packageVersion;
 
@@ -21,8 +21,10 @@ export interface LobbyState {
   ready: [boolean, boolean];
   /** [host name, guest name]. */
   names: [string, string];
-  /** [host look, guest look]: team name and kit colour. The host keeps them from clashing. */
+  /** [host look, guest look]: club and kit (small indices, T24). The host keeps the kits from clashing. */
   looks: [Look, Look];
+  /** T24: whether each player's kit was changed to avoid a colour clash ("Kit changed to avoid a colour clash"). */
+  changed: [boolean, boolean];
   /** The match rules (T15): the host's choice, shown to the guest. */
   rules: MatchRules;
   /** T21: the running score of the session's matches (by player, not by team). */
@@ -32,10 +34,10 @@ export interface LobbyState {
 /* ---- Handshake ---------------------------------------------------------------------------- */
 
 /** Guest -> host, first message after the connection opens. Never change this shape. */
-export interface HelloMsg { t: 'hello'; protocol: number; game: string; name: string }
+export interface HelloMsg { t: 'hello'; protocol: number; game: string; name: string; /** T24: fingerprint of the clubs data (optional so older builds still read the message). */ clubs?: string }
 /** Host -> guest: accepted. */
-export interface WelcomeMsg { t: 'welcome'; protocol: number; game: string; name: string; lobby: LobbyState }
-export type RejectReason = 'version' | 'room-full';
+export interface WelcomeMsg { t: 'welcome'; protocol: number; game: string; name: string; lobby: LobbyState; clubs?: string }
+export type RejectReason = 'version' | 'room-full' | 'clubs';
 /** Host -> guest: not accepted (the host closes the connection straight after). */
 export interface RejectMsg { t: 'reject'; reason: RejectReason; protocol: number; game: string }
 
@@ -45,7 +47,7 @@ export interface RejectMsg { t: 'reject'; reason: RejectReason; protocol: number
 export interface LobbyMsg { t: 'lobby'; lobby: LobbyState }
 /** Guest -> host: my ready flag. */
 export interface ReadyMsg { t: 'ready'; ready: boolean }
-/** Guest -> host: my team name and kit (the host may change it if it clashes with the host's). */
+/** Guest -> host: my club and kit (the host may change the kit if it clashes with the host's). */
 export interface LookMsg { t: 'look'; look: Look }
 /** Guest -> host: please swap the teams (clears both ready flags). */
 export interface SwapMsg { t: 'swap' }
@@ -113,7 +115,7 @@ const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 const isTeam = (v: unknown): v is TeamId => v === 0 || v === 1;
 const isPair = <T>(v: unknown, f: (x: unknown) => x is T): v is [T, T] => Array.isArray(v) && v.length === 2 && f(v[0]) && f(v[1]);
 const isLobby = (v: unknown): v is LobbyState =>
-  isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr) && isPair(v.looks, isLook) && isMatchRules(v.rules) && isSeries(v.series);
+  isObj(v) && isTeam(v.hostTeam) && isPair(v.ready, isBool) && isPair(v.names, isStr) && isPair(v.looks, isLook) && isPair(v.changed, isBool) && isMatchRules(v.rules) && isSeries(v.series);
 const isVersioned = (m: Obj): boolean => isNum(m.protocol) && isStr(m.game);
 const EVENT_TYPES: readonly MatchEventType[] = [
   'kickoff', 'goal', 'throw-in', 'goal-kick', 'corner', 'half-time', 'second-half', 'full-time',
@@ -156,9 +158,9 @@ const isStats = (v: unknown): v is MatchStats =>
   isPair(v.humans, isTally);
 
 const VALIDATORS: Record<MessageType, (m: Obj) => boolean> = {
-  hello: (m) => isVersioned(m) && isStr(m.name),
-  welcome: (m) => isVersioned(m) && isStr(m.name) && isLobby(m.lobby),
-  reject: (m) => isVersioned(m) && (m.reason === 'version' || m.reason === 'room-full'),
+  hello: (m) => isVersioned(m) && isStr(m.name) && isOpt(m.clubs, isStr),
+  welcome: (m) => isVersioned(m) && isStr(m.name) && isLobby(m.lobby) && isOpt(m.clubs, isStr),
+  reject: (m) => isVersioned(m) && (m.reason === 'version' || m.reason === 'room-full' || m.reason === 'clubs'),
   lobby: (m) => isLobby(m.lobby),
   ready: (m) => isBool(m.ready),
   look: (m) => isLook(m.look),
@@ -188,7 +190,14 @@ export function decode(data: unknown): Message | null {
 
 /** The hello a guest sends. */
 export function hello(name: string): HelloMsg {
-  return { t: 'hello', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name };
+  return { t: 'hello', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name, clubs: clubsHash() };
+}
+
+/** T24: null if the other side has the same clubs data, else a message telling the player to refresh. */
+export function clubsMismatch(remoteClubs: string | undefined, remoteRole: 'host' | 'guest'): string | null {
+  if (remoteClubs === clubsHash()) return null;
+  const who = remoteRole === 'host' ? 'the host has' : 'your friend has';
+  return `You and ${remoteRole === 'host' ? 'the host' : 'your friend'} have different club and squad data (${who} a different build). Please refresh the page (Ctrl+F5 / Cmd+Shift+R) so you both have the latest version, then try again.`;
 }
 
 /** Null if the other side runs a compatible version, else a message for the player explaining the mismatch. */
@@ -205,7 +214,7 @@ export const GUEST_NAME = 'Guest';
 /* ---- Lobby rules ------------------------------------------------------------------------------ */
 
 export function createLobbyState(hostName: string, guestName: string, hostLook: Look = DEFAULT_LOOK, guestLook: Look = DEFAULT_LOOK, rules: MatchRules = rulesFor('arcade')): LobbyState {
-  return { hostTeam: 0, ready: [false, false], names: [hostName, guestName], looks: [{ ...hostLook }, { ...guestLook }], rules: copyRules(rules), series: emptySeries() };
+  return { hostTeam: 0, ready: [false, false], names: [hostName, guestName], looks: [{ ...hostLook }, { ...guestLook }], changed: [false, false], rules: copyRules(rules), series: emptySeries() };
 }
 
 /** The host changes the match rules: both players must confirm ready again. */

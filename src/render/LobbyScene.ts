@@ -9,7 +9,7 @@ import { matchRulesSetting, settings, updateSettings } from '../settings';
 import { nameOr, seriesPlayed, seriesText } from '../social';
 import { rulesLabel, rulesSummary } from '../sim/matchRules';
 import type { TeamId } from '../sim/types';
-import { cycleKit, cycleName, teamStyles, type Look } from '../teams';
+import { kitLabel, stepClub, stepKit, teamStyles, type Look } from '../teams';
 import type { MatchSceneData } from './MatchScene';
 import { button, copyText, Focus, label, UI_COLORS, type Button } from './ui';
 
@@ -40,6 +40,7 @@ interface Card {
   title: Phaser.GameObjects.Text;
   who: Phaser.GameObjects.Text;
   ready: Phaser.GameObjects.Text;
+  kitInfo: Phaser.GameObjects.Text;
   ping: Phaser.GameObjects.Text;
   route: Phaser.GameObjects.Text;
 }
@@ -118,8 +119,8 @@ export class LobbyScene extends Phaser.Scene {
 
     this.cards = [this.makeCard(0), this.makeCard(1)];
     // Your own team's name and kit can be changed here (the other player's kit and name are skipped).
-    this.kit = button(this, CARD_X[0], CARD_Y + 62, 'Kit colour', () => this.changeKit(), { size: 18, width: 160, secondary: true });
-    this.name = button(this, CARD_X[0] + 170, CARD_Y + 62, 'Team name', () => this.changeName(), { size: 18, width: 160, secondary: true });
+    this.kit = button(this, CARD_X[0], CARD_Y + 62, 'Kit', () => this.changeKit(), { size: 18, width: 160, secondary: true });
+    this.name = button(this, CARD_X[0] + 170, CARD_Y + 62, 'Club', () => this.changeName(), { size: 18, width: 160, secondary: true });
 
     this.swap = button(this, CX - 240, 618, 'Swap teams', () => this.lobby.swapTeams(), { size: 22, width: 200, secondary: true });
     this.ready = button(this, CX, 618, 'Ready', () => this.toggleReady(), { size: 22, width: 200 });
@@ -163,6 +164,7 @@ export class LobbyScene extends Phaser.Scene {
       bg: this.add.graphics(),
       title: label(this, x, CARD_Y - CARD_H / 2 + 24, 24, UI_COLORS.text, true),
       who: label(this, x, CARD_Y - 10, 26, UI_COLORS.text, true),
+      kitInfo: label(this, x, CARD_Y - 38, 15, UI_COLORS.muted),
       ready: label(this, x, CARD_Y + 26, 20),
       ping: label(this, x, CARD_Y + 54, 17, UI_COLORS.muted),
       route: label(this, x, CARD_Y + 78, 16, UI_COLORS.muted).setWordWrapWidth(CARD_W - 20),
@@ -190,9 +192,17 @@ export class LobbyScene extends Phaser.Scene {
     return this.lobby.view.role === 'host' ? 0 : 1;
   }
 
+  /** The look you asked for (the lobby holds the one the host settled on, which may use another kit of the same club). */
+  private wanted(l: { looks: [Look, Look] }): Look {
+    return this.asked ?? (this.data_.mode !== 'back' ? this.data_.look : l.looks[this.myIndex]);
+  }
+
+  private asked: Look | null = null;
+
   private changeKit(): void {
     const l = this.lobby.view.lobby;
-    this.lobby.setLook(cycleKit(l.looks[this.myIndex], 1, l.looks[1 - this.myIndex]));
+    // (Ask for the next kit of the club you asked for; the host settles any clash, and each card says if it changed.)
+    this.lobby.setLook((this.asked = { ...this.wanted(l), kit: stepKit(this.wanted(l).kit, 1) }));
   }
 
   /** Host: switch between the Arcade and Classic rules (remembered in the settings for next time). */
@@ -205,7 +215,8 @@ export class LobbyScene extends Phaser.Scene {
 
   private changeName(): void {
     const l = this.lobby.view.lobby;
-    this.lobby.setLook(cycleName(l.looks[this.myIndex], 1, l.looks[1 - this.myIndex]));
+    const w = this.wanted(l);
+    this.lobby.setLook((this.asked = { club: stepClub(w.club, 1), kit: w.kit }));
   }
 
   private async copy(what: 'link' | 'code'): Promise<void> {
@@ -239,7 +250,7 @@ export class LobbyScene extends Phaser.Scene {
     this.status.setText(statusText(v)).setColor(v.status === 'connected' ? UI_COLORS.good : UI_COLORS.text);
 
     const connected = v.status === 'connected';
-    const styles = teamStyles(looksByTeam(v.lobby));
+    const styles = teamStyles(looksByTeam(v.lobby), v.lobby.hostTeam);
     for (const team of [0, 1] as const) this.drawCard(team, v, connected, styles[team]);
 
     // The kit / name buttons sit on your own card, wherever the teams were swapped to.
@@ -285,7 +296,7 @@ export class LobbyScene extends Phaser.Scene {
     this.focus.refresh();
   }
 
-  private drawCard(team: TeamId, v: LobbyView, connected: boolean, style: { name: string; kit: number; outline: number }): void {
+  private drawCard(team: TeamId, v: LobbyView, connected: boolean, style: { name: string; kit: number; outline: number; kitIndex: number }): void {
     const card = this.cards[team];
     const x = CARD_X[team];
     const hostHere = teamOf(v.lobby, 'host') === team;
@@ -299,9 +310,13 @@ export class LobbyScene extends Phaser.Scene {
     card.bg.fillRoundedRect(x - CARD_W / 2, CARD_Y - CARD_H / 2, CARD_W, 48, { tl: 12, tr: 12, bl: 0, br: 0 });
     // Light kits get dark lettering and vice versa, so the name is always readable.
     const light = ((style.kit >> 16) & 255) * 0.3 + ((style.kit >> 8) & 255) * 0.6 + (style.kit & 255) * 0.1 > 150;
+    const idxFor = teamOf(v.lobby, 'host') === team ? 0 : 1;
+    const changed = v.lobby.changed[idxFor];
+    card.kitInfo.setText(`${kitLabel({ club: 0, kit: style.kitIndex })}${changed ? ' · Kit changed to avoid a colour clash' : ''}`).setColor(changed ? UI_COLORS.warn : UI_COLORS.muted);
     card.title.setText(style.name.toUpperCase()).setColor(light ? '#111111' : '#ffffff').setStroke(hex(style.outline), light ? 0 : 4);
     if (!present) {
       card.who.setText(v.role === 'host' ? 'Waiting for a player…' : 'Connecting…').setColor(UI_COLORS.muted);
+      card.kitInfo.setText('');
       card.ready.setText('');
       card.ping.setText('');
       card.route.setText('');

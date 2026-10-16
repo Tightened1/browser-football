@@ -10,15 +10,16 @@ Nothing to install. Open the link in a desktop browser (Chrome, Edge or Firefox 
 
 Online play is peer-to-peer, so you each need the game open in your own browser.
 
-1. **Host.** Open the link and press **Host online**. Pick your team name and kit colour, then press **Open a room**.
+1. **Host.** Open the link and press **Host online**. Pick a Premier League club and its home, away or third kit, then press **Open a room**.
 2. **Share.** The lobby shows a room code (for example `PASS-4827`) and a **Copy invite link** button. Send the link to your friend.
-3. **Join.** Your friend opens the link. It fills in the room code for them, so they only need to pick a team and press **Join**. Without the link, they can press **Join online** on the title screen and type the room code.
+3. **Join.** Your friend opens the link. It fills in the room code for them, so they only need to pick a club and press **Join**. Without the link, they can press **Join online** on the title screen and type the room code.
 4. **Ready up.** Both of you press **Ready** in the lobby. The lobby shows each other's connection type and ping.
 5. **Kick off.** The host presses **Start match**.
 
 After full time, either player can press **Rematch**. The match starts again once you both accept. **Back to lobby** returns you both to the lobby (same room, no new code), and **Menu** takes you back to the title screen.
 
 - **Names.** Type your name in the box on the title screen (up to 16 letters, digits, spaces, `_ - .`; it is saved). It shows in the lobby, under the team names and on the results screen.
+- **Clubs and kits.** Pick any of the 20 current Premier League clubs (2026-27) with its real home, away or third kit colours; each club has a fixed squad of five real players (a goalkeeper, two defenders or midfielders and two forwards) with their real shirt numbers. Player names show in the goal banner ("Saka 23'"), the cards, the replays, the penalties, the man of the match and the goal list; you are the "manager" of your side. Clubs are cosmetic: every club plays the same. The two teams' kits can never clash: if the kits (or either goalkeeper's) are too alike, or too close to the grass green, the guest (offline: the AI opponent) is switched to its next kit that works, and the picker and lobby say "Kit changed to avoid a colour clash". Offline you can leave the opponent random or choose one. To refresh the clubs for a new season see [docs/UPDATING_SQUADS.md](docs/UPDATING_SQUADS.md).
 - **Quick chat.** Keys `1`–`6` say *Nice goal!*, *Unlucky*, *What a save!*, *Rematch?*, 😂 or *GG*, as a bubble over your player and a line in the feed (there is a short wait between messages). `M` mutes your friend's messages (also under **Settings**).
 - **Series.** Rematches in the same room keep a running score ("Series 3–2") on the results screen and in the lobby; **Reset series** clears it.
 - **Man of the match** and a stat line for each player (goals, assists, saves, tackles, shots) appear on the results screen.
@@ -123,3 +124,5 @@ To set up a TURN relay, copy `.env.example` to `.env.local` and fill it in. See 
 TypeScript, Vite and Phaser 3 for drawing and input. Online play uses PeerJS (WebRTC) with the host running the authoritative match. The game logic in `src/sim/` is pure TypeScript, with no Phaser or network code. The site deploys to GitHub Pages on every push to `main`.
 
 Sound effects are synthesised in the browser, so there are no audio files. Credits are in [docs/CREDITS.md](docs/CREDITS.md).
+
+> Unofficial fan game, not affiliated with the Premier League or any club. Club and player names are used for identification only; there are no crests, badges, logos or sponsor names, just colours and text.

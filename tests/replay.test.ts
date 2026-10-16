@@ -140,7 +140,7 @@ describe('clips', () => {
     expect(playableFrames(snaps.slice(4), 10).map((s) => s.tick)).toEqual([8, 10, 12]);
   });
 
-  const clip = (kind: ReplayClip['kind'], moment: number): ReplayClip => ({ kind, moment, team: 0, ownGoal: false, half: 1, clock: moment / SIM_HZ, frames: [] });
+  const clip = (kind: ReplayClip['kind'], moment: number): ReplayClip => ({ kind, moment, team: 0, ownGoal: false, player: -1, half: 1, clock: moment / SIM_HZ, frames: [] });
 
   it('highlights: every goal and the big saves outside a goal build-up, in match order', () => {
     const buildup = REPLAY_BUILDUP_SECONDS * SIM_HZ;

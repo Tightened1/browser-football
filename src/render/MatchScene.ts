@@ -44,8 +44,11 @@ import {
   STAMINA_BAR_COLOR,
   STAMINA_EMPTY_COLOR,
   STAMINA_LOW_COLOR,
+  SWITCH_NAME_SECONDS,
   WINDUP_FLASH_COLOR,
 } from '../config';
+
+const hex = (n: number): string => `#${n.toString(16).padStart(6, '0')}`;
 import { crowdExcitement, eventSound, kickPower, scanEvents, BallCueDetector, KickCueWatcher, type BallCue } from '../audio/cues';
 import { sound } from '../audio/sound';
 import { approach, ballLift, cameraTarget, netBox, netGrid, Effects } from './effects';
@@ -54,8 +57,8 @@ import { controlsSummary, settings, updateSettings } from '../settings';
 import { emoteForKey, QUICK_CHAT } from '../social';
 import { ballBoundary, NEUTRAL_INPUT } from '../sim/simulation';
 import { matchRulesSetting } from '../settings';
-import { randomOpponent, type Look } from '../teams';
-import { setPlayerNames, setTeamLooks, teamStyle } from './teamStyle';
+import { contrastOn, randomOpponent, resolveLooks, type Look } from '../teams';
+import { setPlayerNames, setTeamLooks, shirtNumber, squadPlayerById, teamStyle } from './teamStyle';
 import { roleOf } from '../sim/ai';
 import { lastTouchText } from '../matchStats';
 import { heldAim, heldChargeTime, pendingHeldRestart } from '../sim/setpiece';
@@ -109,6 +112,9 @@ export class MatchScene extends Phaser.Scene {
   private netGfx!: Phaser.GameObjects.Graphics;
   private fxGfx!: Phaser.GameObjects.Graphics;
   private readonly numberLabels: Phaser.GameObjects.Text[] = [];
+  /** T24: who each team's controlled player was last frame, and until when (ms) the new one's name shows. */
+  private lastControlled: [number, number] = [-1, -1];
+  private nameUntil: [number, number] = [0, 0];
   /** Shirt numbers drawn on every player. */
   private readonly shirtLabels: Phaser.GameObjects.Text[] = [];
   /** Juice (render/audio only): particles, net ripples, ball cues, camera. All driven by the drawn state and its events. */
@@ -166,9 +172,13 @@ export class MatchScene extends Phaser.Scene {
     // Offline matches get a fresh seed each time, so the AI doesn't play out the same match every time.
     this.seed = data.seed ?? (data.online ? undefined : Math.floor(Math.random() * 0x7fffffff));
     this.halfLength = data.halfLength ?? settings.halfMinutes * 60;
-    this.looks = data.looks ?? [settings.look, randomOpponent(settings.look)];
+    const asked = data.looks ?? [settings.look, randomOpponent(settings.look)];
+    // Offline, the human's kit stays and the AI's moves off any clash (online the host has already settled them, T24).
+    this.looks = data.online ? asked : this.humanTeam === 0 ? resolveLooks(asked[0], asked[1]).looks : (resolveLooks(asked[1], asked[0]).looks.slice().reverse() as [Look, Look]);
     this.rules = data.rules ?? matchRulesSetting();
-    setTeamLooks(this.looks);
+    setTeamLooks(this.looks, data.online ? teamOf(data.online.view.lobby, 'host') : this.humanTeam);
+    this.lastControlled = [-1, -1];
+    this.nameUntil = [0, 0];
     setPlayerNames(data.names ?? (this.humanTeam === 0 ? [settings.playerName, ''] : ['', settings.playerName]));
     this.toLobbyNow = false;
     this.pauseOpen = false;
@@ -207,8 +217,10 @@ export class MatchScene extends Phaser.Scene {
     this.numberLabels.length = 0;
     this.shirtLabels.length = 0;
     for (const p of this.driver.state.players) {
+      const style = teamStyle(p.team);
+      const ink = p.role === 'keeper' ? style.keeperNumber : style.numberColor;
       const t = this.add
-        .text(0, 0, String(p.number), { fontFamily: 'sans-serif', fontSize: '15px', fontStyle: 'bold', color: '#ffffff', stroke: '#000000', strokeThickness: 3 })
+        .text(0, 0, String(shirtNumber(p)), { fontFamily: 'sans-serif', fontSize: '15px', fontStyle: 'bold', color: hex(ink), stroke: hex(contrastOn(ink)), strokeThickness: 3 })
         .setOrigin(0.5)
         .setDepth(9);
       this.shirtLabels[p.id] = t;
@@ -700,7 +712,7 @@ export class MatchScene extends Phaser.Scene {
       const line = (i: 0 | 1): string =>
         `${teamStyle(i).name} [${state.ai.difficulty[i]}] ${t[i].mode.padEnd(13)} passes ${t[i].passes}  shots ${t[i].shots}  tackles ${t[i].tackles}  saves ${t[i].saves}`;
       // (Host only, like the rest: the guest isn't sent the last touch.)
-      const touch = lastTouchText(state, (team) => teamStyle(team).name);
+      const touch = lastTouchText(state, (team) => teamStyle(team).name, (p) => `${squadPlayerById(p.id).name} #${shirtNumber(p)}`);
       this.debugTeams.setText(`${line(0)}\n${line(1)}\n${touch}\nAI debug (F2)`);
     }
   }
@@ -719,7 +731,15 @@ export class MatchScene extends Phaser.Scene {
       const cur = state.controlled[team] >= 0 ? state.players[state.controlled[team]] : undefined;
       const label = this.numberLabels[team];
       label.setVisible(!!cur);
-      if (cur) label.setText(String(cur.number)).setPosition(cur.pos.x, cur.pos.y - cur.radius - 10);
+      if (cur) {
+        // The shirt number above the controlled player, with the name for a moment after you switch to them (T24).
+        if (!replaying && this.lastControlled[team] !== cur.id) {
+          if (this.lastControlled[team] >= 0) this.nameUntil[team] = this.time.now + SWITCH_NAME_SECONDS * 1000;
+          this.lastControlled[team] = cur.id;
+        }
+        const naming = this.time.now < this.nameUntil[team];
+        label.setText(naming ? `${squadPlayerById(cur.id).name}  ${shirtNumber(cur)}` : String(shirtNumber(cur))).setPosition(cur.pos.x, cur.pos.y - cur.radius - 10);
+      }
     }
     this.drawDebugOverlay(state);
     // (Your aim arrows come from your keys now, so a replay doesn't show them.)

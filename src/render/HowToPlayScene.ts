@@ -53,7 +53,8 @@ export class HowToPlayScene extends Phaser.Scene {
       "Classic = the original game. Online, the host's rules are used (shown in the lobby). Line up your shot: keys aim in 8 directions.",
       'Fouls: a slide into the player instead of the ball, or from behind, gives a free kick -- a penalty in the box. Strict referees show cards.',
       'Penalties: aim up / down (or neither, the middle), pass = placed, shoot = power. Facing one, dive with up / down + tackle.',
-      'Online: one player hosts and shares the room code or invite link; the other joins. You pick your own team and kit.',
+      "Online: one player hosts and shares the room code or invite link; the other joins. You pick your own club and kit; if they clash, the host's kit stays and the guest's changes.",
+      'Clubs: any Premier League club, with its real players and numbers (cosmetic: all clubs play the same). Unofficial fan game, not affiliated with the Premier League or any club.',
       'Change any key under Settings. The pause menu does not stop an online match, since your friend is still playing.',
     ];
     notes.forEach((n, i) => label(this, CX, 490 + i * 23, 15, UI_COLORS.muted).setText(n).setWordWrapWidth(1120));

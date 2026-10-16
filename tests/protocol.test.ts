@@ -1,6 +1,7 @@
 // T18: every message type survives encode -> wire -> decode, and malformed ones are rejected.
 import { describe, expect, it } from 'vitest';
 import { SIM_DT } from '../src/config';
+import { clubsHash } from '../src/data/clubs';
 import {
   createLobbyState,
   decode,
@@ -16,7 +17,7 @@ import { rulesFor } from '../src/sim/matchRules';
 import { createMatchState, NEUTRAL_INPUT, step } from '../src/sim/simulation';
 import type { MatchEvent, MatchStats } from '../src/sim/types';
 
-const lobby = createLobbyState('Host', 'Guest', { name: 1, kit: 2 }, { name: 3, kit: 4 }, rulesFor('classic'));
+const lobby = createLobbyState('Host', 'Guest', { club: 1, kit: 2 }, { club: 3, kit: 4 }, rulesFor('classic'));
 const event: MatchEvent = { id: 7, tick: 1234, type: 'penalty-result', half: 1, clock: 61.5, score: [1, 0], team: 0, player: 3, scored: false, saved: true };
 const stats: MatchStats = {
   shots: [5, 3],
@@ -32,12 +33,12 @@ const stats: MatchStats = {
 
 /** One example of every message. Typed as a full Record so adding a message type without a test fails to compile. */
 const SAMPLES: Record<MessageType, Message> = {
-  hello: { t: 'hello', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: 'Guest' },
-  welcome: { t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: 'Host', lobby },
+  hello: { t: 'hello', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: 'Guest', clubs: clubsHash() },
+  welcome: { t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: 'Host', lobby, clubs: clubsHash() },
   reject: { t: 'reject', reason: 'version', protocol: PROTOCOL_VERSION, game: GAME_VERSION },
   lobby: { t: 'lobby', lobby },
   ready: { t: 'ready', ready: true },
-  look: { t: 'look', look: { name: 2, kit: 5 } },
+  look: { t: 'look', look: { club: 2, kit: 5 } },
   swap: { t: 'swap' },
   'series-reset': { t: 'series-reset' },
   'lobby-back': { t: 'lobby-back' },

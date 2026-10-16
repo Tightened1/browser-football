@@ -18,7 +18,7 @@ import {
 import { createMatchState, NEUTRAL_INPUT, step } from '../sim/simulation';
 import { emptySeries, nameOr, seriesAfter, uniqueName } from '../social';
 import { QuickChat } from './chat';
-import { DEFAULT_LOOK, resolveClash, type Look } from '../teams';
+import { clubsHash, DEFAULT_LOOK, resolveLooks, type Look } from '../teams';
 import type { Difficulty, GameState, InputFrame, MatchRules, MatchStats, TeamId } from '../sim/types';
 import { kindForPeerError, netError, NETWORK_HINT } from './errors';
 import { seconds, type MatchDriver, type NetOverlay } from './match';
@@ -43,6 +43,7 @@ import { Replays, type ReplayMode, type ReplayView } from './replay';
 import { LossMeter, RateMeter } from './stats';
 import {
   canStart,
+  clubsMismatch,
   createLobbyState,
   setLobbyRules,
 
@@ -79,6 +80,9 @@ export class HostLobby implements Lobby {
   /** Match messages from the guest (T23: skipping a replay). */
   onMatchMessage: (msg: Message) => void = () => {};
   private readonly chat = new QuickChat('host');
+  /** What each player asked for (the lobby holds what they got after clash prevention, T24). */
+  private hostWanted: Look;
+  private guestWanted: Look = { ...DEFAULT_LOOK };
 
   private peer: Peer | null = null;
   /** The guest's link once its connection is open (accepted or still handshaking). */
@@ -100,11 +104,12 @@ export class HostLobby implements Lobby {
   private readonly onPageHide = (): void => this.leave();
 
   constructor(private readonly opts: HostLobbyOptions) {
+    this.hostWanted = { ...opts.look };
     this.view = {
       role: 'host',
       code: '',
       status: 'opening',
-      lobby: createLobbyState(opts.name || HOST_NAME, GUEST_NAME, opts.look, resolveClash(DEFAULT_LOOK, opts.look), opts.rules),
+      lobby: this.withLooks(createLobbyState(opts.name || HOST_NAME, GUEST_NAME, opts.look, DEFAULT_LOOK, opts.rules)),
       pingMs: null,
       route: null,
       notice: null,
@@ -129,6 +134,12 @@ export class HostLobby implements Lobby {
 
   private get lobby(): LobbyState {
     return this.view.lobby;
+  }
+
+  /** The lobby with both looks settled: the host's is the authority, the guest's moves off a clash (T24). */
+  private withLooks(lobby: LobbyState): LobbyState {
+    const r = resolveLooks(this.hostWanted, this.guestWanted);
+    return { ...lobby, looks: r.looks, changed: r.changed };
   }
 
   get matchLink(): Link | null {
@@ -233,15 +244,23 @@ export class HostLobby implements Lobby {
       if (msg.t !== 'hello') return;
       clearTimeout(this.guestTimer);
       const mismatch = versionMismatch(msg, 'guest');
+      const clubs = mismatch ? null : clubsMismatch(msg.clubs, 'guest');
+      if (clubs) {
+        link.close({ t: 'reject', reason: 'clubs', protocol: PROTOCOL_VERSION, game: GAME_VERSION });
+        this.backToWaiting('A player tried to join with different club and squad data. Both of you should reload the page.');
+        return;
+      }
       if (mismatch) {
         link.close({ t: 'reject', reason: 'version', protocol: PROTOCOL_VERSION, game: GAME_VERSION });
         this.backToWaiting(`A player tried to join with a different game version (${msg.game}; you have ${GAME_VERSION}). Both of you should reload the page.`);
         return;
       }
       this.accepted = true;
-      this.view.lobby = { ...this.lobby, ready: [false, false], names: [this.lobby.names[0], uniqueName(nameOr(msg.name, GUEST_NAME), this.lobby.names[0])], looks: [this.lobby.looks[0], resolveClash(DEFAULT_LOOK, this.lobby.looks[0])] };
+      this.view.lobby = { ...this.lobby, ready: [false, false], names: [this.lobby.names[0], uniqueName(nameOr(msg.name, GUEST_NAME), this.lobby.names[0])] };
+      this.guestWanted = { ...DEFAULT_LOOK };
+      this.view.lobby = this.withLooks(this.view.lobby);
       this.view.status = 'connected';
-      link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: this.lobby.names[0], lobby: this.lobby });
+      link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: this.lobby.names[0], lobby: this.lobby, clubs: clubsHash() });
       return;
     }
     switch (msg.t) {
@@ -249,8 +268,9 @@ export class HostLobby implements Lobby {
         this.update({ ...this.lobby, ready: [this.lobby.ready[0], msg.ready] });
         break;
       case 'look':
-        // The host's look wins a clash: the guest is given the next free kit (or name).
-        this.update({ ...this.lobby, looks: [this.lobby.looks[0], resolveClash(msg.look, this.lobby.looks[0])] });
+        // The host's look wins a clash: the guest is given its next kit that doesn't clash (T24).
+        this.guestWanted = { ...msg.look };
+        this.update(this.withLooks(this.lobby));
         break;
       case 'swap':
         this.update(swapTeams(this.lobby));
@@ -325,7 +345,7 @@ export class HostLobby implements Lobby {
     this.view.status = 'connected';
     this.view.reconnectUntil = null;
     this.view.notice = null;
-    link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: this.lobby.names[0], lobby: this.lobby });
+    link.send({ t: 'welcome', protocol: PROTOCOL_VERSION, game: GAME_VERSION, name: this.lobby.names[0], lobby: this.lobby, clubs: clubsHash() });
     link.send({ t: 'start', hostTeam: this.lobby.hostTeam, seed: 0, token: this.token, half: this.opts.halfLength, rules: this.lobby.rules });
     // It lost whatever rematch messages were in flight: start that conversation again.
     link.send({ t: 'rematch', want: this.view.rematch.mine });
@@ -358,7 +378,9 @@ export class HostLobby implements Lobby {
     clearTimeout(this.guestTimer);
     this.guest = null;
     this.accepted = false;
-    this.view.lobby = { ...this.lobby, ready: [false, false], names: [this.lobby.names[0], GUEST_NAME], looks: [this.lobby.looks[0], resolveClash(DEFAULT_LOOK, this.lobby.looks[0])] };
+    this.view.lobby = { ...this.lobby, ready: [false, false], names: [this.lobby.names[0], GUEST_NAME] };
+    this.guestWanted = { ...DEFAULT_LOOK };
+    this.view.lobby = this.withLooks(this.view.lobby);
     this.view.pingMs = null;
     this.view.route = null;
     if (this.isActive()) {
@@ -389,9 +411,9 @@ export class HostLobby implements Lobby {
   }
 
   setLook(look: Look): void {
-    // A guest's look is already settled, so the host's choice is the one that has to give way.
-    const mine = this.accepted ? resolveClash(look, this.lobby.looks[1]) : look;
-    this.update({ ...this.lobby, looks: [mine, this.lobby.looks[1]] });
+    // The host's choice stands (apart from the grass); the guest's kit is settled again against it.
+    this.hostWanted = { ...look };
+    this.update(this.withLooks(this.lobby));
   }
 
   swapTeams(): void {

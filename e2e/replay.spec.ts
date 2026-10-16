@@ -2,7 +2,8 @@
 // (which ends it for both), and at full time each player gets the highlights reel and then the results.
 import { expect, test, type Browser, type Page } from '@playwright/test';
 
-const look = { name: 0, kit: 0 };
+// T24: both players pick the same club and kit: the host settles it, the guest ends up in another kit.
+const look = { club: 0, kit: 0 };
 
 async function openGame(page: Page, errors: string[], who: string): Promise<void> {
   page.on('pageerror', (e) => errors.push(`${who} pageerror: ${e.message}`));

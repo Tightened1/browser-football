@@ -11,7 +11,8 @@ interface Snap {
   tick: number;
 }
 
-const look = { name: 0, kit: 0 };
+// T24: both players pick the same club and kit: the host settles it, the guest ends up in another kit.
+const look = { club: 0, kit: 0 };
 
 /** Phaser scenes are reachable through window.__game in the e2e build (see src/main.ts). */
 async function openGame(page: Page, errors: string[], who: string): Promise<void> {
@@ -58,6 +59,16 @@ async function startOnlineMatch(browser: Browser, errors: string[]): Promise<{ h
   for (const page of [hostPage, guestPage]) {
     await page.waitForFunction(() => (window as any).__game.scene.getScene('LobbyScene')?.lobby?.view.status === 'connected', null, { timeout: 30_000 });
   }
+
+  // T24: both asked for the same club and kit; the host settled it, and both lobbies show the same two final kits.
+  const lobbyLooks = async (page: Page) => page.evaluate(() => (window as any).__game.scene.getScene('LobbyScene').lobby.view.lobby);
+  await hostPage.waitForFunction(() => (window as any).__game.scene.getScene('LobbyScene').lobby.view.lobby.changed[1] === true, null, { timeout: 30_000 });
+  await guestPage.waitForFunction(() => (window as any).__game.scene.getScene('LobbyScene').lobby.view.lobby.changed[1] === true, null, { timeout: 30_000 });
+  const [hl, gl] = [await lobbyLooks(hostPage), await lobbyLooks(guestPage)];
+  expect(gl.looks).toEqual(hl.looks);
+  expect(hl.looks[0]).toEqual(look);
+  expect(hl.looks[1].club).toBe(look.club);
+  expect(hl.looks[1].kit).not.toBe(look.kit);
 
   // Both ready, host starts.
   for (const page of [guestPage, hostPage]) await page.evaluate(() => (window as any).__game.scene.getScene('LobbyScene').lobby.setReady(true));

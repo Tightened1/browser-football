@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GOAL_PAUSE, GAME_WIDTH, HALVES, SHOOTOUT_KICKS, SIM_HZ } from '../config';
 import { keyLabel, settings, type ActionId } from '../settings';
-import { playerName, readableColor, teamStyle } from './teamStyle';
+import { matchMinute } from '../matchStats';
+import { playerName, playerNameById, readableColor, shirtNumber, squadPlayerById, teamStyle } from './teamStyle';
 import { EMOTE_FEED_MS } from '../config';
 import { matchClock, periodLength } from '../sim/rules';
 import { shootoutTally } from '../sim/fouls';
@@ -47,11 +48,12 @@ function recentEvent(s: GameState, types: readonly MatchEvent['type'][], seconds
 }
 
 /** T23: what a replay shows, e.g. "GOAL — Reds · 2nd half 01:23" or "WHAT A SAVE — Blues · 1st half 00:40". */
-export function replayCaption(view: Pick<ReplayView, 'clip'>, teamName: (team: TeamId) => string): string {
+export function replayCaption(view: Pick<ReplayView, 'clip'>, teamName: (team: TeamId) => string, playerName: (id: number) => string = () => ''): string {
   const c = view.clip;
   const what = c.kind === 'goal' ? `GOAL${c.ownGoal ? ' (own goal)' : ''}` : 'WHAT A SAVE';
   const when = c.half > HALVES ? 'extra time' : `${c.half === 1 ? '1st' : c.half === 2 ? '2nd' : `${c.half}th`} half`;
-  return `${what} — ${teamName(c.team)} · ${when} ${formatClock(c.clock)}`;
+  const who = c.player >= 0 ? playerName(c.player) : '';
+  return `${what} — ${who ? `${who}, ` : ''}${teamName(c.team)} · ${when} ${formatClock(c.clock)}`;
 }
 
 /** "3 – 2" in the shoot-out. */
@@ -216,7 +218,7 @@ export class HudScene extends Phaser.Scene {
 
     // Set-piece label (not in a shoot-out: its scoreboard says it all).
     const r = s.restart;
-    const label = s.phase === 'playing' && r && r.type !== 'kickoff' ? `${RESTART_LABEL[r.type]} — ${teamStyle(r.team).name}` : '';
+    const label = s.phase === 'playing' && r && r.type !== 'kickoff' ? `${RESTART_LABEL[r.type]} — ${teamStyle(r.team).name}${r.type === 'penalty' && r.taker >= 0 ? ` (${playerNameById(r.taker)})` : ''}` : '';
     this.restartLabel.setText(label).setVisible(label !== '');
     this.drawCards(s);
     this.drawFoul(s);
@@ -228,7 +230,9 @@ export class HudScene extends Phaser.Scene {
     const goal = s.phase === 'goal-scored' && !replay ? [...s.events].reverse().find((e) => e.type === 'goal') : undefined;
     this.goalBanner.setVisible(!!goal);
     if (goal && goal.team !== undefined) {
-      const text = `${teamStyle(goal.team).name}${goal.ownGoal ? ' (own goal)' : ''}`;
+      // "Saka 23' · Arsenal": the scorer, the football minute (the halves stretched over 90) and the team.
+      const scorer = goal.player !== undefined && goal.player >= 0 ? `${playerNameById(goal.player)} ${matchMinute(goal.half, goal.clock, s.halfLength)}' · ` : '';
+      const text = `${scorer}${teamStyle(goal.team).name}${goal.ownGoal ? ' (own goal)' : ''}`;
       const color = hex(teamStyle(goal.team).kit);
       if (this.goalBannerFor !== `${text}|${color}`) {
         this.goalBannerFor = `${text}|${color}`;
@@ -279,7 +283,7 @@ export class HudScene extends Phaser.Scene {
       this.replayTitle.setFontSize(reel ? 21 : 26);
     }
     this.replaySlow.setText(view.slow ? 'SLOW MOTION' : '').setAlpha(0.75 + 0.25 * Math.sin(this.time.now / 120));
-    this.replayCaption.setText(replayCaption(view, (t) => teamStyle(t).name));
+    this.replayCaption.setText(replayCaption(view, (t) => teamStyle(t).name, playerNameById));
     const g = this.replayGfx;
     g.clear();
     g.fillStyle(0x000000, 0.6);
@@ -333,7 +337,7 @@ export class HudScene extends Phaser.Scene {
       const p = s.players[card.player];
       const red = card.type === 'red-card';
       this.cardBanner
-        .setText(`${red ? 'RED CARD' : 'YELLOW CARD'} — #${p?.number ?? '?'} ${teamStyle(card.team).name}${red ? ' (second yellow: sent off)' : ''}`)
+        .setText(`${red ? 'RED CARD' : 'YELLOW CARD'} — ${p ? `${squadPlayerById(p.id).name} #${shirtNumber(p)}` : '?'} (${teamStyle(card.team).name})${red ? ' (second yellow: sent off)' : ''}`)
         .setColor(red ? '#ff5a4f' : '#f5d90a');
     }
   }
@@ -352,7 +356,7 @@ export class HudScene extends Phaser.Scene {
     this.penaltyHint.setText(hint).setVisible(hint !== '');
     const res = recentEvent(s, ['penalty-result'], BANNER_SECONDS);
     this.penaltyBanner.setVisible(!!res && s.phase !== 'goal-scored');
-    if (res) this.penaltyBanner.setText(res.scored ? 'SCORED!' : res.saved ? 'SAVED!' : 'MISSED!').setColor(res.scored ? '#7ee081' : '#ffd23f');
+    if (res) this.penaltyBanner.setText(`${res.player !== undefined && res.player >= 0 ? `${playerNameById(res.player)}: ` : ''}${res.scored ? 'SCORED!' : res.saved ? 'SAVED!' : 'MISSED!'}`).setColor(res.scored ? '#7ee081' : '#ffd23f');
   }
 
   /** The shoot-out scoreboard: a row of kicks per team (scored, missed, still to come) and the score. */
