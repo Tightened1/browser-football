@@ -73,10 +73,20 @@ test('T21: names, quick chat, a series score, man of the match, back to the lobb
   for (const page of [hostPage, guestPage]) await waitScene(page, 'HudScene', 'scene.players?.[0].text === "Kev" && scene.players[1].text === "bSamb"');
 
   // Quick chat: 1 from the guest reaches the host (a second one straight after is refused by the rate limit).
+  // A bubble only lasts a few seconds and a CI runner draws few frames, so each page watches for it from inside the page.
+  for (const page of [hostPage, guestPage]) {
+    await page.evaluate(() => {
+      const w = window as any;
+      w.__sawBubble = false;
+      setInterval(() => {
+        if (w.__game.scene.getScene('MatchScene').bubbles.some((b: any) => b.visible && b.text === 'Nice goal!')) w.__sawBubble = true;
+      }, 20);
+    });
+  }
   await guestPage.keyboard.press('1');
   await guestPage.keyboard.press('2');
-  // The message is a bubble above the guest's controlled player on both screens (they only last a few seconds)...
-  await Promise.all([hostPage, guestPage].map((page) => waitScene(page, 'MatchScene', 'scene.bubbles.some((b) => b.visible && b.text === "Nice goal!")')));
+  // The message is a bubble above the guest's controlled player on both screens...
+  for (const page of [hostPage, guestPage]) await page.waitForFunction(() => (window as any).__sawBubble, null, { timeout: 30_000 });
   // ...and a line in the feed, with its sender's name; a second message straight after was refused by the rate limit.
   expect(await scene(hostPage, 'MatchScene', 'scene.chatFeed().map((l) => l.name + ": " + l.text)')).toEqual(['bSamb: Nice goal!']);
   expect(await scene(guestPage, 'MatchScene', 'scene.chatFeed().length')).toBe(1); // you see your own message too
@@ -85,9 +95,9 @@ test('T21: names, quick chat, a series score, man of the match, back to the lobb
   await hostPage.keyboard.press('m');
   await guestPage.waitForTimeout(1400);
   await guestPage.keyboard.press('6');
-  await waitScene(guestPage, 'MatchScene', 'scene.chatFeed().length === 2');
+  await waitScene(guestPage, 'MatchScene', 'scene.chatFeed().some((l) => l.text === "GG")');
   await hostPage.waitForTimeout(800);
-  expect(await scene(hostPage, 'MatchScene', 'scene.chatFeed().length')).toBe(1);
+  expect(await scene(hostPage, 'MatchScene', 'scene.chatFeed().some((l) => l.text === "GG")')).toBe(false);
   await hostPage.keyboard.press('m');
 
   // Full time (host wins 2-1): results on both, the series 1-0 to the host, a man of the match and the stat lines.

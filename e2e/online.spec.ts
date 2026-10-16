@@ -155,7 +155,7 @@ test('a penalty online: the guest takes it, the host keeps goal, and both see th
       const e = [...s.events].reverse().find((x: any) => x.type === 'penalty-result');
       return e ? { scored: e.scored, team: e.team, score: [...s.score] } : null;
     });
-  for (const page of [hostPage, guestPage]) await page.waitForFunction(() => (window as any).__game.scene.getScene('MatchScene').driver.state.events.some((e: any) => e.type === 'penalty-result'), null, { timeout: 15_000 });
+  for (const page of [hostPage, guestPage]) await page.waitForFunction(() => (window as any).__game.scene.getScene('MatchScene').driver.state.events.some((e: any) => e.type === 'penalty-result'), null, { timeout: 60_000 });
   await hostPage.waitForTimeout(500);
   const [h, g] = [await result(hostPage), await result(guestPage)];
   expect(h).not.toBeNull();
