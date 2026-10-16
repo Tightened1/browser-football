@@ -48,48 +48,72 @@ async function scoreOnHost(hostPage: Page): Promise<void> {
   });
 }
 
-const replayMode = (page: Page) => scene(page, 'MatchScene', 'scene.driver.replay()?.mode ?? null');
-const live = (page: Page) => scene(page, 'MatchScene', '({ phase: scene.driver.state.phase, tick: scene.driver.state.tick, clock: scene.driver.state.clock, score: [...scene.driver.state.score] })');
+/**
+ * A CI runner can draw very few frames, so a replay's moments (it starting, the match being held) are watched from
+ * inside each page every 20 ms and kept in `window.__rp`, rather than polled from the test.
+ */
+async function watchReplays(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const w = window as any;
+    const rp = (w.__rp = { mode: null as string | null, replays: {} as Record<number, any>, highlights: null as any, highlightsEndedAt: null as number | null });
+    setInterval(() => {
+      const m = w.__game.scene.getScene('MatchScene');
+      const hud = w.__game.scene.getScene('HudScene');
+      if (!m?.driver) return;
+      const v = m.driver.replay();
+      const s = m.driver.state;
+      if (rp.mode === 'highlights' && v?.mode !== 'highlights') rp.highlightsEndedAt = Date.now();
+      rp.mode = v?.mode ?? null;
+      if (v?.mode === 'replay') {
+        const r = (rp.replays[v.clip.moment] ??= { kind: v.clip.kind, frames: v.clip.frames.length, banner: false, ticks: [], clocks: [], phases: [] });
+        r.banner ||= !!hud?.replayBanner?.visible;
+        if (!r.ticks.includes(s.tick)) r.ticks.push(s.tick);
+        if (!r.clocks.includes(s.clock)) r.clocks.push(s.clock);
+        if (!r.phases.includes(s.phase)) r.phases.push(s.phase);
+      } else if (v?.mode === 'highlights') rp.highlights = { total: v.total, title: hud?.replayTitle?.text };
+    }, 20);
+  });
+}
+
+const rp = (page: Page): Promise<any> => page.evaluate(() => (window as any).__rp);
+const waitRp = (page: Page, expr: string, timeout = 60_000) =>
+  page.waitForFunction((e) => !!new Function('rp', 'm', `return ${e}`)((window as any).__rp, (window as any).__game.scene.getScene('MatchScene')), expr, { timeout, polling: 100 });
 
 test('T23: a goal is replayed on both screens, the kickoff waits, and either player can skip it for both', async ({ browser }) => {
+  test.setTimeout(420_000); // two goals and the highlights, on a runner that may draw only a few frames a second
   const errors: string[] = [];
   const { hostPage, guestPage } = await startOnlineMatch(browser, errors);
+  for (const page of [hostPage, guestPage]) await watchReplays(page);
   // Some build-up to replay.
   await hostPage.waitForTimeout(2500);
 
+  // A goal: after the goal pause, its replay plays on both screens (the same goal, each from its own replay buffer).
   await scoreOnHost(hostPage);
-  for (const page of [hostPage, guestPage]) await waitScene(page, 'MatchScene', 'scene.driver.state.phase === "goal-scored"', 10_000);
-  // After the goal pause, the replay starts on both screens.
-  for (const page of [hostPage, guestPage]) await waitScene(page, 'MatchScene', 'scene.driver.replay()?.mode === "replay"', 10_000);
-  const clip = (p: Page) => scene(p, 'MatchScene', '({ kind: scene.driver.replay().clip.kind, moment: scene.driver.replay().clip.moment, frames: scene.driver.replay().clip.frames.length })');
-  const [hc, gc] = [await clip(hostPage), await clip(guestPage)];
-  expect(hc.kind).toBe('goal');
-  expect(gc.moment).toBe(hc.moment); // the same goal, each from its own replay buffer
-  expect(gc.frames).toBeGreaterThan(30);
-  // The HUD shows the REPLAY banner.
-  expect(await scene(guestPage, 'HudScene', 'scene.replayBanner.visible')).toBe(true);
-
-  // The host's match is held: no ticks, no clock, no kickoff.
-  const held = await live(hostPage);
-  await hostPage.waitForTimeout(1200);
-  expect(await live(hostPage)).toEqual(held);
-  expect(held.phase).toBe('goal-scored');
-  expect(held.score).toEqual([1, 0]);
+  for (const page of [hostPage, guestPage]) await waitRp(page, 'Object.keys(rp.replays).length >= 1');
+  const [h1, g1] = [await rp(hostPage), await rp(guestPage)];
+  const moment = Number(Object.keys(h1.replays)[0]);
+  expect(h1.replays[moment].kind).toBe('goal');
+  expect(g1.replays[moment]).toBeDefined();
+  expect(g1.replays[moment].frames).toBeGreaterThan(30);
+  expect(g1.replays[moment].banner).toBe(true); // the HUD shows the REPLAY banner
 
   // The guest presses a key: the replay ends for both, and the kickoff follows.
+  await guestPage.waitForTimeout(1000);
   await guestPage.keyboard.press('KeyK');
-  for (const page of [hostPage, guestPage]) await waitScene(page, 'MatchScene', 'scene.driver.replay() === null', 10_000);
-  await waitScene(hostPage, 'MatchScene', 'scene.driver.state.phase === "playing"', 10_000);
-  await waitScene(guestPage, 'MatchScene', 'scene.driver.state.phase === "playing"', 10_000);
-  const after = await live(hostPage);
-  expect(after.tick).toBeGreaterThan(held.tick);
-  expect(await replayMode(guestPage)).toBeNull();
+  for (const page of [hostPage, guestPage]) await waitRp(page, 'rp.mode === null && m.driver.state.phase === "playing"');
+  // Meanwhile the host's match was held: one tick, one clock reading, still in the goal pause, the score 1-0.
+  const held = (await rp(hostPage)).replays[moment];
+  expect(held.ticks.length).toBe(1);
+  expect(held.clocks.length).toBe(1);
+  expect(held.phases).toEqual(['goal-scored']);
+  expect(await scene(hostPage, 'MatchScene', '[...scene.driver.state.score]')).toEqual([1, 0]);
+  expect(await scene(hostPage, 'MatchScene', 'scene.driver.state.tick')).toBeGreaterThan(held.ticks[0]);
 
   // A second goal, this time the replay plays out by itself (no key): it still ends on both, then play resumes.
   await hostPage.waitForTimeout(2000);
   await scoreOnHost(hostPage);
-  for (const page of [hostPage, guestPage]) await waitScene(page, 'MatchScene', 'scene.driver.replay()?.mode === "replay"', 10_000);
-  for (const page of [hostPage, guestPage]) await waitScene(page, 'MatchScene', 'scene.driver.replay() === null && scene.driver.state.phase === "playing"', 30_000);
+  for (const page of [hostPage, guestPage]) await waitRp(page, 'Object.keys(rp.replays).length >= 2');
+  for (const page of [hostPage, guestPage]) await waitRp(page, 'rp.mode === null && m.driver.state.phase === "playing"', 120_000);
 
   // Full time: each player gets the highlights reel (both goals), skips it, and sees the results.
   await hostPage.evaluate(() => {
@@ -98,15 +122,16 @@ test('T23: a goal is replayed on both screens, the kickoff waits, and either pla
     s.clock = s.halfLength - 0.05;
     s.restart = null;
   });
-  for (const page of [hostPage, guestPage]) await waitScene(page, 'MatchScene', 'scene.driver.replay()?.mode === "highlights"', 15_000);
-  for (const page of [hostPage, guestPage]) expect(await scene(page, 'MatchScene', 'scene.driver.replay().total')).toBe(2);
-  expect(await scene(hostPage, 'HudScene', 'scene.replayTitle.text')).toMatch(/^HIGHLIGHTS 1\/2$/);
-  // Skipping your highlights doesn't skip the other player's.
+  for (const page of [hostPage, guestPage]) await waitRp(page, 'rp.highlights !== null');
+  for (const page of [hostPage, guestPage]) expect((await rp(page)).highlights.total).toBe(2);
+  expect((await rp(hostPage)).highlights.title).toMatch(/^HIGHLIGHTS [12]\/2$/);
+  // Skipping your highlights doesn't skip the other player's: theirs ends later (on their key, or by itself).
   await hostPage.keyboard.press('KeyK');
-  await waitScene(hostPage, 'ResultsScene', 'scene.sys.isActive()', 10_000);
-  expect(await replayMode(guestPage)).toBe('highlights');
+  await waitScene(hostPage, 'ResultsScene', 'scene.sys.isActive()', 60_000);
   await guestPage.keyboard.press('KeyK');
-  await waitScene(guestPage, 'ResultsScene', 'scene.sys.isActive()', 10_000);
+  await waitScene(guestPage, 'ResultsScene', 'scene.sys.isActive()', 60_000);
+  const [hostEnd, guestEnd] = [(await rp(hostPage)).highlightsEndedAt, (await rp(guestPage)).highlightsEndedAt];
+  expect(guestEnd - hostEnd).toBeGreaterThan(300);
 
   expect(errors).toEqual([]);
   await Promise.all([hostPage.context().close(), guestPage.context().close()]);

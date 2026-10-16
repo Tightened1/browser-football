@@ -98,6 +98,9 @@ export class HudScene extends Phaser.Scene {
   private replayCaption!: Phaser.GameObjects.Text;
   private replayHint!: Phaser.GameObjects.Text;
   private replayGfx!: Phaser.GameObjects.Graphics;
+  /** The goal banner's team and the replay title's size last drawn (a new font size or colour redraws the text's canvas). */
+  private goalBannerFor = '';
+  private replayReel: boolean | null = null;
 
   constructor() {
     super('HudScene');
@@ -220,11 +223,17 @@ export class HudScene extends Phaser.Scene {
     this.drawPenalty(s);
     this.drawShootout(s, shootout);
 
-    // GOAL! banner.
-    const goal = s.phase === 'goal-scored' ? [...s.events].reverse().find((e) => e.type === 'goal') : undefined;
+    // GOAL! banner (not while its replay is on: the match is held in the goal pause meanwhile).
+    const replay = this.match()?.replayView() ?? null;
+    const goal = s.phase === 'goal-scored' && !replay ? [...s.events].reverse().find((e) => e.type === 'goal') : undefined;
     this.goalBanner.setVisible(!!goal);
     if (goal && goal.team !== undefined) {
-      this.goalTeam.setText(`${teamStyle(goal.team).name}${goal.ownGoal ? ' (own goal)' : ''}`).setColor(hex(teamStyle(goal.team).kit)).setStroke('#ffffff', 5);
+      const text = `${teamStyle(goal.team).name}${goal.ownGoal ? ' (own goal)' : ''}`;
+      const color = hex(teamStyle(goal.team).kit);
+      if (this.goalBannerFor !== `${text}|${color}`) {
+        this.goalBannerFor = `${text}|${color}`;
+        this.goalTeam.setText(text).setColor(color).setStroke('#ffffff', 5);
+      }
       // Pops in big and settles, then keeps a gentle pulse.
       const since = Math.max(0, GOAL_PAUSE - s.phaseTimer);
       const pop = Math.max(0, 1 - since / 0.3) ** 2;
@@ -243,7 +252,7 @@ export class HudScene extends Phaser.Scene {
       this.overlayInfo.setText(extra ? `Golden goal: the first goal wins (then penalties) — ${left}` : `Teams swap ends — ${left}`);
     }
 
-    this.drawReplay(this.match()?.replayView() ?? null);
+    this.drawReplay(replay);
 
     const net = this.match()?.netOverlay() ?? null;
     this.netPanel.setVisible(!!net);
@@ -264,7 +273,11 @@ export class HudScene extends Phaser.Scene {
     if (!view) return;
     for (const o of [this.goalBanner, this.restartLabel, this.foulBanner, this.cardBanner, this.penaltyBanner, this.penaltyHint]) o.setVisible(false);
     const reel = view.mode === 'highlights';
-    this.replayTitle.setText(reel ? `HIGHLIGHTS ${view.index}/${view.total}` : 'REPLAY').setFontSize(reel ? 21 : 26);
+    this.replayTitle.setText(reel ? `HIGHLIGHTS ${view.index}/${view.total}` : 'REPLAY');
+    if (this.replayReel !== reel) {
+      this.replayReel = reel;
+      this.replayTitle.setFontSize(reel ? 21 : 26);
+    }
     this.replaySlow.setText(view.slow ? 'SLOW MOTION' : '').setAlpha(0.75 + 0.25 * Math.sin(this.time.now / 120));
     this.replayCaption.setText(replayCaption(view, (t) => teamStyle(t).name));
     const g = this.replayGfx;
